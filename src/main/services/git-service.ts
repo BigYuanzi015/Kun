@@ -1,8 +1,30 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { GitBranchesResult } from '../../shared/git-branches'
+import { findNearestGitRoot } from './git-discovery'
 
 const execFileAsync = promisify(execFile)
+
+/**
+ * Resolve a workspaceRoot to a directory that sits inside a Git working tree.
+ *
+ * `git rev-parse --show-toplevel` already walks up the directory tree, so it
+ * usually finds the right cwd by itself. However, when the user's workspace
+ * is set to a sub-folder of a repo AND the git binary is older than 2.28
+ * (no `branch --format`) or returns an error string we don't match, the rest
+ * of `getGitBranches` falls through to `gitFailure` and the UI shows
+ * "未检测到 Git" even though we are clearly inside a repo. See issue #98.
+ *
+ * We mitigate that by walking up the tree in pure Node first and passing the
+ * discovered repo root (or the original cwd if none was found) to git. This
+ * is a defensive layer — when git itself works, the result is identical.
+ */
+async function resolveGitCwd(workspaceRoot: string): Promise<string> {
+  const trimmed = workspaceRoot.trim()
+  if (!trimmed) return trimmed
+  const discovered = await findNearestGitRoot(trimmed)
+  return discovered ?? trimmed
+}
 
 async function runGit(
   cwd: string,
@@ -29,7 +51,7 @@ function gitFailure(error: unknown): GitBranchesResult {
 }
 
 export async function getGitBranches(workspaceRoot: string): Promise<GitBranchesResult> {
-  const cwd = workspaceRoot.trim()
+  const cwd = await resolveGitCwd(workspaceRoot)
   if (!cwd) {
     return { ok: false, reason: 'no_workspace', message: 'No working directory selected.' }
   }
@@ -60,7 +82,7 @@ export async function switchGitBranch(
   workspaceRoot: string,
   branchName: string
 ): Promise<GitBranchesResult> {
-  const cwd = workspaceRoot.trim()
+  const cwd = await resolveGitCwd(workspaceRoot)
   const branch = branchName.trim()
   if (!cwd) return { ok: false, reason: 'no_workspace', message: 'No working directory selected.' }
   if (!branch) return { ok: false, reason: 'error', message: 'Branch name is required.' }
@@ -80,7 +102,7 @@ export async function createAndSwitchGitBranch(
   workspaceRoot: string,
   branchName: string
 ): Promise<GitBranchesResult> {
-  const cwd = workspaceRoot.trim()
+  const cwd = await resolveGitCwd(workspaceRoot)
   const branch = branchName.trim()
   if (!cwd) return { ok: false, reason: 'no_workspace', message: 'No working directory selected.' }
   if (!branch) return { ok: false, reason: 'error', message: 'Branch name is required.' }
