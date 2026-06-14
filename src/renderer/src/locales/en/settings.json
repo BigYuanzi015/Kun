@@ -866,5 +866,6 @@
   "memoryScope_workspace": "Workspace",
   "memoryScope_project": "Project",
   "memoryLastInjected": "Last injected",
-  "memoryLastInjectedDesc": "Memory record IDs that were injected into the most recent turn."
+  "memoryLastInjectedDesc": "Memory record IDs that were injected into the most recent turn.",
+  "memoryDisabledHint": "Memory is currently disabled. Enable it in the runtime configuration (kun config) to create and use memory records."
 }

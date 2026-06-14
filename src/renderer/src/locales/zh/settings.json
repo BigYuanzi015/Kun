@@ -866,5 +866,6 @@
   "memoryScope_workspace": "工作区",
   "memoryScope_project": "项目",
   "memoryLastInjected": "最近注入",
-  "memoryLastInjectedDesc": "最近一轮对话中注入的记忆记录 ID。"
+  "memoryLastInjectedDesc": "最近一轮对话中注入的记忆记录 ID。",
+  "memoryDisabledHint": "记忆功能当前已关闭。需要在运行时配置(kun config)中启用后才能创建和使用记忆记录。"
 }

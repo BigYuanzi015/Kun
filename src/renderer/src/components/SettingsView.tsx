@@ -499,34 +499,38 @@ export function SettingsView(): ReactElement {
     scope?: 'user' | 'workspace' | 'project'
     tags?: string[]
     confidence?: number
-  }): Promise<void> => {
+  }): Promise<boolean> => {
     const provider = getProvider()
-    if (typeof provider.createMemory !== 'function') return
+    if (typeof provider.createMemory !== 'function') return false
     try {
       const memory = await provider.createMemory(input)
       setMemoryRecords((records) => [memory, ...records])
+      return true
     } catch (error) {
       setRuntimeDiagnosticsNotice({
         tone: 'error',
         message: error instanceof Error ? error.message : String(error)
       })
+      return false
     }
   }
 
   const updateMemoryRecord = async (
     memoryId: string,
     patch: { content?: string; tags?: string[]; confidence?: number; disabled?: boolean }
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     const provider = getProvider()
-    if (typeof provider.updateMemory !== 'function') return
+    if (typeof provider.updateMemory !== 'function') return false
     try {
       const memory = await provider.updateMemory(memoryId, patch)
       setMemoryRecords((records) => records.map((record) => (record.id === memoryId ? memory : record)))
+      return true
     } catch (error) {
       setRuntimeDiagnosticsNotice({
         tone: 'error',
         message: error instanceof Error ? error.message : String(error)
       })
+      return false
     }
   }
 

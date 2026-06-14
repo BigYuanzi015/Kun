@@ -74,25 +74,24 @@ export function MemorySettingsSection({ ctx }: { ctx: Record<string, any> }): Re
   const saveDraft = async (): Promise<void> => {
     const trimmed = draft.content.trim()
     if (!trimmed) return
-    try {
-      if (creating) {
-        await createMemoryRecord({
-          content: trimmed,
-          scope: draft.scope,
-          tags: parseTags(draft.tags),
-          confidence: draft.confidence
-        })
-      } else if (editingId) {
-        await updateMemoryRecord(editingId, {
-          content: trimmed,
-          tags: parseTags(draft.tags),
-          confidence: draft.confidence
-        })
-      }
-      cancelEditor()
-    } catch {
-      // surfaced via runtimeDiagnosticsNotice inside the handler
+    let ok = false
+    if (creating) {
+      ok = await createMemoryRecord({
+        content: trimmed,
+        scope: draft.scope,
+        tags: parseTags(draft.tags),
+        confidence: draft.confidence
+      })
+    } else if (editingId) {
+      ok = await updateMemoryRecord(editingId, {
+        content: trimmed,
+        tags: parseTags(draft.tags),
+        confidence: draft.confidence
+      })
     }
+    if (ok) cancelEditor()
+    // On failure, keep the editor open so the user doesn't lose their draft.
+    // The error is surfaced via runtimeDiagnosticsNotice in the parent handler.
   }
 
   return (
@@ -131,6 +130,11 @@ export function MemorySettingsSection({ ctx }: { ctx: Record<string, any> }): Re
         wideControl
         control={
           <div className="flex flex-col gap-3">
+            {memoryDiagnostics?.enabled === false ? (
+              <div className="rounded-xl border border-amber-200/80 bg-amber-50/80 px-3 py-2 text-[12px] text-amber-700 dark:border-amber-800/40 dark:bg-amber-500/10 dark:text-amber-300">
+                {t('memoryDisabledHint')}
+              </div>
+            ) : null}
             {/* Toolbar: scope filter + create button */}
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1 text-[12px]">
