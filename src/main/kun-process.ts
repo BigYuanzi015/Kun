@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 import {
   defaultKunTokenEconomySettings,
   isKunRuntimeInsecure,
+  resolveModelProviderProxyUrl,
   resolveKunRuntimeSettings,
   type ModelProviderModelProfileV1,
   type KunRuntimeSettingsV1,
@@ -289,6 +290,7 @@ async function startKunChildOnce(
     port: runtime.port,
     dataDir,
     baseUrl: runtime.baseUrl,
+    modelProxyUrl: resolveModelProviderProxyUrl(settings),
     endpointFormat: runtime.endpointFormat,
     model: runtime.model,
     approvalPolicy: runtime.approvalPolicy,
