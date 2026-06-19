@@ -25,6 +25,28 @@
   display: none;
 }
 
+/*
+ * Our node type names ("output", etc.) can collide with React Flow's built-in
+ * node types (input/output/default/group), whose default style.css paints a
+ * 150px padded white bordered box around our custom card — a doubled frame
+ * (most visible on the "output" node). Reset those built-in styles; our card
+ * provides all visuals.
+ */
+.ds-workflow-canvas .react-flow__node-input,
+.ds-workflow-canvas .react-flow__node-output,
+.ds-workflow-canvas .react-flow__node-default,
+.ds-workflow-canvas .react-flow__node-group {
+  padding: 0;
+  width: auto;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-size: inherit;
+  box-shadow: none;
+}
+
 .ds-workflow-canvas .react-flow__controls {
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
   border-radius: 12px;
