@@ -15,6 +15,7 @@ import {
   type ModelProviderProfileV1
 } from '../shared/app-settings'
 import { createClawRuntime } from './claw-runtime'
+import type { RuntimeRequestFn } from './claw-runtime-helpers'
 
 function buildSettings(): AppSettingsV1 {
   return {
@@ -3640,8 +3641,8 @@ describe('ClawRuntime handleFeishuMessage streaming', () => {
       .set(channelId, bridge)
   }
 
-  function makeTurnRequest(): ReturnType<typeof vi.fn> {
-    return vi.fn(async (_settings, path) => {
+  function makeTurnRequest(): RuntimeRequestFn {
+    const request: RuntimeRequestFn = async (_settings, path) => {
       if (path === '/v1/threads/thr_1/turns') {
         return {
           ok: true,
@@ -3650,7 +3651,8 @@ describe('ClawRuntime handleFeishuMessage streaming', () => {
         }
       }
       throw new Error(`unexpected path ${path}`)
-    })
+    }
+    return vi.fn(request) as unknown as RuntimeRequestFn
   }
 
   it('routes through runStreamingReply when channel.feishuStream=true', async () => {

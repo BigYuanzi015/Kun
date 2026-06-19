@@ -1,4 +1,5 @@
 import {
+  DEFAULT_LOG_RETENTION_DAYS,
   DEFAULT_GUI_UPDATE_CHANNEL,
   defaultKunRuntimeSettings,
   applyKunRuntimePatch,
@@ -96,7 +97,9 @@ export function coerceRendererSettings(settings: AppSettingsV1): AppSettingsV1 {
     workspaceRoot: typeof raw.workspaceRoot === 'string' ? raw.workspaceRoot : DEFAULT_WORKSPACE_ROOT,
     log: {
       enabled: raw.log?.enabled !== false,
-      retentionDays: typeof raw.log?.retentionDays === 'number' ? raw.log.retentionDays : 2
+      retentionDays: typeof raw.log?.retentionDays === 'number'
+        ? raw.log.retentionDays
+        : DEFAULT_LOG_RETENTION_DAYS
     },
     notifications: {
       turnComplete: raw.notifications?.turnComplete !== false

@@ -34,6 +34,7 @@ function releaseThreadWorktreeIfNeeded(threadId: string | null): void {
   if (typeof window.kunGui?.releaseWorktree !== 'function') return
   const record = readThreadWorktreeRegistry().worktrees[threadId]
   if (!record) return
+  if (record.poolIndex === undefined) return
   void window.kunGui
     .releaseWorktree({
       projectPath: record.projectPath,
@@ -180,7 +181,55 @@ function settleInterruptedTurn(set: ChatStoreSet, get: ChatStoreGet): void {
 
 export function createMaintenanceActions(
   { set, get, sseAbortRef }: StoreActionContext
-): Pick<ChatState, 'renameActiveThread' | 'renameThread' | 'archiveThread' | 'compactActiveThread' | 'forkActiveThread' | 'setActiveThreadGoal' | 'setActiveThreadGoalStatus' | 'clearActiveThreadGoal' | 'setActiveThreadTodoStatus' | 'clearActiveThreadTodos' | 'syncPlanTodosFromMarkdown' | 'resumeSessionIntoThread' | 'deleteThread' | 'rewindAndResend' | 'resolveApproval' | 'resolveUserInput' | 'interrupt'> {
+): Pick<ChatState, 'renameActiveThread' | 'renameThread' | 'archiveThread' | 'compactActiveThread' | 'forkActiveThread' | 'forkThreadFromTurn' | 'setActiveThreadGoal' | 'setActiveThreadGoalStatus' | 'clearActiveThreadGoal' | 'setActiveThreadTodoStatus' | 'clearActiveThreadTodos' | 'syncPlanTodosFromMarkdown' | 'resumeSessionIntoThread' | 'deleteThread' | 'rewindAndResend' | 'resolveApproval' | 'resolveUserInput' | 'interrupt'> {
+  const forkActiveThreadWithOptions = async (options: { turnId?: string } = {}): Promise<void> => {
+    const { activeThreadId, busy, blocks } = get()
+    if (!activeThreadId) return
+    if (busy) {
+      set({ error: i18n.t('common:threadActionBusy') })
+      return
+    }
+    if (get().runtimeConnection !== 'ready') {
+      set({ error: i18n.t('common:runtimeActionNeedsConnection') })
+      return
+    }
+    const p = getProvider()
+    if (typeof p.forkThread !== 'function') {
+      set({ error: i18n.t('common:runtimeFeatureUnsupported') })
+      return
+    }
+    const turnId = options.turnId?.trim()
+    try {
+      const parentThread =
+        get().threads.find((thread) => thread.id === activeThreadId) ?? {
+          id: activeThreadId,
+          title: activeThreadId.slice(0, 8)
+        }
+      const forked = await p.forkThread(activeThreadId, turnId ? { turnId } : undefined)
+      saveThreadForkRegistry(
+        markThreadFork(
+          forked.id,
+          parentThread,
+          {
+            createdAt: forked.forkedAt ?? new Date().toISOString(),
+            forkedFromMessageCount: forked.forkedFromMessageCount ?? forkedMessageCount(blocks),
+            forkedFromTurnCount: forked.forkedFromTurnCount ?? forkedTurnCount(blocks)
+          },
+          readThreadForkRegistry()
+        )
+      )
+      await get().refreshThreads()
+      await get().selectThread(forked.id)
+    } catch (e) {
+      set({
+        error: formatRuntimeError(e),
+        ...(shouldOpenSettingsForError(e)
+          ? { route: 'settings' as const, settingsSection: 'agents' as const }
+          : {})
+      })
+    }
+  }
+
   return {
   renameActiveThread: async (title) => {
     const { activeThreadId } = get()
@@ -321,50 +370,13 @@ export function createMaintenanceActions(
   },
 
   forkActiveThread: async () => {
-    const { activeThreadId, busy, blocks } = get()
-    if (!activeThreadId) return
-    if (busy) {
-      set({ error: i18n.t('common:threadActionBusy') })
-      return
-    }
-    if (get().runtimeConnection !== 'ready') {
-      set({ error: i18n.t('common:runtimeActionNeedsConnection') })
-      return
-    }
-    const p = getProvider()
-    if (typeof p.forkThread !== 'function') {
-      set({ error: i18n.t('common:runtimeFeatureUnsupported') })
-      return
-    }
-    try {
-      const parentThread =
-        get().threads.find((thread) => thread.id === activeThreadId) ?? {
-          id: activeThreadId,
-          title: activeThreadId.slice(0, 8)
-        }
-      const forked = await p.forkThread(activeThreadId)
-      saveThreadForkRegistry(
-        markThreadFork(
-          forked.id,
-          parentThread,
-          {
-            createdAt: forked.forkedAt ?? new Date().toISOString(),
-            forkedFromMessageCount: forked.forkedFromMessageCount ?? forkedMessageCount(blocks),
-            forkedFromTurnCount: forked.forkedFromTurnCount ?? forkedTurnCount(blocks)
-          },
-          readThreadForkRegistry()
-        )
-      )
-      await get().refreshThreads()
-      await get().selectThread(forked.id)
-    } catch (e) {
-      set({
-        error: formatRuntimeError(e),
-        ...(shouldOpenSettingsForError(e)
-          ? { route: 'settings' as const, settingsSection: 'agents' as const }
-          : {})
-      })
-    }
+    await forkActiveThreadWithOptions()
+  },
+
+  forkThreadFromTurn: async (turnId) => {
+    const targetTurnId = turnId.trim()
+    if (!targetTurnId) return
+    await forkActiveThreadWithOptions({ turnId: targetTurnId })
   },
 
   setActiveThreadGoal: async (objective) => {
@@ -607,7 +619,7 @@ export function createMaintenanceActions(
     // Release the worktree pool slot if this thread owned one. Best-effort:
     // a failure to release must not block thread deletion.
     const wtRecord = readThreadWorktreeRegistry().worktrees[targetId]
-    if (wtRecord) {
+    if (wtRecord?.poolIndex !== undefined) {
       try {
         await window.kunGui.releaseWorktree({
           projectPath: wtRecord.projectPath,

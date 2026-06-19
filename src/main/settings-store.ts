@@ -6,6 +6,7 @@ import {
   applyKunRuntimePatch,
   kunSettingsEnvelope,
   DEFAULT_GUI_UPDATE_CHANNEL,
+  DEFAULT_LOG_RETENTION_DAYS,
   DEFAULT_WRITE_WORKSPACE_ROOT,
   defaultClawSettings,
   defaultKunRuntimeSettings,
@@ -204,7 +205,7 @@ const defaultSettings = (): AppSettingsV1 => ({
   workspaceRoot: DEFAULT_WORKSPACE_ROOT,
   log: {
     enabled: true,
-    retentionDays: 2
+    retentionDays: DEFAULT_LOG_RETENTION_DAYS
   },
   notifications: {
     turnComplete: true

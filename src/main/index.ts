@@ -11,6 +11,7 @@ import kunLogoPng from '../asset/img/kun.png?url'
 import kunMacLogoPng from '../asset/img/kun_mac.png?url'
 import kunTrayPng from '../asset/img/kun_tray.png?url'
 import { createAppIcon, pickTrayIcon, prepareTrayIcon } from './app-icon'
+import { buildTrayMenuTemplate, parseTrayThreads, type TrayThreadSummary } from './tray-session-menu'
 import { configureLinuxWaylandImeSwitches } from './app-command-line'
 import { configureAppIdentity } from './app-identity'
 import { runLegacyKunDataMigration } from './legacy-data-migration'
@@ -36,6 +37,7 @@ import {
 } from '../shared/app-settings'
 import { parseRuntimeErrorBody, runtimeErrorToError, type RuntimeErrorCode } from '../shared/runtime-error'
 import type { GuiUpdateState } from '../shared/gui-update'
+import type { TrayActionPayload } from '../shared/kun-gui-api'
 import { isAllowedDevPreviewUrl } from '../shared/dev-preview-url'
 import { isAuthorizedPrototypeFileUrl } from './services/prototype-embed-registry'
 import { fetchUpstreamModelIds } from './upstream-models'
@@ -203,6 +205,7 @@ let managedRuntimesStopPromise: Promise<void> | null = null
 let appBehavior: AppBehaviorConfigV1 = normalizeAppBehaviorSettings()
 let tray: Tray | null = null
 let trayMenu: Menu | null = null
+let trayMenuOpenPromise: Promise<void> | null = null
 let isQuitting = false
 let closeWindowPromptOpen = false
 
@@ -317,21 +320,6 @@ traceStartup('single instance lock checked', {
   skippedForClawScheduleMcpServer: runningClawScheduleMcpServer
 })
 
-function trayLabels(locale: AppSettingsV1['locale']): { show: string; quit: string; tooltip: string } {
-  if (locale === 'zh') {
-    return {
-      show: '显示 Kun',
-      quit: '退出',
-      tooltip: 'Kun'
-    }
-  }
-  return {
-    show: 'Show Kun',
-    quit: 'Quit',
-    tooltip: 'Kun'
-  }
-}
-
 function windowCloseLabels(locale: AppSettingsV1['locale']): {
   title: string
   message: string
@@ -400,6 +388,67 @@ function revealMainWindow(): void {
   mainWindow.focus()
 }
 
+function dispatchTrayAction(action: TrayActionPayload): void {
+  revealMainWindow()
+  const window = mainWindow
+  if (!window || window.isDestroyed()) return
+  const send = (): void => {
+    if (!window.isDestroyed()) window.webContents.send('tray:action', action)
+  }
+  if (window.webContents.isLoadingMainFrame()) {
+    window.webContents.once('did-finish-load', send)
+  } else {
+    send()
+  }
+}
+
+function quitFromTray(): void {
+  isQuitting = true
+  app.quit()
+}
+
+function createTrayMenu(settings: AppSettingsV1, threads: TrayThreadSummary[]): Menu {
+  return Menu.buildFromTemplate(buildTrayMenuTemplate({
+    locale: settings.locale,
+    threads,
+    actions: {
+      openThread: (threadId) => dispatchTrayAction({ type: 'open-thread', threadId }),
+      newChat: () => dispatchTrayAction({ type: 'new-chat' }),
+      openApp: revealMainWindow,
+      quit: quitFromTray
+    }
+  }))
+}
+
+async function loadTrayThreads(settings: AppSettingsV1): Promise<TrayThreadSummary[]> {
+  try {
+    const response = await fetch(`${getRuntimeBaseUrlForSettings(settings)}/v1/threads?limit=20`, {
+      headers: runtimeAuthHeaders(settings),
+      signal: AbortSignal.timeout(1_000)
+    })
+    return response.ok ? parseTrayThreads(await response.text()) : []
+  } catch (error) {
+    logWarn('tray', 'Failed to load tray sessions.', {
+      message: error instanceof Error ? error.message : String(error)
+    })
+    return []
+  }
+}
+
+function showTrayMenu(): void {
+  if (!tray || trayMenuOpenPromise) return
+  const currentTray = tray
+  trayMenuOpenPromise = (async () => {
+    const settings = await store.load()
+    const threads = await loadTrayThreads(settings)
+    if (currentTray.isDestroyed()) return
+    trayMenu = createTrayMenu(settings, threads)
+    currentTray.popUpContextMenu(trayMenu)
+  })().finally(() => {
+    trayMenuOpenPromise = null
+  })
+}
+
 function syncTray(settings: AppSettingsV1): void {
   appBehavior = settings.appBehavior
   if (appBehavior.closeAction === 'quit') {
@@ -416,29 +465,14 @@ function syncTray(settings: AppSettingsV1): void {
     // 托盘图加载失败时回退到主应用图,这样不会看到 electron 默认占位。
     const traySource = prepareTrayIcon(pickTrayIcon(trayIcon, appIcon))
     tray = new Tray(traySource.isEmpty() ? nativeImage.createEmpty() : traySource)
-    tray.on('click', revealMainWindow)
+    tray.on('click', showTrayMenu)
     tray.on('double-click', revealMainWindow)
-    if (process.platform === 'darwin') {
-      tray.on('right-click', () => {
-        if (trayMenu) tray?.popUpContextMenu(trayMenu)
-      })
-    }
+    tray.on('right-click', showTrayMenu)
   }
 
-  const labels = trayLabels(settings.locale)
-  tray.setToolTip(labels.tooltip)
-  trayMenu = Menu.buildFromTemplate([
-    { label: labels.show, click: revealMainWindow },
-    { type: 'separator' },
-    {
-      label: labels.quit,
-      click: () => {
-        isQuitting = true
-        app.quit()
-      }
-    }
-  ])
-  tray.setContextMenu(process.platform === 'darwin' ? null : trayMenu)
+  tray.setToolTip('Kun')
+  trayMenu = createTrayMenu(settings, [])
+  tray.setContextMenu(null)
 }
 
 async function saveWindowCloseActionPreference(closeAction: WindowCloseAction): Promise<void> {

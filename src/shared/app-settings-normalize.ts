@@ -1,5 +1,6 @@
 import {
   DEFAULT_GUI_UPDATE_CHANNEL,
+  DEFAULT_LOG_RETENTION_DAYS,
   normalizeGuiUpdateChannel,
   type AppBehaviorConfigV1,
   type AppSettingsV1,
@@ -79,7 +80,9 @@ export function normalizeAppSettings(settings: AppSettingsV1): AppSettingsV1 {
     workspaceRoot: typeof maybeSettings.workspaceRoot === 'string' ? maybeSettings.workspaceRoot : '',
     log: {
       enabled: maybeSettings.log?.enabled !== false,
-      retentionDays: typeof maybeSettings.log?.retentionDays === 'number' ? maybeSettings.log.retentionDays : 2
+      retentionDays: typeof maybeSettings.log?.retentionDays === 'number'
+        ? maybeSettings.log.retentionDays
+        : DEFAULT_LOG_RETENTION_DAYS
     },
     notifications: {
       turnComplete: maybeSettings.notifications?.turnComplete !== false

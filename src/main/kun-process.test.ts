@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { configureLogger } from './logger'
 import {
   defaultClawSettings,
+  DEFAULT_LOG_RETENTION_DAYS,
   defaultKeyboardShortcuts,
   defaultKunRuntimeSettings,
   defaultModelProviderSettings,
@@ -96,7 +97,7 @@ beforeEach(() => {
 afterEach(async () => {
   const module = await import('./kun-process')
   await module.stopKunChildAndWait()
-  configureLogger({ dir: '', enabled: true, retentionDays: 2 })
+  configureLogger({ dir: '', enabled: true, retentionDays: DEFAULT_LOG_RETENTION_DAYS })
   if (tempRoot) {
     rmSync(tempRoot, { recursive: true, force: true })
     tempRoot = null

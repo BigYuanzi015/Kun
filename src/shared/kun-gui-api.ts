@@ -11,7 +11,7 @@ import type {
   ScheduleTaskFromTextResult
 } from './app-settings'
 import type { EditorListResult, EditorOpenResult, OpenEditorPathOptions } from './editor'
-import type { GitBranchesResult } from './git-branches'
+import type { GitBranchesResult, GitBranchWorktreesResult, GitWorktreeCheckoutResult } from './git-branches'
 import type { GitCheckpointCreateResult, GitCheckpointRestoreResult } from './git-checkpoint'
 import type {
   MergeResult,
@@ -245,6 +245,9 @@ export type LegacySessionImportResult =
 export type SseEventPayload = { streamId: string; events: unknown[] }
 export type SseEndPayload = { streamId: string }
 export type SseErrorPayload = { streamId: string; status?: number; message?: string }
+export type TrayActionPayload =
+  | { type: 'new-chat' }
+  | { type: 'open-thread'; threadId: string }
 
 export type ComputerUsePermissionKind = 'accessibility' | 'screenRecording'
 export type ComputerUsePermissionState = 'granted' | 'denied' | 'unknown'
@@ -260,6 +263,7 @@ export type ComputerUsePermissions = {
 
 export type KunGuiApi = {
   platform: string
+  homeDir: string
   getSettings: () => Promise<AppSettingsV1>
   setSettings: (partial: AppSettingsPatch) => Promise<AppSettingsV1>
   saveSettingsSilent: (partial: AppSettingsPatch) => Promise<AppSettingsV1>
@@ -308,6 +312,13 @@ export type KunGuiApi = {
   restoreGitCheckpoint: (params: {
     checkpointId: string
   }) => Promise<GitCheckpointRestoreResult>
+  checkoutGitBranchWorktree: (workspaceRoot: string, branch: string) => Promise<GitWorktreeCheckoutResult>
+  createGitBranchWorktree: (workspaceRoot: string, branch: string) => Promise<GitWorktreeCheckoutResult>
+  listGitBranchWorktrees: (params: {
+    projectPath: string
+    worktreeRoot?: string
+  }) => Promise<GitBranchWorktreesResult>
+  removeGitBranchWorktree: (params: { workspaceRoot: string; worktreePath: string }) => Promise<void>
   acquireWorktree: (params: {
     projectPath: string
     poolIndex: number
@@ -404,6 +415,7 @@ export type KunGuiApi = {
   onSseEnd: (handler: (payload: SseEndPayload) => void) => () => void
   onSseError: (handler: (payload: SseErrorPayload) => void) => () => void
   onClawChannelActivity: (handler: (payload: ClawChannelActivityPayload) => void) => () => void
+  onTrayAction: (handler: (payload: TrayActionPayload) => void) => () => void
   onRuntimeStatus: (handler: (payload: KunRuntimeStatusPayload) => void) => () => void
   mirrorClawChannelMessage: (
     threadId: string,

@@ -704,10 +704,12 @@ export class KunRuntimeProvider implements AgentProvider {
 
   async updateMemory(
     memoryId: string,
-    patch: { content?: string; tags?: string[]; confidence?: number; disabled?: boolean }
+    patch: { content?: string; tags?: string[]; confidence?: number; disabled?: boolean },
+    options: { workspace?: string } = {}
   ): Promise<CoreMemoryRecordJson> {
+    const query = buildQuery({ workspace: options.workspace })
     const response = await rendererRuntimeClient.runtimeRequest(
-      kunMemoryRecordPath(memoryId),
+      `${kunMemoryRecordPath(memoryId)}${query}`,
       'PATCH',
       JSON.stringify(patch)
     )
@@ -720,8 +722,9 @@ export class KunRuntimeProvider implements AgentProvider {
     ).memory
   }
 
-  async deleteMemory(memoryId: string): Promise<CoreMemoryRecordJson> {
-    const response = await rendererRuntimeClient.runtimeRequest(kunMemoryRecordPath(memoryId), 'DELETE')
+  async deleteMemory(memoryId: string, options: { workspace?: string } = {}): Promise<CoreMemoryRecordJson> {
+    const query = buildQuery({ workspace: options.workspace })
+    const response = await rendererRuntimeClient.runtimeRequest(`${kunMemoryRecordPath(memoryId)}${query}`, 'DELETE')
     if (!response.ok) {
       throw runtimeErrorToError(readRuntimeError(response.body, 'failed to delete memory'))
     }
@@ -744,11 +747,12 @@ export class KunRuntimeProvider implements AgentProvider {
 
   async forkThread(
     threadId: string,
-    options?: { relation?: 'primary' | 'fork' | 'side'; title?: string }
+    options?: { relation?: 'primary' | 'fork' | 'side'; title?: string; turnId?: string }
   ): Promise<NormalizedThread> {
     const body: Record<string, unknown> = {}
     if (options?.relation) body.relation = options.relation
     if (options?.title) body.title = options.title
+    if (options?.turnId) body.turnId = options.turnId
     const url = kunThreadForkPath(threadId)
     const response =
       Object.keys(body).length > 0

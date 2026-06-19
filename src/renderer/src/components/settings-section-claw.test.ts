@@ -112,6 +112,8 @@ describe('ClawSettingsSection', () => {
           form: buildSettings(),
           update: vi.fn(),
           selectControlClass: 'select-control',
+          compactHomePath: (path: string) => path,
+          expandHomePath: (path: string) => path,
           pickClawWorkspace: async () => undefined,
           resetClawWorkspaceToDefault: () => undefined,
           clawWorkspacePickerError: null
