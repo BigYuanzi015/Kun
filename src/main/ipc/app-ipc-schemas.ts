@@ -905,12 +905,30 @@ const workflowNodeBaseShape = {
   fallbackJson: z.string().max(MAX_BODY_BYTES).optional()
 }
 
+const workflowInputFieldSchema = z
+  .object({
+    key: z.string().max(128),
+    label: z.string().max(200).optional(),
+    type: z.enum(['text', 'paragraph', 'number', 'boolean', 'select', 'json']).optional(),
+    required: z.boolean().optional(),
+    options: z.array(z.string().max(500)).max(50).optional(),
+    defaultValue: z.string().max(MAX_BODY_BYTES).optional(),
+    description: z.string().max(500).optional()
+  })
+  .strict()
+
 const workflowNodePatchSchema = z.discriminatedUnion('type', [
   z
     .object({
       ...workflowNodeBaseShape,
       type: z.literal('manual-trigger'),
-      config: z.object({ workspaceRoot: defaultPathSchema }).strict().optional()
+      config: z
+        .object({
+          workspaceRoot: defaultPathSchema,
+          inputSchema: z.array(workflowInputFieldSchema).max(50).optional()
+        })
+        .strict()
+        .optional()
     })
     .strict(),
   z

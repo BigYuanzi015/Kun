@@ -1,15 +1,18 @@
 import { useEffect, useState, type ReactElement, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Star, Trash2 } from 'lucide-react'
+import { Plus, Star, Trash2, X } from 'lucide-react'
 import { ModelPicker } from './ModelPicker'
 import {
   SCHEDULE_REASONING_EFFORT_IDS,
+  WORKFLOW_INPUT_FIELD_TYPES,
   getModelProviderSettings,
   type AppSettingsV1,
   type WorkflowCodeCheckResult,
   type WorkflowCodeLanguage,
   type WorkflowConditionOperator,
   type WorkflowHttpMethod,
+  type WorkflowInputFieldType,
+  type WorkflowInputFieldV1,
   type WorkflowNodeRunResultV1,
   type WorkflowNodeV1,
   type WorkflowTriggerScheduleKind,
@@ -245,6 +248,118 @@ export function NodeConfigPanel({
             <span className="mt-1 text-[11px] leading-4 text-ds-faint">{t('workflowTriggerWorkspaceHint')}</span>
           </Field>
         ) : null}
+
+        {node.type === 'manual-trigger'
+          ? (() => {
+              const schema = node.config.inputSchema ?? []
+              const setSchema = (next: WorkflowInputFieldV1[]): void =>
+                onChange({ ...node, config: { ...node.config, inputSchema: next } })
+              return (
+                <div className="flex flex-col gap-2 border-t border-ds-border pt-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[12px] font-medium text-ds-muted">{t('workflowInputSchema')}</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSchema([
+                          ...schema,
+                          {
+                            key: `field${schema.length + 1}`,
+                            label: '',
+                            type: 'text',
+                            required: false,
+                            options: [],
+                            defaultValue: '',
+                            description: ''
+                          }
+                        ])
+                      }
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11.5px] font-medium text-accent transition hover:bg-accent/10"
+                    >
+                      <Plus className="h-3 w-3" strokeWidth={2} />
+                      {t('workflowInputAddField')}
+                    </button>
+                  </div>
+                  {schema.length === 0 ? (
+                    <p className="text-[11px] leading-4 text-ds-faint">{t('workflowInputSchemaHint')}</p>
+                  ) : (
+                    schema.map((field, index) => {
+                      const update = (patch: Partial<WorkflowInputFieldV1>): void =>
+                        setSchema(schema.map((item, i) => (i === index ? { ...item, ...patch } : item)))
+                      return (
+                        <div key={index} className="flex flex-col gap-2 rounded-lg border border-ds-border p-2.5">
+                          <div className="flex items-center gap-2">
+                            <input
+                              className={INPUT_CLASS}
+                              value={field.key}
+                              placeholder={t('workflowInputKey')}
+                              onChange={(event) => update({ key: event.target.value })}
+                            />
+                            <select
+                              className={`${INPUT_CLASS} w-28 shrink-0`}
+                              value={field.type}
+                              onChange={(event) => update({ type: event.target.value as WorkflowInputFieldType })}
+                            >
+                              {WORKFLOW_INPUT_FIELD_TYPES.map((fieldType) => (
+                                <option key={fieldType} value={fieldType}>
+                                  {t(`workflowInputType_${fieldType}`)}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => setSchema(schema.filter((_, i) => i !== index))}
+                              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-ds-faint transition hover:bg-red-500/10 hover:text-red-600"
+                              aria-label={t('workflowInputRemoveField')}
+                            >
+                              <X className="h-3.5 w-3.5" strokeWidth={2} />
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              className={INPUT_CLASS}
+                              value={field.label}
+                              placeholder={t('workflowInputLabel')}
+                              onChange={(event) => update({ label: event.target.value })}
+                            />
+                            <input
+                              className={INPUT_CLASS}
+                              value={field.defaultValue}
+                              placeholder={t('workflowInputDefault')}
+                              onChange={(event) => update({ defaultValue: event.target.value })}
+                            />
+                          </div>
+                          {field.type === 'select' ? (
+                            <input
+                              className={INPUT_CLASS}
+                              value={field.options.join(', ')}
+                              placeholder={t('workflowModuleFieldOptions')}
+                              onChange={(event) =>
+                                update({
+                                  options: event.target.value
+                                    .split(',')
+                                    .map((option) => option.trim())
+                                    .filter((option) => option.length > 0)
+                                })
+                              }
+                            />
+                          ) : null}
+                          <label className="flex items-center gap-2 text-[12px] text-ds-muted">
+                            <input
+                              type="checkbox"
+                              checked={field.required}
+                              onChange={(event) => update({ required: event.target.checked })}
+                            />
+                            {t('workflowInputRequired')}
+                          </label>
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+              )
+            })()
+          : null}
 
         {node.type === 'manual-trigger' && workflowName ? (
           <div className="flex flex-col gap-1.5 border-t border-ds-border pt-3">

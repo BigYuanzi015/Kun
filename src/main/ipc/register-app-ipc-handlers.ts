@@ -515,11 +515,12 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     }
   )
 
-  ipcMain.handle('workflow:run', async (_, workflowId: unknown): Promise<WorkflowRunResult> => {
+  ipcMain.handle('workflow:run', async (_, workflowId: unknown, input?: unknown): Promise<WorkflowRunResult> => {
     const normalizedId = parseIpcPayload('workflow:run', streamIdSchema, workflowId)
     const workflowRuntime = getWorkflowRuntime()
     if (!workflowRuntime) return { ok: false, message: 'Workflow runtime is not initialized.' }
-    return workflowRuntime.runWorkflow(normalizedId)
+    // input is validated/coerced against the trigger's input schema inside runWorkflow.
+    return workflowRuntime.runWorkflow(normalizedId, input)
   })
 
   ipcMain.handle('workflow:stop', async (_, workflowId: unknown): Promise<WorkflowRunResult> => {

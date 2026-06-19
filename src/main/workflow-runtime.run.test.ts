@@ -893,4 +893,66 @@ describe('WorkflowRuntime end-to-end execution', () => {
     expect((JSON.parse(result.output) as { greeting: string }).greeting).toBe('hi')
     runtime.stop()
   }, 15_000)
+
+  it('coerces typed manual-trigger inputs onto the run payload', async () => {
+    const store = createStore(
+      settingsWithWorkflows([
+        buildWorkflow({
+          id: 'wf-in',
+          name: 'Inputs',
+          enabled: true,
+          nodes: [
+            {
+              id: 'm',
+              type: 'manual-trigger',
+              config: {
+                inputSchema: [
+                  { key: 'n', label: 'N', type: 'number', required: false, options: [], defaultValue: '', description: '' }
+                ]
+              }
+            },
+            { id: 'o', type: 'output', config: { mode: 'auto', textTemplate: '', jsonPath: '' } }
+          ],
+          connections: [{ id: 'e1', source: 'm', sourceHandle: 'out', target: 'o', targetHandle: 'in' }]
+        })
+      ])
+    )
+    const runtime = createWorkflowRuntime({ store: store as never, runtimeRequest: vi.fn() as never, logError: vi.fn() })
+    const result = await runtime.runWorkflowByRef('Inputs', { n: '5' })
+    expect(result.ok).toBe(true)
+    expect((JSON.parse(result.output) as { n: number }).n).toBe(5)
+    runtime.stop()
+  }, 15_000)
+
+  it('resolves {{$nodes.<id>.json.path}} cross-node references', async () => {
+    const store = createStore(
+      settingsWithWorkflows([
+        buildWorkflow({
+          id: 'wf-ref',
+          name: 'Ref',
+          enabled: true,
+          nodes: [
+            { id: 'm', type: 'manual-trigger', config: {} },
+            { id: 's', type: 'set-fields', config: { fields: [{ key: 'a', value: 'hi' }], keepIncoming: false } },
+            { id: 't', type: 'template', config: { template: 'got {{$nodes.s.json.a}}', outputMode: 'text' } }
+          ],
+          connections: [
+            { id: 'e1', source: 'm', sourceHandle: 'out', target: 's', targetHandle: 'in' },
+            { id: 'e2', source: 's', sourceHandle: 'out', target: 't', targetHandle: 'in' }
+          ]
+        })
+      ])
+    )
+    const runtime = createWorkflowRuntime({ store: store as never, runtimeRequest: vi.fn() as never, logError: vi.fn() })
+    const runId = requireOk(await runtime.runWorkflow('wf-ref'))
+    await waitFor(async () => {
+      const run = (await store.load()).workflow.workflows[0].runs.find((entry) => entry.id === runId)
+      return Boolean(run && run.status !== 'running')
+    }, 10_000)
+    const run = store.read().workflow.workflows[0].runs.find((entry) => entry.id === runId)!
+    expect(run.status).toBe('success')
+    const tpl = run.nodeResults.find((result) => result.nodeId === 't')!
+    expect((JSON.parse(tpl.outputJson) as { text: string }).text).toBe('got hi')
+    runtime.stop()
+  }, 15_000)
 })

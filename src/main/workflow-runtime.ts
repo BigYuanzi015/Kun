@@ -14,6 +14,7 @@ import type {
   WorkflowConnectionV1,
   WorkflowEnvVarV1,
   WorkflowHttpRequestConfigV1,
+  WorkflowInputFieldV1,
   WorkflowNodeRunResultV1,
   WorkflowNodeRunStatus,
   WorkflowNodeV1,
@@ -612,6 +613,60 @@ export function checkWorkflowCode(language: WorkflowCodeLanguage, code: string):
  * workflow-settings default, else the app workspace. Used as the default cwd
  * for AI / image / code nodes that don't set their own.
  */
+function coerceInputFieldValue(field: WorkflowInputFieldV1, raw: unknown): unknown {
+  const asString = typeof raw === 'string' ? raw : raw === undefined || raw === null ? '' : String(raw)
+  switch (field.type) {
+    case 'number':
+      return typeof raw === 'number' ? raw : asString.trim() === '' ? 0 : Number(asString) || 0
+    case 'boolean':
+      return typeof raw === 'boolean' ? raw : asString === 'true' || asString === '1'
+    case 'json':
+      if (raw && typeof raw === 'object') return raw
+      try {
+        return JSON.parse(asString)
+      } catch {
+        return asString
+      }
+    default:
+      return raw && typeof raw === 'object' ? raw : asString
+  }
+}
+
+/** Build the run's initial payload from the manual trigger's input schema (or pass input through verbatim). */
+function coerceInputToPayload(schema: WorkflowInputFieldV1[] | undefined, input: unknown): WorkflowPayload {
+  if (!schema || schema.length === 0) {
+    if (input === undefined || input === null) return { json: {}, text: '' }
+    if (typeof input === 'string') return { json: { text: input }, text: input }
+    return { json: input, text: safeJson(input) }
+  }
+  let src: Record<string, unknown> = {}
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    src = input as Record<string, unknown>
+  } else if (typeof input === 'string' && input.trim()) {
+    try {
+      const parsed = JSON.parse(input)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) src = parsed as Record<string, unknown>
+    } catch {
+      /* not a JSON object — fields fall back to defaults */
+    }
+  }
+  const json: Record<string, unknown> = {}
+  for (const field of schema) {
+    json[field.key] = coerceInputFieldValue(field, field.key in src ? src[field.key] : field.defaultValue)
+  }
+  return { json, text: safeJson(json) }
+}
+
+/** Returns the first required input key missing from `input`, or null if all present. */
+function missingRequiredInput(schema: WorkflowInputFieldV1[] | undefined, input: unknown): string | null {
+  if (!schema) return null
+  const src = input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>) : {}
+  for (const field of schema) {
+    if (field.required && !(field.key in src) && !field.defaultValue.trim()) return field.label || field.key
+  }
+  return null
+}
+
 /** Coerce a workflow's env vars into a {{$env.key}} lookup (secrets are plain values here). */
 function resolveEnv(env: WorkflowEnvVarV1[]): Record<string, unknown> {
   const out: Record<string, unknown> = {}
@@ -820,7 +875,17 @@ export class WorkflowRuntime {
     if (pathname === '/workflow/internal/list') {
       const workflows = settings.workflow.workflows
         .filter((workflow) => workflow.enabled && workflow.callableByAgent)
-        .map((workflow) => ({ id: workflow.id, name: workflow.name, description: summarizeWorkflowForAgent(workflow) }))
+        .map((workflow) => {
+          const manual = workflow.nodes.find((node) => node.type === 'manual-trigger')
+          const schema = manual?.type === 'manual-trigger' ? manual.config.inputSchema : undefined
+          const inputs = (schema ?? []).map((field) => ({
+            key: field.key,
+            type: field.type,
+            required: field.required,
+            description: field.description || field.label
+          }))
+          return { id: workflow.id, name: workflow.name, description: summarizeWorkflowForAgent(workflow), inputs }
+        })
       writeJson(res, 200, { ok: true, workflows })
       return
     }
@@ -896,13 +961,13 @@ export class WorkflowRuntime {
     if (!trigger) {
       return { ok: false, status: 'error', message: 'Workflow has no trigger node.', output: '', runId: '' }
     }
+    const inputSchema = trigger.type === 'manual-trigger' ? trigger.config.inputSchema : undefined
+    const missing = missingRequiredInput(inputSchema, input)
+    if (missing) {
+      return { ok: false, status: 'error', message: `Missing required input: ${missing}`, output: '', runId: '' }
+    }
     const runId = randomUUID()
-    const initialPayload: WorkflowPayload =
-      input === undefined || input === null
-        ? { json: {}, text: '' }
-        : typeof input === 'string'
-          ? { json: { text: input }, text: input }
-          : { json: input, text: safeJson(input) }
+    const initialPayload = coerceInputToPayload(inputSchema, input)
     const result = await this.runWorkflowInternal(workflow, trigger.id, 'agent', runId, initialPayload, workspaceOverride)
     const after = await this.deps.store.load()
     const run = after.workflow.workflows.find((item) => item.id === workflow.id)?.runs.find((entry) => entry.id === runId)
@@ -934,7 +999,7 @@ export class WorkflowRuntime {
     }
   }
 
-  async runWorkflow(workflowId: string): Promise<WorkflowRunResult> {
+  async runWorkflow(workflowId: string, input?: unknown): Promise<WorkflowRunResult> {
     const settings = await this.deps.store.load()
     const workflow = settings.workflow.workflows.find((item) => item.id === workflowId)
     if (!workflow) return { ok: false, message: 'Workflow not found.' }
@@ -944,9 +1009,13 @@ export class WorkflowRuntime {
       workflow.nodes.find((node) => node.type === 'schedule-trigger') ??
       workflow.nodes.find((node) => node.type === 'webhook-trigger')
     if (!trigger) return { ok: false, message: 'Workflow has no trigger node.' }
+    const inputSchema = trigger.type === 'manual-trigger' ? trigger.config.inputSchema : undefined
+    const missing = missingRequiredInput(inputSchema, input)
+    if (missing) return { ok: false, message: `Missing required input: ${missing}` }
     const runId = randomUUID()
+    const initialPayload = coerceInputToPayload(inputSchema, input)
     // Fire-and-poll: the UI watches status() for per-node progress.
-    void this.runWorkflowInternal(workflow, trigger.id, 'manual', runId)
+    void this.runWorkflowInternal(workflow, trigger.id, 'manual', runId, initialPayload)
     return { ok: true, runId, status: 'running', message: 'Started' }
   }
 

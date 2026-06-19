@@ -20,7 +20,7 @@ const api = {
   runScheduleTask: (taskId) =>
     ipcRenderer.invoke('schedule:task:run', taskId),
   getWorkflowStatus: () => ipcRenderer.invoke('workflow:status'),
-  runWorkflow: (workflowId) => ipcRenderer.invoke('workflow:run', workflowId),
+  runWorkflow: (workflowId, input) => ipcRenderer.invoke('workflow:run', workflowId, input),
   stopWorkflow: (workflowId) => ipcRenderer.invoke('workflow:stop', workflowId),
   runWorkflowNode: (workflowId, nodeId) =>
     ipcRenderer.invoke('workflow:node:run', { workflowId, nodeId }),

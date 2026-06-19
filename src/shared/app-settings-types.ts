@@ -617,6 +617,25 @@ export type WorkflowConditionOperator =
 
 export type WorkflowHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
+export const WORKFLOW_INPUT_FIELD_TYPES = ['text', 'paragraph', 'number', 'boolean', 'select', 'json'] as const
+export type WorkflowInputFieldType = (typeof WORKFLOW_INPUT_FIELD_TYPES)[number]
+
+/**
+ * One typed input the caller supplies when starting a workflow. Drives the
+ * "Run once" form, validates the /workflow/run + run_workflow input, and lifts
+ * each value onto the run's initial payload.json by `key`.
+ */
+export type WorkflowInputFieldV1 = {
+  key: string
+  label: string
+  type: WorkflowInputFieldType
+  required: boolean
+  /** Options for `select`. */
+  options: string[]
+  defaultValue: string
+  description: string
+}
+
 /**
  * Triggers carry the run's working directory. When a workflow fires from this
  * trigger, `workspaceRoot` is the default cwd for AI / image / code nodes
@@ -624,6 +643,8 @@ export type WorkflowHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
  */
 export type WorkflowManualTriggerConfigV1 = {
   workspaceRoot?: string
+  /** Typed inputs the caller provides when starting the workflow. */
+  inputSchema?: WorkflowInputFieldV1[]
 }
 
 export type WorkflowScheduleTriggerConfigV1 = {

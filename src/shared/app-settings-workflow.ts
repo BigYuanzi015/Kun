@@ -1,4 +1,5 @@
 import {
+  WORKFLOW_INPUT_FIELD_TYPES,
   WORKFLOW_MODULE_FIELD_TYPES,
   WORKFLOW_NODE_KINDS,
   type WorkflowConditionOperator,
@@ -6,6 +7,9 @@ import {
   type WorkflowCustomModuleV1,
   type WorkflowEnvVarV1,
   type WorkflowFieldV1,
+  type WorkflowInputFieldType,
+  type WorkflowInputFieldV1,
+  type WorkflowManualTriggerConfigV1,
   type WorkflowHttpHeaderV1,
   type WorkflowHttpMethod,
   type WorkflowModuleFieldType,
@@ -168,6 +172,30 @@ function normalizeNodeErrorFields(n: Record<string, unknown>): {
   return out
 }
 
+export function normalizeWorkflowInputSchema(value: unknown): WorkflowInputFieldV1[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry): WorkflowInputFieldV1 => {
+      const f = record(entry)
+      const type = f.type
+      return {
+        key: asTrimmed(f.key),
+        label: asTrimmed(f.label),
+        type: WORKFLOW_INPUT_FIELD_TYPES.includes(type as WorkflowInputFieldType)
+          ? (type as WorkflowInputFieldType)
+          : 'text',
+        required: normalizeBoolean(f.required, false),
+        options: Array.isArray(f.options)
+          ? f.options.map((option) => asTrimmed(option)).filter((option) => option.length > 0).slice(0, 50)
+          : [],
+        defaultValue: asText(f.defaultValue),
+        description: asText(f.description)
+      }
+    })
+    .filter((field) => field.key.length > 0)
+    .slice(0, 50)
+}
+
 function normalizeEnvVars(value: unknown): WorkflowEnvVarV1[] {
   if (!Array.isArray(value)) return []
   return value
@@ -198,8 +226,12 @@ export function normalizeWorkflowNode(value: unknown, index: number): WorkflowNo
   }
   const config = record(n.config)
   switch (kind) {
-    case 'manual-trigger':
-      return { ...base, type: 'manual-trigger', config: { workspaceRoot: asTrimmed(config.workspaceRoot) } }
+    case 'manual-trigger': {
+      const manualConfig: WorkflowManualTriggerConfigV1 = { workspaceRoot: asTrimmed(config.workspaceRoot) }
+      const inputSchema = normalizeWorkflowInputSchema(config.inputSchema)
+      if (inputSchema.length) manualConfig.inputSchema = inputSchema
+      return { ...base, type: 'manual-trigger', config: manualConfig }
+    }
     case 'schedule-trigger':
       return {
         ...base,
