@@ -496,9 +496,10 @@ export function Workbench(): ReactElement {
   }, [composerModelGroups, writeAssistantModel, writeAssistantProviderId])
   const stageInsetClass = 'ds-stage-inset'
   const keyboardShortcuts = useKeyboardShortcutSettings()
+  const shortcutPlatform = typeof window === 'undefined' ? undefined : window.kunGui?.platform
   const keyboardShortcutBindings = useMemo(
-    () => resolveKeyboardShortcutBindings(keyboardShortcuts),
-    [keyboardShortcuts]
+    () => resolveKeyboardShortcutBindings(keyboardShortcuts, shortcutPlatform),
+    [keyboardShortcuts, shortcutPlatform]
   )
 
   const draftByThread = useRef<Record<string, string>>({})
@@ -707,6 +708,10 @@ export function Workbench(): ReactElement {
         void chooseWorkspace()
         return
       }
+      if (commandId === 'toggle-terminal') {
+        toggleTerminal()
+        return
+      }
       if (commandId === 'settings') {
         openSettings()
         return
@@ -726,6 +731,7 @@ export function Workbench(): ReactElement {
     mode,
     openSettings,
     setMode,
+    toggleTerminal,
     useWorktreePool
   ])
   const showDevPreviewCard =
@@ -2665,7 +2671,7 @@ export function Workbench(): ReactElement {
                 />
                 <Suspense fallback={<div className="ds-surface-strong h-full w-full" />}>
                   <TerminalPanel
-                    workspaceRoot={workspaceRoot}
+                    workspaceRoot={fileTreeWorkspaceRoot}
                     height={terminalHeight}
                     className="w-full"
                     onCollapse={toggleTerminal}
