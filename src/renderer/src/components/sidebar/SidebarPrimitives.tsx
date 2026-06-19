@@ -55,7 +55,7 @@ export function SidebarFrame({
         className
       )}
     >
-      <div className="ds-sidebar-titlebar-spacer shrink-0 pb-5 pt-3">
+      <div className="ds-sidebar-titlebar-spacer shrink-0 pb-2 pt-2">
         <div className="ds-sidebar-titlebar-row flex min-h-[34px] items-start justify-between">
           <div aria-hidden className="ds-titlebar-safe-block min-w-[86px]" />
           {onCollapse ? (
