@@ -247,6 +247,43 @@ describe('reclaimKunPort', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()))
     }
   })
+
+  it('does not kill the currently managed Kun child while resolving an occupied port', async () => {
+    const probe = createServer()
+    await new Promise<void>((resolve, reject) => {
+      probe.once('error', reject)
+      probe.listen(0, '127.0.0.1', () => resolve())
+    })
+    const preferredPort = (probe.address() as AddressInfo).port
+    await new Promise<void>((resolve) => probe.close(() => resolve()))
+
+    const script = writeScript(
+      'serve-entry-current-child.js',
+      [
+        "const http = require('node:http')",
+        `const port = ${preferredPort}`,
+        "const server = http.createServer((req, res) => {",
+        "  res.setHeader('content-type', 'application/json')",
+        "  res.end(JSON.stringify({ service: 'kun', mode: 'serve', status: 'ok' }))",
+        "})",
+        "server.listen(port, '127.0.0.1', () => {",
+        "  process.stdout.write('KUN_READY ' + JSON.stringify({ service: 'kun', mode: 'serve', port }) + '\\n')",
+        "})",
+        'setInterval(() => {}, 1_000)'
+      ].join('\n')
+    )
+    const module = await import('./kun-process')
+    const settings = createSettings(script)
+    settings.agents.kun.port = preferredPort
+
+    await module.startKunChild(settings)
+    const resolved = await module.resolveAvailableKunPort(preferredPort)
+
+    expect(resolved.changed).toBe(true)
+    expect(resolved.port).not.toBe(preferredPort)
+    expect(module.isKunChildRunning()).toBe(true)
+    expect(await readKunLog()).not.toContain(`killing stale kun process holding port ${preferredPort}`)
+  })
 })
 
 describe('resolveKunDataDir', () => {
@@ -703,54 +740,58 @@ describe('syncGuiManagedKunConfig', () => {
     }), 'utf8')
     const module = await import('./kun-process')
 
-    await module.syncGuiManagedKunConfig(tempRoot, {
-      ...defaultKunRuntimeSettings(),
-      storage: {
-        backend: 'hybrid',
-        sqlitePath: '/tmp/kun-index.sqlite3'
-      },
-      contextCompaction: {
-        defaultSoftThreshold: 32000,
-        defaultHardThreshold: 64000,
-        summaryMode: 'model',
-        summaryTimeoutMs: 30000,
-        summaryMaxTokens: 1600,
-        summaryInputMaxBytes: 131072
-      },
-      runtimeTuning: {
-        streamIdleTimeoutMs: 120000,
-        toolStorm: {
-          enabled: false,
-          windowSize: 12,
-          threshold: 4
+    await module.syncGuiManagedKunConfig(
+      tempRoot,
+      {
+        ...defaultKunRuntimeSettings(),
+        storage: {
+          backend: 'hybrid',
+          sqlitePath: '/tmp/kun-index.sqlite3'
         },
-        toolArgumentRepair: {
-          maxStringBytes: 262144
+        contextCompaction: {
+          defaultSoftThreshold: 32000,
+          defaultHardThreshold: 64000,
+          summaryMode: 'model',
+          summaryTimeoutMs: 30000,
+          summaryMaxTokens: 1600,
+          summaryInputMaxBytes: 131072
+        },
+        runtimeTuning: {
+          streamIdleTimeoutMs: 120000,
+          toolStorm: {
+            enabled: false,
+            windowSize: 12,
+            threshold: 4
+          },
+          toolArgumentRepair: {
+            maxStringBytes: 262144
+          }
+        },
+        mcpSearch: {
+          enabled: true,
+          mode: 'search',
+          autoThresholdToolCount: 12,
+          topKDefault: 4,
+          topKMax: 9,
+          minScore: 0.2
+        },
+        tokenEconomy: {
+          enabled: true,
+          compressToolDescriptions: false,
+          compressToolResults: true,
+          conciseResponses: false,
+          historyHygiene: {
+            maxToolResultLines: 100,
+            maxToolResultBytes: 16384,
+            maxToolResultTokens: 4000,
+            maxToolArgumentStringBytes: 4096,
+            maxToolArgumentStringTokens: 1000,
+            maxArrayItems: 40
+          }
         }
       },
-      mcpSearch: {
-        enabled: true,
-        mode: 'search',
-        autoThresholdToolCount: 12,
-        topKDefault: 4,
-        topKMax: 9,
-        minScore: 0.2
-      },
-      tokenEconomy: {
-        enabled: true,
-        compressToolDescriptions: false,
-        compressToolResults: true,
-        conciseResponses: false,
-        historyHygiene: {
-          maxToolResultLines: 100,
-          maxToolResultBytes: 16384,
-          maxToolResultTokens: 4000,
-          maxToolArgumentStringBytes: 4096,
-          maxToolArgumentStringTokens: 1000,
-          maxArrayItems: 40
-        }
-      }
-    })
+      { mcpConfigPath: join(tempRoot, 'missing-mcp.json') }
+    )
 
     const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as any
     expect(KunConfigSchema.safeParse(parsed).success).toBe(true)
