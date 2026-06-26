@@ -178,6 +178,12 @@ export type ModelProviderProfileV1 = {
   apiKey: string
   baseUrl: string
   endpointFormat: ModelEndpointFormat
+  /**
+   * Transport kind. `agent-sdk` delegates whole turns to the embedded Claude
+   * Agent SDK (Claude Pro/Max subscription); `apiKey` then carries the
+   * CLAUDE_CODE_OAUTH_TOKEN (empty => host Claude Code login). Absent = http.
+   */
+  kind?: 'http' | 'agent-sdk'
   models: string[]
   modelProfiles: Record<string, ModelProviderModelProfileV1>
   image?: ModelProviderImageCapabilityV1

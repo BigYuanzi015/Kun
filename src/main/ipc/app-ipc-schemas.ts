@@ -286,6 +286,7 @@ const modelProviderPatchSchema = z.object({
     apiKey: z.string().max(MAX_BODY_BYTES).optional(),
     baseUrl: z.string().trim().max(MAX_URL_LENGTH).optional(),
     endpointFormat: modelEndpointFormatSchema.optional(),
+    kind: z.enum(['http', 'agent-sdk']).optional(),
     // Some third-party aggregators (litellm, oneapi, …) advertise 500+ chat
     // models in a single /v1/models response. The previous 200/50 caps caused
     // settings:set to silently fail with no toast (#397). Raised to leave

@@ -903,6 +903,7 @@ function normalizeModelProviderProfile(
     apiKey: typeof input?.apiKey === 'string' ? input.apiKey.trim() : '',
     baseUrl,
     endpointFormat: normalizeModelEndpointFormat(input?.endpointFormat),
+    ...(input?.kind === 'agent-sdk' ? { kind: 'agent-sdk' as const } : {}),
     models,
     modelProfiles,
     ...(image ? { image } : {}),

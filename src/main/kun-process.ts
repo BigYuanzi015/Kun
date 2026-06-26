@@ -846,6 +846,7 @@ function providersConfigForRuntime(settings: AppSettingsV1): Record<string, Reco
     out[id] = {
       apiKey: provider.apiKey?.trim() ?? '',
       baseUrl,
+      ...(provider.kind ? { kind: provider.kind } : {}),
       ...(provider.endpointFormat ? { endpointFormat: provider.endpointFormat } : {}),
       ...(proxyUrl ? { modelProxyUrl: proxyUrl } : {})
     }
