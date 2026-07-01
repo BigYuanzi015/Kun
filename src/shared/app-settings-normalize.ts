@@ -116,7 +116,10 @@ export function normalizeAppSettings(settings: AppSettingsV1): AppSettingsV1 {
       )
     },
     codePromptPrefix: typeof maybeSettings.codePromptPrefix === 'string' ? maybeSettings.codePromptPrefix : '',
-    disabledSkillIds: normalizeDisabledSkillIds(maybeSettings.disabledSkillIds)
+    disabledSkillIds: normalizeDisabledSkillIds(maybeSettings.disabledSkillIds),
+    installedPluginIds: Array.isArray(maybeSettings.installedPluginIds)
+      ? [...new Set(maybeSettings.installedPluginIds.filter((id): id is string => typeof id === 'string'))]
+      : []
   }
 }
 

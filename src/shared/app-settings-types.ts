@@ -1783,6 +1783,11 @@ export type AppSettingsV1 = {
   codePromptPrefix: string
   /** User-disabled skill IDs. Disabled skills are hidden from command surfaces. */
   disabledSkillIds: string[]
+  /**
+   * Installed Claude Code plugin IDs, persisted for the plugin marketplace.
+   * Optional for migration — normalizers always populate it.
+   */
+  installedPluginIds?: string[]
 }
 
 export type AppSettingsPatch = Partial<

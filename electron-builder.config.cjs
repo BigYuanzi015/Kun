@@ -190,7 +190,10 @@ module.exports = {
     // the desktop render crisp icons at small sizes (#222). Regenerate with:
     // npx --yes png2icons src/asset/img/kun_mac.png build/icon -icowe -bc
     icon: './build/icon.ico',
-    target: [{ target: 'nsis', arch: ['x64'] }]
+    target: [{ target: 'nsis', arch: ['x64'] }],
+    // 跳过签名以避免 winCodeSign 解压符号链接失败导致构建中断
+    forceCodeSigning: false,
+    signAndEditExecutable: false,
   },
   nsis: {
     oneClick: false,

@@ -36,7 +36,7 @@ import {
 } from './plugin-marketplace-runtime'
 import { SidebarTitlebarToggleButton } from './sidebar/SidebarPrimitives'
 
-type PluginKind = 'mcp' | 'skill'
+type PluginKind = 'mcp' | 'skill' | 'plugin'
 type PluginFilter = 'all' | 'recommended' | 'installed'
 type NoticeTone = 'success' | 'error' | 'info'
 
@@ -793,6 +793,16 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
   const [skillRootId, setSkillRootId] = useState<SkillRootId>(() => loadPreferredSkillRootId())
   const [mcpConfigText, setMcpConfigText] = useState('')
   const [mcpLoaded, setMcpLoaded] = useState(false)
+  const [pluginList, setPluginList] = useState<Array<{ id: string; name: string; version: string; description?: string; author?: string; commandCount: number; skillCount: number }>>([])
+  const [pluginListLoaded, setPluginListLoaded] = useState(false)
+  const [pluginInstallBusy, setPluginInstallBusy] = useState(false)
+  const [pluginSearch, setPluginSearch] = useState('')
+  const [marketplacePlugins, setMarketplacePlugins] = useState<Array<{ name: string; version: string; description?: string; author?: string; homepage?: string; installName: string }>>([])
+  const [marketplaceLoading, setMarketplaceLoading] = useState(false)
+  const [marketplaceError, setMarketplaceError] = useState('')
+  const [showCustomInstall, setShowCustomInstall] = useState(false)
+  const [githubUrl, setGithubUrl] = useState('')
+  const [npmInstallName, setNpmInstallName] = useState('')
   const [runtimeInfo, setRuntimeInfo] = useState<CoreRuntimeInfoJson | null>(null)
   const [toolDiagnostics, setToolDiagnostics] = useState<CoreRuntimeToolDiagnosticsJson | null>(null)
   const [runtimeOverlayLoading, setRuntimeOverlayLoading] = useState(false)
@@ -943,6 +953,111 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
     }
   }, [activeKind])
 
+  // 加载已安装的 Claude Code 插件
+  useEffect(() => {
+    if (activeKind !== 'plugin' || pluginListLoaded) return
+    let cancelled = false
+    void Promise.resolve()
+      .then(async () => {
+        const result = await window.kunGui.listClaudePlugins()
+        if (cancelled) return
+        setPluginList(result.plugins.map((p) => ({
+          id: p.id,
+          name: p.name,
+          version: p.version,
+          description: p.description,
+          author: p.author,
+          commandCount: p.commandCount,
+          skillCount: p.skillCount
+        })))
+        setPluginListLoaded(true)
+      })
+      .catch(() => {
+        if (cancelled) setPluginListLoaded(true)
+      })
+    return () => { cancelled = true }
+  }, [activeKind, pluginListLoaded])
+
+  // 刷新插件列表
+  const refreshPluginList = useCallback(() => {
+    setPluginListLoaded(false)
+  }, [])
+
+  // 加载 marketplace
+  useEffect(() => {
+    if (activeKind !== 'plugin' || marketplaceLoading) return
+    let cancelled = false
+    setMarketplaceLoading(true)
+    setMarketplaceError('')
+    void window.kunGui.fetchClaudePluginMarketplace().then((result) => {
+      if (cancelled) return
+      setMarketplacePlugins(result.plugins)
+      setMarketplaceLoading(false)
+      if (result.plugins.length === 0) {
+        setMarketplaceError('npm registry 无结果,仅支持从 GitHub 或本地安装')
+      }
+    }).catch((e) => {
+      if (cancelled) return
+      setMarketplaceError(e instanceof Error ? e.message : String(e))
+      setMarketplaceLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [activeKind])
+
+  const installFromNpm = async (installName: string): Promise<void> => {
+    setPluginInstallBusy(true)
+    setNotice(null)
+    try {
+      const result = await window.kunGui.installClaudePluginFromNpm(installName)
+      if (!result.ok) {
+        setNotice({ tone: 'error', message: result.errors.join('\n') })
+        return
+      }
+      setNotice({ tone: 'success', message: `已安装 ${result.plugin.name} v${result.plugin.version}` })
+      refreshPluginList()
+    } catch (e) {
+      setNotice({ tone: 'error', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setPluginInstallBusy(false)
+    }
+  }
+
+  const installFromGitHub = async (repo: string): Promise<void> => {
+    setPluginInstallBusy(true)
+    setNotice(null)
+    try {
+      const result = await window.kunGui.installClaudePluginFromGitHub(repo)
+      if (!result.ok) {
+        setNotice({ tone: 'error', message: result.errors.join('\n') })
+        return
+      }
+      setNotice({ tone: 'success', message: `已安装 ${result.plugin.name} v${result.plugin.version}` })
+      refreshPluginList()
+    } catch (e) {
+      setNotice({ tone: 'error', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setPluginInstallBusy(false)
+    }
+  }
+
+  const installedPluginIds = useMemo(() => new Set(pluginList.map((p) => p.id)), [pluginList])
+
+  const filteredMarketplace = useMemo(() => {
+    const q = pluginSearch.trim().toLowerCase()
+    const all = marketplacePlugins.filter((mp) => !installedPluginIds.has(mp.installName))
+    if (!q) return all
+    return all.filter((mp) =>
+      mp.name.toLowerCase().includes(q) ||
+      mp.installName.toLowerCase().includes(q) ||
+      (mp.description ?? '').toLowerCase().includes(q) ||
+      (mp.author ?? '').toLowerCase().includes(q)
+    )
+  }, [marketplacePlugins, installedPluginIds, pluginSearch])
+
+  const openPluginInstallDir = useCallback(() => {
+    void window.kunGui.openClaudePluginDir()
+  }, [])
+
   useEffect(() => {
     setNotice(null)
     setCustomOpen(false)
@@ -1054,6 +1169,43 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
   const installMcpItem = async (item: MarketplaceItem): Promise<void> => {
     if (!item.mcpConfig) return
     await appendMcpConfig(item.id, item.mcpConfig(workspaceRoot))
+  }
+
+  const installPluginItem = async (_item: MarketplaceItem): Promise<void> => {
+    setPluginInstallBusy(true)
+    setNotice(null)
+    try {
+      const result = await window.kunGui.installClaudePlugin()
+      if ('canceled' in result && result.canceled) return
+      if (!result.ok) {
+        setNotice({ tone: 'error', message: result.errors.join('\n') })
+        return
+      }
+      setNotice({ tone: 'success', message: t('pluginClaudeInstalled', { name: result.plugin.name }) })
+      refreshPluginList()
+    } catch (e) {
+      setNotice({ tone: 'error', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setPluginInstallBusy(false)
+    }
+  }
+
+  const uninstallPluginItem = async (id: string): Promise<void> => {
+    setPluginInstallBusy(true)
+    setNotice(null)
+    try {
+      const result = await window.kunGui.uninstallClaudePlugin(id)
+      if (!result.ok) {
+        setNotice({ tone: 'error', message: result.error })
+        return
+      }
+      setNotice({ tone: 'success', message: t('pluginClaudeUninstalled') })
+      refreshPluginList()
+    } catch (e) {
+      setNotice({ tone: 'error', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setPluginInstallBusy(false)
+    }
   }
 
   const addItem = async (item: MarketplaceItem): Promise<void> => {
@@ -1287,49 +1439,68 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
             <TabButton active={activeKind === 'skill'} tone="skill" onClick={() => setActiveKind('skill')}>
               {t('pluginTabSkill')}
             </TabButton>
+            <TabButton active={activeKind === 'plugin'} tone="skill" onClick={() => setActiveKind('plugin')}>
+              {t('pluginTabPlugin') /* 使用已有的或回退到 'Plugins' */}
+            </TabButton>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void openManageTarget()}
-              className="inline-flex items-center gap-2 rounded-xl bg-ds-subtle px-3 py-2 text-[13px] font-semibold text-ds-ink transition hover:bg-ds-hover"
-            >
-              <Settings className="h-4 w-4" strokeWidth={1.75} />
-              {t('pluginManage')}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setCustomOpen((value) => !value)
-                setGithubImportOpen(false)
-              }}
-              className="inline-flex items-center gap-2 rounded-xl bg-ds-userbubble px-3 py-2 text-[13px] font-semibold text-ds-userbubbleFg shadow-sm transition hover:opacity-90"
-            >
-              <Plus className="h-4 w-4" strokeWidth={1.9} />
-              {t('pluginCreate')}
-            </button>
-            {activeKind === 'skill' ? (
+            {activeKind === 'plugin' ? (
               <button
                 type="button"
-                onClick={() => {
-                  setGithubImportOpen((value) => !value)
-                  setCustomOpen(false)
-                }}
-                className="inline-flex items-center gap-2 rounded-xl border border-ds-border bg-ds-card px-3 py-2 text-[13px] font-semibold text-ds-ink shadow-sm transition hover:bg-ds-hover"
+                onClick={() => void openPluginInstallDir()}
+                className="inline-flex items-center gap-2 rounded-xl bg-ds-subtle px-3 py-2 text-[13px] font-semibold text-ds-ink transition hover:bg-ds-hover"
               >
-                <Download className="h-4 w-4" strokeWidth={1.9} />
-                {t('pluginGithubImport')}
+                <Settings className="h-4 w-4" strokeWidth={1.75} />
+                {t('pluginManage')}
               </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void openManageTarget()}
+                className="inline-flex items-center gap-2 rounded-xl bg-ds-subtle px-3 py-2 text-[13px] font-semibold text-ds-ink transition hover:bg-ds-hover"
+              >
+                <Settings className="h-4 w-4" strokeWidth={1.75} />
+                {t('pluginManage')}
+              </button>
+            )}
+            {activeKind !== 'plugin' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomOpen((value) => !value)
+                    setGithubImportOpen(false)
+                  }}
+                  className="inline-flex items-center gap-2 rounded-xl bg-ds-userbubble px-3 py-2 text-[13px] font-semibold text-ds-userbubbleFg shadow-sm transition hover:opacity-90"
+                >
+                  <Plus className="h-4 w-4" strokeWidth={1.9} />
+                  {t('pluginCreate')}
+                </button>
+                {activeKind === 'skill' ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGithubImportOpen((value) => !value)
+                      setCustomOpen(false)
+                    }}
+                    className="inline-flex items-center gap-2 rounded-xl border border-ds-border bg-ds-card px-3 py-2 text-[13px] font-semibold text-ds-ink shadow-sm transition hover:bg-ds-hover"
+                  >
+                    <Download className="h-4 w-4" strokeWidth={1.9} />
+                    {t('pluginGithubImport')}
+                  </button>
+                ) : null}
+              </>
             ) : null}
           </div>
         </div>
 
         <div className="mt-9 flex flex-col items-center text-center">
           <h1 className="text-[32px] font-semibold text-ds-ink md:text-[40px]">
-            {activeKind === 'mcp' ? t('pluginMcpTitle') : t('pluginSkillTitle')}
+            {activeKind === 'mcp' ? t('pluginMcpTitle') : activeKind === 'plugin' ? t('pluginMarketplace') : t('pluginSkillTitle')}
           </h1>
         </div>
 
+        {activeKind !== 'plugin' ? (
         <div className="mt-9 flex flex-col gap-3 md:flex-row md:items-center">
           <label className="relative min-w-0 flex-1">
             <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ds-faint" />
@@ -1353,6 +1524,7 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
             <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ds-faint" />
           </label>
         </div>
+        ) : null}
 
         {activeKind === 'skill' ? (
           <div className="mt-4 flex flex-col gap-2 md:flex-row md:items-center">
@@ -1442,6 +1614,167 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
             onUrlChange={setGithubImportUrl}
             onImport={() => void addFromGitHub()}
           />
+        ) : null}
+
+        {activeKind === 'plugin' ? (
+          <div className="mt-4 space-y-6">
+            {/* 搜索 + 操作栏 */}
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ds-faint" />
+                <input
+                  value={pluginSearch}
+                  onChange={(e) => setPluginSearch(e.target.value)}
+                  className="h-11 w-full rounded-2xl border border-ds-border bg-ds-card pl-11 pr-4 text-[15px] text-ds-ink shadow-sm outline-none transition focus:border-accent/40 focus:ring-1 focus:ring-accent/30"
+                  placeholder={t('pluginSearchPlaceholder')}
+                />
+              </label>
+              <button
+                type="button"
+                disabled={pluginInstallBusy}
+                onClick={() => void installPluginItem(null as unknown as MarketplaceItem)}
+                className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-ds-subtle px-3 py-2 text-[13px] font-semibold text-ds-ink transition hover:bg-ds-hover disabled:opacity-50"
+              >
+                <FolderOpen className="h-4 w-4" strokeWidth={2} />
+                {t('pluginInstallFromFolder')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCustomInstall((v) => !v)}
+                className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-ds-border bg-ds-card px-3 py-2 text-[13px] font-semibold text-ds-ink shadow-sm transition hover:bg-ds-hover"
+              >
+                <Plus className="h-4 w-4" strokeWidth={1.9} />
+                {t('pluginCustomInstallTitle')}
+              </button>
+            </div>
+
+            {/* 自定义安装面板 (可折叠) */}
+            {showCustomInstall ? (
+              <div className="rounded-2xl border border-ds-border bg-ds-canvas p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0 rounded-md bg-ds-subtle px-2 py-0.5 text-[11px] font-semibold text-ds-muted">GitHub</span>
+                  <input
+                    type="text"
+                    value={githubUrl}
+                    onChange={(e) => setGithubUrl(e.target.value)}
+                    placeholder="github:user/repo 或 https://gitee.com/user/repo"
+                    className="min-w-0 flex-1 rounded-xl border border-ds-border bg-ds-card px-3 py-2 text-[13px] text-ds-ink placeholder:text-ds-muted"
+                  />
+                  <button
+                    type="button"
+                    disabled={!githubUrl.trim() || pluginInstallBusy}
+                    onClick={() => void installFromGitHub(githubUrl.trim())}
+                    className="inline-flex shrink-0 items-center rounded-xl bg-ds-userbubble px-3 py-1.5 text-[12px] font-semibold text-ds-userbubbleFg shadow-sm transition hover:opacity-90 disabled:opacity-40"
+                  >
+                    {t('pluginInstall')}
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0 rounded-md bg-ds-subtle px-2 py-0.5 text-[11px] font-semibold text-ds-muted">npm</span>
+                  <input
+                    type="text"
+                    value={npmInstallName}
+                    onChange={(e) => setNpmInstallName(e.target.value)}
+                    placeholder="@scope/pkg-name"
+                    className="min-w-0 flex-1 rounded-xl border border-ds-border bg-ds-card px-3 py-2 text-[13px] text-ds-ink placeholder:text-ds-muted"
+                  />
+                  <button
+                    type="button"
+                    disabled={!npmInstallName.trim() || pluginInstallBusy}
+                    onClick={() => void installFromNpm(npmInstallName.trim())}
+                    className="inline-flex shrink-0 items-center rounded-xl bg-ds-userbubble px-3 py-1.5 text-[12px] font-semibold text-ds-userbubbleFg shadow-sm transition hover:opacity-90 disabled:opacity-40"
+                  >
+                    {t('pluginInstall')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {/* Marketplace: 可一直浏览的在线列表 */}
+            <section>
+              <div className="flex items-center justify-between border-b border-ds-border-muted pb-3">
+                <h2 className="text-[20px] font-semibold text-ds-ink">{t('pluginMarketplace')}</h2>
+                <span className="text-[13px] text-ds-muted">{filteredMarketplace.length} {t('pluginAvailable')}</span>
+              </div>
+
+              {marketplaceLoading ? (
+                <div className="flex items-center gap-2 py-10 text-[14px] text-ds-muted">
+                  <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />
+                  {t('pluginMarketplaceLoading')}
+                </div>
+              ) : filteredMarketplace.length > 0 ? (
+                <div className="grid gap-x-14 md:grid-cols-2">
+                  {filteredMarketplace.map((mp) => (
+                    <div key={mp.installName} className="flex min-h-[72px] items-center gap-4 border-b border-ds-border-muted py-4">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-[15px] font-semibold text-ds-ink">{mp.name}</span>
+                          {mp.version ? (
+                            <span className="shrink-0 rounded-md bg-ds-skill-soft px-1.5 py-0.5 text-[10px] font-semibold text-ds-skill">v{mp.version}</span>
+                          ) : null}
+                        </div>
+                        {mp.description ? (
+                          <p className="mt-0.5 line-clamp-2 text-[13px] leading-5 text-ds-muted">{mp.description}</p>
+                        ) : null}
+                        <p className="mt-0.5 text-[11px] text-ds-faint font-mono">{mp.installName}{mp.author ? `  ·  ${mp.author}` : ''}</p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={pluginInstallBusy}
+                        onClick={() => void installFromNpm(mp.installName)}
+                        className="inline-flex h-8 shrink-0 items-center rounded-lg bg-ds-userbubble px-3 text-[12px] font-semibold text-ds-userbubbleFg shadow-sm transition hover:opacity-90 disabled:opacity-40"
+                      >
+                        {pluginInstallBusy ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} /> : t('pluginInstall')}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : !marketplaceLoading && marketplacePlugins.length > 0 ? (
+                <p className="py-10 text-center text-[14px] text-ds-muted">{t('pluginSearchNoResults')}</p>
+              ) : !marketplaceLoading && marketplaceError ? (
+                <p className="py-10 text-center text-[14px] text-ds-warning">{marketplaceError}</p>
+              ) : null}
+            </section>
+
+            {/* 已安装插件 */}
+            <section>
+              <h2 className="border-b border-ds-border-muted pb-3 text-[20px] font-semibold text-ds-ink">{t('pluginInstalledClaudePlugins')}</h2>
+              {pluginList.length === 0 ? (
+                <div className="py-8 text-[14px] text-ds-faint">{t('pluginClaudeEmpty')}</div>
+              ) : (
+                <div className="grid gap-x-14 md:grid-cols-2">
+                  {pluginList.map((plugin) => (
+                    <div key={plugin.id} className="flex min-h-[92px] items-center gap-5 border-b border-ds-border-muted py-5">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-[17px] font-semibold text-ds-ink">{plugin.name}</span>
+                          <span className="shrink-0 rounded-md bg-ds-skill-soft px-2 py-0.5 text-[11px] font-semibold text-ds-skill">v{plugin.version}</span>
+                        </div>
+                        {plugin.description ? (
+                          <p className="mt-1 line-clamp-2 text-[14px] leading-5 text-ds-muted">{plugin.description}</p>
+                        ) : null}
+                        {plugin.author ? (
+                          <p className="mt-0.5 text-[12px] text-ds-faint">{plugin.author}</p>
+                        ) : null}
+                        <p className="mt-1 text-[12px] text-ds-faint">
+                          {plugin.commandCount > 0 ? `${plugin.commandCount} ${t('pluginCommands')}` : ''}
+                          {plugin.skillCount > 0 ? `${plugin.commandCount > 0 ? ', ' : ''}${plugin.skillCount} ${t('pluginSkills')}` : ''}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={pluginInstallBusy}
+                        onClick={() => void uninstallPluginItem(plugin.id)}
+                        className="inline-flex h-9 shrink-0 items-center justify-center rounded-xl bg-ds-danger-soft px-3 text-[12px] font-semibold text-ds-danger transition hover:opacity-85 disabled:opacity-50"
+                      >
+                        {t('pluginUninstall')}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
         ) : null}
 
         {notice ? <NoticeView notice={notice} /> : null}

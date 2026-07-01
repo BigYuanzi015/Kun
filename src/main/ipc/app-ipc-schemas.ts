@@ -1834,6 +1834,30 @@ export const uiPluginIdPayloadSchema = z
   })
   .strict()
 
+export const claudePluginInstallPayloadSchema = z
+  .object({
+    sourcePath: trimmedString(MAX_PATH_LENGTH)
+  })
+  .strict()
+
+export const claudePluginUninstallPayloadSchema = z
+  .object({
+    id: trimmedString(MAX_ID_LENGTH)
+  })
+  .strict()
+
+export const claudePluginNpmInstallPayloadSchema = z
+  .object({
+    installName: trimmedString(MAX_ID_LENGTH)
+  })
+  .strict()
+
+export const claudePluginGithubInstallPayloadSchema = z
+  .object({
+    repoUrl: trimmedString(MAX_URL_LENGTH)
+  })
+  .strict()
+
 export const terminalSessionIdSchema = trimmedString(TERMINAL_MAX_SESSION_ID_LENGTH)
 
 export const terminalCreatePayloadSchema = z

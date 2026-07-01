@@ -88,6 +88,20 @@ const api = {
     ipcRenderer.invoke('ui-plugin:remove', { id }),
   loadUiPlugin: (id) =>
     ipcRenderer.invoke('ui-plugin:load', { id }),
+  listClaudePlugins: () =>
+    ipcRenderer.invoke('claude-plugin:list'),
+  installClaudePlugin: () =>
+    ipcRenderer.invoke('claude-plugin:install'),
+  uninstallClaudePlugin: (id) =>
+    ipcRenderer.invoke('claude-plugin:uninstall', { id }),
+  fetchClaudePluginMarketplace: () =>
+    ipcRenderer.invoke('claude-plugin:marketplace'),
+  installClaudePluginFromNpm: (installName: string) =>
+    ipcRenderer.invoke('claude-plugin:install:npm', { installName }),
+  installClaudePluginFromGitHub: (repoUrl: string) =>
+    ipcRenderer.invoke('claude-plugin:install:github', { repoUrl }),
+  openClaudePluginDir: () =>
+    ipcRenderer.invoke('claude-plugin:open-dir'),
   getKunConfigFile: () =>
     ipcRenderer.invoke('kun:config:read'),
   setKunConfigFile: (content) =>

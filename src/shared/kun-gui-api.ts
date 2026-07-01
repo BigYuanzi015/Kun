@@ -180,6 +180,14 @@ export type UiPluginInstallIpcResult =
 export type UiPluginLoadIpcResult =
   | { ok: true; manifest: UiPluginManifestV1; figures: UiPluginRuntimeFigures }
   | { ok: false; error: string }
+export type ClaudePluginListIpcResult = { plugins: Array<{ id: string; name: string; version: string; description?: string; author?: string; homepage?: string; license?: string; commandCount: number; skillCount: number }> }
+export type ClaudePluginInstallIpcResult =
+  | { canceled: true }
+  | { canceled: false; ok: true; plugin: { id: string; name: string; version: string; description?: string; author?: string; homepage?: string; license?: string; commandCount: number; skillCount: number } }
+  | { canceled: false; ok: false; errors: string[] }
+export type ClaudePluginUninstallIpcResult =
+  | { ok: true }
+  | { ok: false; error: string }
 export type DeepseekConfigFileResult = { path: string; content: string; exists: boolean }
 export type DeepseekConfigSaveResult = { ok: true; path: string }
 export type TurnCompleteNotificationPayload = {
@@ -376,6 +384,13 @@ export type KunGuiApi = {
   installUiPlugin: () => Promise<UiPluginInstallIpcResult>
   removeUiPlugin: (id: string) => Promise<{ ok: boolean }>
   loadUiPlugin: (id: string) => Promise<UiPluginLoadIpcResult>
+  listClaudePlugins: () => Promise<{ plugins: Array<{ id: string; name: string; version: string; description?: string; author?: string; homepage?: string; license?: string; commandCount: number; skillCount: number }> }>
+  installClaudePlugin: () => Promise<{ canceled: true } | { canceled: false; ok: true; plugin: { id: string; name: string; version: string; description?: string; author?: string; homepage?: string; license?: string; commandCount: number; skillCount: number } } | { canceled: false; ok: false; errors: string[] }>
+  uninstallClaudePlugin: (id: string) => Promise<ClaudePluginUninstallIpcResult>
+  fetchClaudePluginMarketplace: () => Promise<{ plugins: Array<{ name: string; version: string; description?: string; author?: string; license?: string; homepage?: string; repository?: string; installName: string }> }>
+  installClaudePluginFromNpm: (installName: string) => Promise<{ ok: true; plugin: { id: string; name: string; version: string; description?: string; author?: string; homepage?: string; license?: string; commandCount: number; skillCount: number } } | { ok: false; errors: string[] }>
+  installClaudePluginFromGitHub: (repoUrl: string) => Promise<{ ok: true; plugin: { id: string; name: string; version: string; description?: string; author?: string; homepage?: string; license?: string; commandCount: number; skillCount: number } } | { ok: false; errors: string[] }>
+  openClaudePluginDir: () => Promise<PathOpenResult>
   getKunConfigFile: () => Promise<DeepseekConfigFileResult>
   setKunConfigFile: (content: string) => Promise<DeepseekConfigSaveResult>
   openKunConfigDir: () => Promise<PathOpenResult>

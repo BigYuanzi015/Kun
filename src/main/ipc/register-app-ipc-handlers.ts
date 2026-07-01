@@ -74,6 +74,10 @@ import {
   workflowResolveApprovalPayloadSchema,
   workflowCodeCheckPayloadSchema,
   uiPluginIdPayloadSchema,
+  claudePluginInstallPayloadSchema,
+  claudePluginUninstallPayloadSchema,
+  claudePluginNpmInstallPayloadSchema,
+  claudePluginGithubInstallPayloadSchema,
   workspaceDirectoryCreatePayloadSchema,
   workspaceClipboardImageSavePayloadSchema,
   workspaceDirectoryTargetPayloadSchema,
@@ -150,6 +154,16 @@ import {
   removeUiPlugin
 } from '../services/ui-plugin-service'
 import { ensureBundledUiPlugins } from '../ui-plugin-bundled'
+import {
+  installPlugin as installClaudePlugin,
+  uninstallPlugin as uninstallClaudePlugin,
+  listInstalledPlugins,
+  fetchMarketplacePlugins,
+  installPluginFromNpm,
+  installPluginFromGitHub,
+  type MarketplacePluginEntry,
+  type SerializablePluginEntry
+} from '../services/claude-plugin-service'
 import {
   createWorkspaceDirectory,
   createWorkspaceFile,
@@ -957,6 +971,103 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     return loadUiPluginFigures(kunHomeDir, request.id)
   })
 
+  // ── Claude Code Plugin IPC ────────────────────────────────────
+
+  ipcMain.handle('claude-plugin:list', async () => {
+    const plugins = await listInstalledPlugins()
+    return { plugins }
+  })
+
+  ipcMain.handle('claude-plugin:install', async () => {
+    const mainWindow = getMainWindow()
+    const options: Electron.OpenDialogOptions = {
+      title: 'Select a Claude Code plugin folder (containing plugin.json)',
+      properties: ['openDirectory', 'dontAddToRecent']
+    }
+    const picked = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options)
+    const sourceDir = picked.filePaths[0]
+    if (picked.canceled || !sourceDir) {
+      return { canceled: true as const }
+    }
+    const result = await installClaudePlugin(sourceDir)
+    if (!result.ok) {
+      return { canceled: false as const, ok: false as const, errors: result.errors }
+    }
+    // 将已安装的插件 id 写入 settings
+    try {
+      const settings = await store.load()
+      const existing = settings.installedPluginIds ?? []
+      const updated = [...new Set([...existing, result.plugin.manifest.id])]
+      await store.patch({ installedPluginIds: updated } as Partial<AppSettingsV1>)
+    } catch { /* settings 更新失败不阻塞安装 */ }
+    return { canceled: false as const, ok: true as const, plugin: toSerializable(result.plugin) }
+  })
+
+  ipcMain.handle('claude-plugin:uninstall', async (_, payload: unknown) => {
+    const request = parseIpcPayload('claude-plugin:uninstall', claudePluginUninstallPayloadSchema, payload)
+    const result = await uninstallClaudePlugin(request.id)
+    if (result.ok) {
+      try {
+        const settings = await store.load()
+        const existing = settings.installedPluginIds ?? []
+        const updated = existing.filter((id) => id !== request.id)
+        await store.patch({ installedPluginIds: updated } as Partial<AppSettingsV1>)
+      } catch { /* */ }
+    }
+    return result
+  })
+
+  ipcMain.handle('claude-plugin:marketplace', async () => {
+    const entries = await fetchMarketplacePlugins()
+    return { plugins: entries }
+  })
+
+  ipcMain.handle('claude-plugin:install:npm', async (_, payload: unknown) => {
+    const request = parseIpcPayload('claude-plugin:install:npm', claudePluginNpmInstallPayloadSchema, payload)
+    const result = await installPluginFromNpm(request.installName)
+    if (result.ok) {
+      try {
+        const settings = await store.load()
+        const existing = settings.installedPluginIds ?? []
+        const updated = [...new Set([...existing, result.plugin.manifest.id])]
+        await store.patch({ installedPluginIds: updated } as Partial<AppSettingsV1>)
+      } catch { /* */ }
+      return { ok: true as const, plugin: toSerializable(result.plugin) }
+    }
+    return result
+  })
+
+  ipcMain.handle('claude-plugin:install:github', async (_, payload: unknown) => {
+    const request = parseIpcPayload('claude-plugin:install:github', claudePluginGithubInstallPayloadSchema, payload)
+    const result = await installPluginFromGitHub(request.repoUrl)
+    if (result.ok) {
+      try {
+        const settings = await store.load()
+        const existing = settings.installedPluginIds ?? []
+        const updated = [...new Set([...existing, result.plugin.manifest.id])]
+        await store.patch({ installedPluginIds: updated } as Partial<AppSettingsV1>)
+      } catch { /* */ }
+      return { ok: true as const, plugin: toSerializable(result.plugin) }
+    }
+    return result
+  })
+
+  function toSerializable(plugin: { manifest: { id: string; name: string; version: string; description?: string; author?: string; homepage?: string; license?: string }; commandCount: number; skillCount: number }): SerializablePluginEntry {
+    return {
+      id: plugin.manifest.id,
+      name: plugin.manifest.name,
+      version: plugin.manifest.version,
+      description: plugin.manifest.description,
+      author: plugin.manifest.author,
+      homepage: plugin.manifest.homepage,
+      license: plugin.manifest.license,
+      commandCount: plugin.commandCount,
+      skillCount: plugin.skillCount
+    }
+  }
+
   ipcMain.handle('kun:config:read', async () => {
     const path = resolveKunConfigPath()
     try {
@@ -989,6 +1100,12 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       })
     }
     return { ok: true as const, path }
+  })
+
+  ipcMain.handle('claude-plugin:open-dir', async () => {
+    const pluginsDir = join(homedir(), '.kun', 'plugins')
+    await mkdir(pluginsDir, { recursive: true })
+    return openPathWithShell(pluginsDir)
   })
 
   ipcMain.handle('kun:config:open-dir', async () => {

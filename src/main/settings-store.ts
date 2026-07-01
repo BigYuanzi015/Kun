@@ -251,6 +251,7 @@ const defaultSettings = (): AppSettingsV1 => ({
   },
   codePromptPrefix: '',
   disabledSkillIds: [],
+  installedPluginIds: [],
   write: defaultWriteSettings(),
   claw: defaultClawSettings(),
   schedule: defaultScheduleSettings(),
@@ -283,7 +284,8 @@ function buildMergedSettings(parsed: Partial<AppSettingsV1>): AppSettingsV1 {
     terminal: mergeTerminalSettings(defaults.terminal, migrated.terminal),
     guiUpdate: { ...defaults.guiUpdate, ...migrated.guiUpdate },
     codePromptPrefix: typeof migrated.codePromptPrefix === 'string' ? migrated.codePromptPrefix : '',
-    disabledSkillIds: normalizeDisabledSkillIds(migrated.disabledSkillIds)
+    disabledSkillIds: normalizeDisabledSkillIds(migrated.disabledSkillIds),
+    installedPluginIds: normalizeInstalledPluginIds(migrated.installedPluginIds)
   }
 }
 
@@ -292,6 +294,14 @@ function normalizeDisabledSkillIds(value: unknown): string[] {
   return [...new Set(value
     .filter((id): id is string => typeof id === 'string')
     .map((id) => id.trim().replace(/^\/?skill:/i, '').trim())
+    .filter(Boolean))]
+}
+
+function normalizeInstalledPluginIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value
+    .filter((id): id is string => typeof id === 'string')
+    .map((id) => id.trim().toLowerCase())
     .filter(Boolean))]
 }
 

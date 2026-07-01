@@ -1,0 +1,11 @@
+{
+  "id": "qgis-mcp",
+  "name": "QGIS MCP 插件",
+  "version": "1.0.0",
+  "author": "QGIS MCP 团队",
+  "description": "为 Kun/Cursor/Claude Code 提供 QGIS 地理信息处理能力：执行空间分析、生成专题地图、查询地理数据。基于 qgis-mcp MCP 服务器。",
+  "homepage": "https://github.com/KunAgent/Kun",
+  "license": "MIT",
+  "kunVersion": "^0.1.0",
+  "hooks": []
+}
