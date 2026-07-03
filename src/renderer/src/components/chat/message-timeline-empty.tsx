@@ -4,7 +4,7 @@ import { Bot, CornerUpLeft, GitFork, RefreshCw, Settings } from 'lucide-react'
 import type { ClawImChannelV1 } from '@shared/app-settings'
 import { KunStateFigure } from './AnimatedWorkLogo'
 import { InitialSessionUsageHeatmap } from './InitialSessionUsageHeatmap'
-import { KunHeroStage } from './KunHeroStage'
+import logoSrc from '../../../../asset/img/sungolden_hero.png'
 
 /**
  * Empty / hero states rendered by `MessageTimeline` when there is no
@@ -86,7 +86,14 @@ function RuntimeWakeHero({
   return (
     <div className="ds-runtime-wake-hero ds-no-drag px-6 pb-8 pt-12 text-center md:pt-16">
       {/* 报错时关掉「唤醒中」动效,沿用 #78 的原则:错误不该看起来像还在加载 */}
-      <KunHeroStage waking={!hasError} />
+      <div className="mb-3">
+        <img
+          src={logoSrc}
+          alt="北京尚德智汇科技有限公司"
+          className="mx-auto h-auto w-[280px] max-w-full select-none"
+          draggable={false}
+        />
+      </div>
 
       <p className="text-[12px] font-semibold uppercase tracking-[0] text-accent">
         {t('runtimeOfflineHeroKicker')}

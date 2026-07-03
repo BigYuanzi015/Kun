@@ -18,9 +18,9 @@ import {
   JsonSettingsStore,
   devServerHintUrl
 } from './settings-store'
-import kunLogoPng from '../asset/img/kun.png?url'
-import kunMacLogoPng from '../asset/img/kun_mac.png?url'
-import kunTrayPng from '../asset/img/kun_tray.png?url'
+import kunLogoPng from '../asset/img/sungolden_logo.png?url'
+import kunMacLogoPng from '../asset/img/sungolden_logo.png?url'
+import kunTrayPng from '../asset/img/sungolden_tray.png?url'
 import { createAppIcon, pickTrayIcon, prepareTrayIcon } from './app-icon'
 import { buildTrayMenuTemplate, parseTrayThreads, type TrayThreadSummary } from './tray-session-menu'
 import { configureLinuxWaylandImeSwitches } from './app-command-line'
@@ -374,9 +374,15 @@ function installDevPreviewWebviewGuards(): void {
 }
 
 
-const appIconSource = process.platform === 'win32' ? kunMacLogoPng : kunLogoPng
-const appIcon = createAppIcon(appIconSource)
-const trayIcon = createAppIcon(kunTrayPng)
+const appIconSource = process.platform === 'win32'
+  ? join(__dirname, '../../build/icon.ico')
+  : (process.platform === 'darwin' ? kunMacLogoPng : kunLogoPng)
+const appIcon = process.platform === 'win32'
+  ? nativeImage.createFromPath(appIconSource)
+  : createAppIcon(appIconSource)
+const trayIcon = process.platform === 'win32'
+  ? appIcon
+  : createAppIcon(kunTrayPng)
 traceStartup('app icon loaded', { source: appIconSource.startsWith('data:') ? 'data-url' : 'path' })
 const gotSingleInstanceLock = runningClawScheduleMcpServer || app.requestSingleInstanceLock()
 traceStartup('single instance lock checked', {

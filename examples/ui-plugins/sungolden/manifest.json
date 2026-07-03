@@ -1,0 +1,99 @@
+{
+  "id": "sungolden",
+  "name": "尚德智汇 · 科技之光",
+  "version": "1.0.0",
+  "author": "北京尚德智汇科技有限公司",
+  "description": "北京尚德智汇科技有限公司专属形象包——科技蓝与智慧金的交响，GIS 空间智能的视觉呈现。以深邃科技蓝为底、智慧金光为点缀，诠释「崇尚德行、汇聚智慧」的企业精神。",
+  "figures": {
+    "swim": "img/swim.png",
+    "surf": "img/surf.png",
+    "greet": "img/greet.png",
+    "sleep": "img/sleep.png",
+    "sit": "img/sit.png",
+    "run": "img/run.png",
+    "toggleIcon": "img/icon.png"
+  },
+  "labels": {
+    "zh": {
+      "working": "智汇运算中…",
+      "workingSprint": "全速推进中…",
+      "workingDive": "深度洞察中…",
+      "workingSurf": "空间漫游中…"
+    },
+    "en": {
+      "working": "Computing…",
+      "workingSprint": "Full throttle…",
+      "workingDive": "Deep insight…",
+      "workingSurf": "Spatial surfing…"
+    }
+  },
+  "tokens": {
+    "light": {
+      "--ds-accent": "#4DA8E8",
+      "--ds-accent-soft": "#4DA8E82E",
+      "--ds-selection": "#4DA8E83D",
+      "--ds-bg-main": "#0F192D",
+      "--ds-bg-sidebar": "#0C1526",
+      "--ds-bg-canvas": "#142038",
+      "--ds-surface-card": "#192642E6",
+      "--ds-surface-elevated": "#1E2E50FA",
+      "--ds-surface-subtle": "#162138",
+      "--ds-surface-hover": "#4DA8E818",
+      "--ds-border": "#4DA8E81A",
+      "--ds-border-strong": "#4DA8E82E",
+      "--ds-text": "#E8EFF8",
+      "--ds-text-muted": "#A0B4D0",
+      "--ds-text-faint": "#748CAA",
+      "--ds-bubble-user": "#4DA8E821",
+      "--ds-bubble-user-fg": "#D8ECFA",
+      "--ds-success": "#40C977",
+      "--ds-danger": "#F8736A",
+      "--ds-skill": "#4DA8E8",
+      "--ds-skill-soft": "#4DA8E826",
+      "--ds-diff-added-soft": "#40C97726",
+      "--ds-diff-removed-soft": "#F8736A26",
+      "--ds-sidebar-row-hover": "#4DA8E815",
+      "--ds-sidebar-row-active": "#4DA8E822",
+      "--ds-sidebar-row-ring": "#4DA8E818",
+      "--ds-sidebar-field-bg": "#4DA8E80D",
+      "--ds-chip-active": "linear-gradient(180deg, #4DA8E835, #4DA8E81F)",
+      "--ds-scrollbar-thumb": "#97B2D745",
+      "--ds-code-block-bg": "#0D172C"
+    },
+    "dark": {
+      "--ds-accent": "#4DA8E8",
+      "--ds-accent-soft": "#4DA8E833",
+      "--ds-selection": "#4DA8E842",
+      "--ds-bg-main": "#0B1322",
+      "--ds-bg-sidebar": "#090F1C",
+      "--ds-bg-canvas": "#0F182D",
+      "--ds-surface-card": "#152038EB",
+      "--ds-surface-elevated": "#1B284AFA",
+      "--ds-surface-subtle": "#111B30",
+      "--ds-surface-hover": "#4DA8E81A",
+      "--ds-border": "#4DA8E81F",
+      "--ds-border-strong": "#4DA8E830",
+      "--ds-text": "#E8EFF8",
+      "--ds-text-muted": "#A0B4D0",
+      "--ds-text-faint": "#748CAA",
+      "--ds-bubble-user": "#4DA8E824",
+      "--ds-bubble-user-fg": "#D8ECFA",
+      "--ds-success": "#40C977",
+      "--ds-danger": "#F8736A",
+      "--ds-skill": "#4DA8E8",
+      "--ds-skill-soft": "#4DA8E829",
+      "--ds-diff-added-soft": "#40C97729",
+      "--ds-diff-removed-soft": "#F8736A29",
+      "--ds-sidebar-row-hover": "#4DA8E817",
+      "--ds-sidebar-row-active": "#4DA8E824",
+      "--ds-sidebar-row-ring": "#4DA8E81A",
+      "--ds-sidebar-field-bg": "#4DA8E80F",
+      "--ds-chip-active": "linear-gradient(180deg, #4DA8E838, #4DA8E821)",
+      "--ds-scrollbar-thumb": "#97B2D747",
+      "--ds-code-block-bg": "#091120"
+    }
+  },
+  "features": {
+    "cameos": true
+  }
+}

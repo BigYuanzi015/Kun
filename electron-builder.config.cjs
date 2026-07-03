@@ -173,7 +173,7 @@ module.exports = {
       NSMicrophoneUsageDescription: 'Kun uses the microphone for voice-to-text input.'
     },
     // macOS 不会自动套圆角遮罩,图标文件本身需要是「圆角方块 + 透明边距」
-    icon: './src/asset/img/kun_mac.png',
+    icon: './src/asset/img/sungolden_logo.png',
     // arm64 (Apple Silicon) + x64 (Intel). On M 系列 Mac 本地打包会各出一组 dmg/zip。
     target: [
       { target: 'dmg', arch: ['arm64', 'x64'] },
@@ -188,7 +188,7 @@ module.exports = {
     // desktop/start-menu/taskbar shortcuts do not show a hard square edge.
     // Ship a multi-size .ico (16/24/32/48/64/72/96/128/256) so Explorer and
     // the desktop render crisp icons at small sizes (#222). Regenerate with:
-    // npx --yes png2icons src/asset/img/kun_mac.png build/icon -icowe -bc
+    // npx --yes png2icons src/asset/img/sungolden_logo.png build/icon -icowe -bc
     icon: './build/icon.ico',
     target: [{ target: 'nsis', arch: ['x64'] }],
     // 跳过签名以避免 winCodeSign 解压符号链接失败导致构建中断

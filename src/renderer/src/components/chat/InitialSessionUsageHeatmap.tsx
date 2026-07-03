@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, ChevronDown, ChevronUp, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import logoSrc from '../../../../asset/img/sungolden_hero.png'
 import {
   formatCompactNumber,
   formatCost,
@@ -695,8 +696,13 @@ function UsageHeroSection({
 }): ReactElement {
   return (
     <div className="flex w-full min-w-0 flex-col items-center text-center">
-      <div>
-        <KunHeroStage />
+      <div className="mb-4">
+        <img
+          src={logoSrc}
+          alt="北京尚德智汇科技有限公司"
+          className="h-auto w-[320px] max-w-full select-none"
+          draggable={false}
+        />
       </div>
       {showText ? (
         <>

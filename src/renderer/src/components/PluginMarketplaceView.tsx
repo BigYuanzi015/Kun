@@ -1190,6 +1190,24 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
     }
   }
 
+  const updatePluginItem = async (plugin: { id: string; name: string; version: string }): Promise<void> => {
+    setPluginInstallBusy(true)
+    setNotice(null)
+    try {
+      const result = await window.kunGui.installClaudePluginFromNpm(plugin.id)
+      if (!result.ok) {
+        setNotice({ tone: 'error', message: result.errors.join('\n') })
+        return
+      }
+      setNotice({ tone: 'success', message: `已更新 ${result.plugin.name} 到 v${result.plugin.version}` })
+      refreshPluginList()
+    } catch (e) {
+      setNotice({ tone: 'error', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setPluginInstallBusy(false)
+    }
+  }
+
   const uninstallPluginItem = async (id: string): Promise<void> => {
     setPluginInstallBusy(true)
     setNotice(null)
@@ -1761,14 +1779,24 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
                           {plugin.skillCount > 0 ? `${plugin.commandCount > 0 ? ', ' : ''}${plugin.skillCount} ${t('pluginSkills')}` : ''}
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        disabled={pluginInstallBusy}
-                        onClick={() => void uninstallPluginItem(plugin.id)}
-                        className="inline-flex h-9 shrink-0 items-center justify-center rounded-xl bg-ds-danger-soft px-3 text-[12px] font-semibold text-ds-danger transition hover:opacity-85 disabled:opacity-50"
-                      >
-                        {t('pluginUninstall')}
-                      </button>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={pluginInstallBusy}
+                          onClick={() => void updatePluginItem(plugin)}
+                          className="inline-flex h-9 shrink-0 items-center justify-center rounded-xl bg-accent/12 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/22 disabled:opacity-50"
+                        >
+                          {pluginInstallBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} /> : t('pluginUpdate')}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={pluginInstallBusy}
+                          onClick={() => void uninstallPluginItem(plugin.id)}
+                          className="inline-flex h-9 shrink-0 items-center justify-center rounded-xl bg-ds-danger-soft px-3 text-[12px] font-semibold text-ds-danger transition hover:opacity-85 disabled:opacity-50"
+                        >
+                          {t('pluginUninstall')}
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>

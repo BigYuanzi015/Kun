@@ -865,6 +865,7 @@
   "pluginCommands": "commands",
   "pluginSkills": "skills",
   "pluginUninstall": "Uninstall",
+  "pluginUpdate": "Update",
   "pluginInstall": "Install",
   "pluginMarketplace": "Marketplace",
   "pluginMarketplaceDesc": "Install Claude Code compatible plugins from npm registry or GitHub repositories.",
