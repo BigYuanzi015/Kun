@@ -60,11 +60,17 @@ import { composeWritePrompt } from '../write/quoted-selection'
 import { resolveWriteAgentPreset } from '../write/agent-presets'
 import { useWriteWorkspaceStore } from '../write/write-workspace-store'
 import { isWriteThreadId } from '../write/write-thread-registry'
-import { buildSddDraftId, createSddDraft, forgetRememberedSddDraft, useSddDraftStore } from '../sdd/sdd-draft-store'
+import {
+  buildSddDraftId,
+  createSddDraft,
+  forgetRememberedSddDraft,
+  resolveSddRequirementWorkspace,
+  useSddDraftStore
+} from '../sdd/sdd-draft-store'
 import type { SddDraft, SddDraftSaveStatus } from '../sdd/sdd-draft-store'
 import { listSddDraftHistory, titleFromSddDraftContent } from '../sdd/sdd-draft-history'
 import { saveActiveSddDraftToDisk } from '../sdd/sdd-draft-actions'
-import { restoreRememberedSddDraft, restoreSddDraft } from '../sdd/sdd-draft-restore'
+import { restoreSddDraft } from '../sdd/sdd-draft-restore'
 import { composeSddAssistantPrompt } from '../sdd/sdd-assistant-prompt'
 import { frameworkById } from '../sdd/pm-skill-frameworks'
 import { collectSddDraftImages, withAttachmentIds, type SddDraftImageReference } from '../sdd/sdd-draft-images'
@@ -90,7 +96,7 @@ import { CODE_PANEL_PREFERRED, useWorkbenchLayout } from './workbench-layout'
 import { useWorkbenchPlanController } from './workbench-plan-controller'
 import { prepareImageAttachmentUpload } from '../lib/image-attachment-upload'
 import { isChatAttachmentUploadEnabled } from '../lib/attachment-upload-availability'
-import { normalizeWorkspaceRoot } from '../lib/workspace-path'
+import { isConversationWorkspacePath, normalizeWorkspaceRoot } from '../lib/workspace-path'
 import { useKeyboardShortcutSettings } from '../lib/keyboard-shortcut-settings'
 import { collectComposerChangeSummary } from '../lib/composer-change-summary'
 import { formatWorkspacePickerError } from '../lib/format-workspace-picker-error'
@@ -273,6 +279,15 @@ function isPdfAttachmentFile(file: File): boolean {
   return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
+  }
+  return btoa(binary)
+}
+
 function stripTransientAttachmentFields(attachments: AttachmentReference[]): AttachmentReference[] {
   return attachments.map(({ documentText: _documentText, ...attachment }) => attachment)
 }
@@ -406,6 +421,7 @@ export function Workbench(): ReactElement {
     route,
     pluginHostRoute,
     workspaceRoot,
+    conversationWorkspaceRoot,
     runtimeConnection,
     setRoute,
     openCode,
@@ -471,6 +487,7 @@ export function Workbench(): ReactElement {
       route: s.route,
       pluginHostRoute: s.pluginHostRoute,
       workspaceRoot: s.workspaceRoot,
+      conversationWorkspaceRoot: s.conversationWorkspaceRoot,
       runtimeConnection: s.runtimeConnection,
       setRoute: s.setRoute,
       openCode: s.openCode,
@@ -1193,20 +1210,32 @@ export function Workbench(): ReactElement {
           if (!localFilePath || typeof window.kunGui?.readLocalPdfText !== 'function') {
             throw new Error(t('composerPdfAttachmentUnavailable'))
           }
+          if (!attachmentCapabilities || typeof provider.uploadAttachment !== 'function') {
+            throw new Error(t('composerAttachmentUnavailable'))
+          }
           const result = await window.kunGui.readLocalPdfText({ path: localFilePath })
           if (!result.ok) throw new Error(result.message)
           const documentText = result.text.trim()
           if (!documentText) throw new Error(t('composerPdfAttachmentNoText'))
-          uploaded.push({
-            id: `doc_${result.mtimeMs}_${index}_${file.name || 'pdf'}`,
-            kind: 'document',
+          const attachment = await provider.uploadAttachment({
             name: file.name || fileNameFromPath(result.path),
             mimeType: 'application/pdf',
-            byteSize: result.size,
+            dataBase64: arrayBufferToBase64(await file.arrayBuffer()),
+            documentText,
             pageCount: result.pageCount,
-            truncated: result.truncated,
+            localFilePath,
+            ...(activeThreadId ? { threadId: activeThreadId } : {}),
+            ...(workspace ? { workspace } : {})
+          })
+          uploaded.push({
+            id: attachment.id,
+            kind: 'document',
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            byteSize: attachment.byteSize,
+            pageCount: attachment.pageCount,
+            truncated: attachment.truncated,
             textPreview: documentText.slice(0, 240),
-            documentText
           })
           continue
         }
@@ -1277,9 +1306,8 @@ export function Workbench(): ReactElement {
   const sendWritePrompt = (value: string): void => {
     const v = value.trim()
     const attachments = composerAttachments
-    const imageAttachments = attachments.filter((attachment) => attachment.kind !== 'document')
     const documentAttachments = attachments.filter((attachment) => attachment.kind === 'document')
-    const attachmentIds = imageAttachments.map((attachment) => attachment.id)
+    const attachmentIds = attachments.map((attachment) => attachment.id)
     const publicAttachments = stripTransientAttachmentFields(attachments)
     if (!v && attachmentIds.length === 0 && documentAttachments.length === 0) return
     if (attachmentIds.length > 0 && !attachmentUploadEnabled) {
@@ -1506,29 +1534,26 @@ export function Workbench(): ReactElement {
   }
 
   const startNewSddRequirement = async (): Promise<void> => {
-    const activeCodeWorkspace = activeThreadId
-      ? normalizeWorkspaceRoot(codeThreads.find((thread) => thread.id === activeThreadId)?.workspace ?? '')
-      : ''
-    let targetWorkspace = activeCodeWorkspace || normalizeWorkspaceRoot(workspaceRoot)
-    if (!targetWorkspace) {
-      const picked = await chooseWorkspace({ selectThreadAfter: false })
-      targetWorkspace = normalizeWorkspaceRoot(picked ?? useChatStore.getState().workspaceRoot)
+    const suggestedWorkspace = resolveSddRequirementWorkspace(codeThreads, activeThreadId, workspaceRoot)
+    let targetWorkspace = ''
+    try {
+      const picked = await window.kunGui.pickWorkspaceDirectory(suggestedWorkspace || undefined)
+      if (picked.canceled || !picked.path) return
+      targetWorkspace = normalizeWorkspaceRoot(picked.path)
+    } catch (error) {
+      setError(formatWorkspacePickerError(error))
+      return
     }
     if (!targetWorkspace) {
       setError(t('workspaceRequiredToCreateThread'))
       return
     }
-    const restored = await restoreRememberedSddDraft({
-      workspaceRoot: targetWorkspace,
-      readWorkspaceFile: window.kunGui.readWorkspaceFile
-    })
-    if (restored.kind === 'restored') {
-      await openSddRequirementDraft(restored.draft, restored.content, {
-        lastSavedContent: restored.lastSavedContent,
-        saveStatus: restored.saveStatus
-      })
+    if (isConversationWorkspacePath(targetWorkspace, conversationWorkspaceRoot)) {
+      setError(t('workspaceInsideConversationDir'))
       return
     }
+
+    if (useSddDraftStore.getState().activeDraft && !await saveActiveSddDraftToDisk()) return
 
     const draftUuid = globalThis.crypto?.randomUUID?.() ?? `draft-${Date.now()}`
     const draft = createSddDraft({ id: draftUuid, workspaceRoot: targetWorkspace })
@@ -1642,9 +1667,8 @@ export function Workbench(): ReactElement {
     const v = value.trim()
     const draft = useSddDraftStore.getState().activeDraft
     const attachments = composerAttachments
-    const imageAttachments = attachments.filter((attachment) => attachment.kind !== 'document')
     const documentAttachments = attachments.filter((attachment) => attachment.kind === 'document')
-    const attachmentIds = imageAttachments.map((attachment) => attachment.id)
+    const attachmentIds = attachments.map((attachment) => attachment.id)
     const publicAttachments = stripTransientAttachmentFields(attachments)
     if ((!v && attachmentIds.length === 0 && documentAttachments.length === 0) || !draft) return
     if (attachmentIds.length > 0 && !attachmentUploadEnabled) {
@@ -2027,9 +2051,8 @@ export function Workbench(): ReactElement {
   const handleSendAsync = async (): Promise<void> => {
     const v = input.trim()
     const attachments = route === 'chat' || route === 'write' ? composerAttachments : []
-    const imageAttachments = attachments.filter((attachment) => attachment.kind !== 'document')
     const documentAttachments = attachments.filter((attachment) => attachment.kind === 'document')
-    const attachmentIds = imageAttachments.map((attachment) => attachment.id)
+    const attachmentIds = attachments.map((attachment) => attachment.id)
     const publicAttachments = stripTransientAttachmentFields(attachments)
     const fileReferences = route === 'chat' ? composerFileReferences : []
     const userFileReferences = composerReferencesToUserFileReferences(fileReferences)
@@ -2404,6 +2427,8 @@ export function Workbench(): ReactElement {
                 composerProviderId={resolvedWriteAssistantProviderId}
                 composerPickList={writeAssistantPickList}
                 composerModelGroups={composerModelGroups}
+                skillCommands={runtimeSkills}
+                disabledSkillIds={disabledSkillIds}
                 composerReasoningEffort={composerReasoningEffort}
                 setComposerModel={setWriteAssistantModel}
                 setComposerReasoningEffort={setComposerReasoningEffort}
