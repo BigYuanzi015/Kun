@@ -905,11 +905,11 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
   const [skillRootId, setSkillRootId] = useState<SkillRootId>(() => loadPreferredSkillRootId())
   const [mcpConfigText, setMcpConfigText] = useState('')
   const [mcpLoaded, setMcpLoaded] = useState(false)
-  const [pluginList, setPluginList] = useState<Array<{ id: string; name: string; version: string; description?: string; author?: string; commandCount: number; skillCount: number }>>([])
+  const [pluginList, setPluginList] = useState<Array<{ id: string; name: string; version: string; description?: string; author?: string; sourceRoot?: string; marketplaceName?: string; commandCount: number; skillCount: number }>>([])
   const [pluginListLoaded, setPluginListLoaded] = useState(false)
   const [pluginInstallBusy, setPluginInstallBusy] = useState(false)
   const [pluginSearch, setPluginSearch] = useState('')
-  const [marketplacePlugins, setMarketplacePlugins] = useState<Array<{ name: string; version: string; description?: string; author?: string; homepage?: string; installName: string }>>([])
+  const [marketplacePlugins, setMarketplacePlugins] = useState<Array<{ name: string; version: string; description?: string; author?: string; homepage?: string; installName: string; installKind?: 'npm' | 'git' }>>([])
   const [marketplaceLoading, setMarketplaceLoading] = useState(false)
   const [marketplaceError, setMarketplaceError] = useState('')
   const [showCustomInstall, setShowCustomInstall] = useState(false)
@@ -1079,6 +1079,8 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
           version: p.version,
           description: p.description,
           author: p.author,
+          sourceRoot: p.sourceRoot,
+          marketplaceName: p.marketplaceName,
           commandCount: p.commandCount,
           skillCount: p.skillCount
         })))
@@ -1106,7 +1108,7 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
       setMarketplacePlugins(result.plugins)
       setMarketplaceLoading(false)
       if (result.plugins.length === 0) {
-        setMarketplaceError('npm registry 无结果,仅支持从 GitHub 或本地安装')
+        setMarketplaceError('Marketplace 暂无在线结果，可通过 Git 仓库或本地文件夹安装插件')
       }
     }).catch((e) => {
       if (cancelled) return
@@ -1304,16 +1306,32 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
     }
   }
 
-  const updatePluginItem = async (plugin: { id: string; name: string; version: string }): Promise<void> => {
+  const updatePluginItem = async (plugin: { id: string; name: string; version: string; sourceRoot?: string }): Promise<void> => {
     setPluginInstallBusy(true)
     setNotice(null)
     try {
-      const result = await window.kunGui.installClaudePluginFromNpm(plugin.id)
-      if (!result.ok) {
-        setNotice({ tone: 'error', message: result.errors.join('\n') })
+      const sourceRoot = plugin.sourceRoot || ''
+      let result: { ok: boolean; plugin?: { name: string; version: string }; errors?: string[] }
+      if (sourceRoot.startsWith('npm:')) {
+        // npm 包安装的插件 → 通过 npm 更新
+        result = await window.kunGui.installClaudePluginFromNpm(sourceRoot.slice(4))
+      } else if (sourceRoot.startsWith('https://') || sourceRoot.startsWith('http://')) {
+        // Git 仓库安装的插件 → 通过 Git URL 更新（重新拉取）
+        result = await window.kunGui.installClaudePluginFromGitHub(sourceRoot)
+      } else if (sourceRoot) {
+        // 本地路径 → 尝试从 Git 安装（可能是 Gitee/GitHub 简写）
+        result = await window.kunGui.installClaudePluginFromGitHub(sourceRoot)
+      } else {
+        // 没有 sourceRoot → 尝试本地重装
+        setNotice({ tone: 'info', message: '该插件来源未知，请使用「从文件夹安装」重新选择插件目录更新' })
+        setPluginInstallBusy(false)
         return
       }
-      setNotice({ tone: 'success', message: `已更新 ${result.plugin.name} 到 v${result.plugin.version}` })
+      if (!result.ok) {
+        setNotice({ tone: 'error', message: result.errors?.join('\n') || '更新失败' })
+        return
+      }
+      setNotice({ tone: 'success', message: `已更新 ${result.plugin?.name || plugin.name} 到 v${result.plugin?.version || '最新'}` })
       refreshPluginList()
     } catch (e) {
       setNotice({ tone: 'error', message: e instanceof Error ? e.message : String(e) })
@@ -1851,12 +1869,17 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
                         {mp.description ? (
                           <p className="mt-0.5 line-clamp-2 text-[13px] leading-5 text-ds-muted">{mp.description}</p>
                         ) : null}
-                        <p className="mt-0.5 text-[11px] text-ds-faint font-mono">{mp.installName}{mp.author ? `  ·  ${mp.author}` : ''}</p>
+                        <p className="mt-0.5 text-[11px] text-ds-faint font-mono">
+                          {mp.installKind === 'git' ? (
+                            <span className="rounded bg-ds-skill-soft/20 px-1 py-0.5 text-[10px] font-semibold text-ds-skill">Git</span>
+                          ) : null}
+                          {' '}{mp.installName}{mp.author ? `  ·  ${mp.author}` : ''}
+                        </p>
                       </div>
                       <button
                         type="button"
                         disabled={pluginInstallBusy}
-                        onClick={() => void installFromNpm(mp.installName)}
+                        onClick={() => void (mp.installKind === 'git' ? installFromGitHub(mp.installName) : installFromNpm(mp.installName))}
                         className="inline-flex h-8 shrink-0 items-center rounded-lg bg-ds-userbubble px-3 text-[12px] font-semibold text-ds-userbubbleFg shadow-sm transition hover:opacity-90 disabled:opacity-40"
                       >
                         {pluginInstallBusy ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} /> : t('pluginInstall')}
@@ -1883,7 +1906,13 @@ export function PluginMarketplaceView({ leftSidebarCollapsed, onToggleLeftSideba
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="truncate text-[17px] font-semibold text-ds-ink">{plugin.name}</span>
-                          <span className="shrink-0 rounded-md bg-ds-skill-soft px-2 py-0.5 text-[11px] font-semibold text-ds-skill">v{plugin.version}</span>
+                          {plugin.version && plugin.version !== '0.0.0' ? (
+                            <span className="shrink-0 rounded-md bg-ds-skill-soft px-2 py-0.5 text-[11px] font-semibold text-ds-skill">v{plugin.version}</span>
+                          ) : plugin.sourceRoot ? (
+                            <span className="shrink-0 rounded-md bg-ds-subtle px-2 py-0.5 text-[11px] font-semibold text-ds-muted" title={plugin.sourceRoot}>
+                              {plugin.sourceRoot.startsWith('https://gitee.com') ? 'Gitee' : plugin.sourceRoot.startsWith('https://github.com') ? 'GitHub' : plugin.sourceRoot.startsWith('npm:') ? 'npm' : '本地'}
+                            </span>
+                          ) : null}
                         </div>
                         {plugin.description ? (
                           <p className="mt-1 line-clamp-2 text-[14px] leading-5 text-ds-muted">{plugin.description}</p>

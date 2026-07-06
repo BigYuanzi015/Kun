@@ -1,18 +1,28 @@
 /**
- * Claude Code Plugin 清单格式 —— Kun 内建支持的插件打包规范。
+ * Claude Code Plugin 清单格式 —— 兼容 Claude Code 官方协议 + Kun 扩展。
  *
- * 一个 Claude Code Plugin 是包含以下可选内容的文件夹:
- *   plugin.json   — 插件元数据（本文件定义的清单）
- *   commands/     — 自定义斜杠命令 (*.md)
- *   skills/       — Skill 包
- *   hooks/        — Hook 脚本
- *   mcp.json      — MCP 服务器配置片段
+ * Claude Code 官方 plugin.json 格式 (参考:
+ *   https://docs.anthropic.com/en/docs/claude-code/plugins):
+ *   - 使用 `name` 作为唯一标识 (Kun 内部映射为 `id`)
+ *   - 使用 `displayName` 作为展示名称 (映射为 `name`)
+ *   - `skills` / `commands` 是相对路径字符串
+ *   - `author` 支持 `{name, email?}` 对象或字符串
  *
- * 与 Claude Code 兼容:commands/ 和 skills/ 的目录结构沿用
- * .claude/commands/ 和 .claude/skills/ 的约定。
+ * Kun 扩展字段 (官方格式中不存在, Kun 内部使用):
+ *   - `kunVersion` 最低 Kun 版本要求
+ *   - `capabilities` capability 声明
+ *
+ * 一个 Claude Code Plugin 是包含以下内容的文件夹:
+ *   .claude-plugin/plugin.json — 插件元数据 (Claude Code 官方路径)
+ *   或 plugin.json             — Kun 兼容路径
+ *   commands/                  — 自定义斜杠命令 (*.md)
+ *   skills/                    — Skill 包
+ *   hooks/                     — Hook 脚本
+ *   mcp.json                   — MCP 服务器配置片段
  */
 
 export const CLAUDE_PLUGIN_MANIFEST_FILENAME = 'plugin.json'
+export const CLAUDE_PLUGIN_DIRNAME = '.claude-plugin'
 
 export const CLAUDE_PLUGIN_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][\w.-]{0,40})?$/
 
@@ -37,15 +47,18 @@ export type ClaudePluginHookManifest = {
  * Claude Code Plugin 清单 v1。
  *
  * 体积限制: plugin.json ≤ 64KB。
+ * 兼容 Claude Code 官方格式 + Kun 扩展。
  */
 export type ClaudePluginManifestV1 = {
-  /** 插件唯一标识: 2-60 位小写字母/数字/连字符 */
+  /** 插件唯一标识: 2-60 位小写字母/数字/连字符
+   *  (Claude Code 官方用 `name` 字段; Kun 内部统一映射为 `id`) */
   id: string
-  /** 显示名称: ≤80 字符 */
+  /** 显示名称: ≤80 字符
+   *  (Claude Code 官方用 `displayName`; Kun 优先取 displayName, fallback name/id) */
   name: string
   /** 语义化版本,如 1.0.0 */
   version: string
-  /** 作者: ≤120 字符 */
+  /** 作者: ≤120 字符 (兼容 Claude Code 官方 `{name, email?}` 对象格式, 安装时取 name) */
   author?: string
   /** 简要描述: ≤320 字符,支持 markdown 纯文本片段 */
   description?: string
@@ -53,9 +66,15 @@ export type ClaudePluginManifestV1 = {
   homepage?: string
   /** 许可标识 (如 MIT, Apache-2.0) */
   license?: string
+  /** 关键词 (Claude Code 官方字段) */
+  keywords?: string[]
+  /** skills 目录相对路径 (Claude Code 官方字段), 如 "./skills/" */
+  skills?: string
+  /** commands 目录相对路径 (Claude Code 官方字段), 如 "./commands/" */
+  commands?: string
   /**
    * 最低 Kun 版本要求 (semver range 风格,仅做展示和粗略检查)。
-   * 例如 "^0.1.0"。
+   * 例如 "^0.1.0"。Kun 扩展字段, Claude Code 官方无此字段。
    */
   kunVersion?: string
   /**
@@ -70,14 +89,10 @@ export type ClaudePluginManifestV1 = {
   capabilities?: Record<string, unknown>
 }
 
-/** 插件的体积限制 */
+/** 插件的元数据/命名限制(文件大小不做限制) */
 export const CLAUDE_PLUGIN_LIMITS = {
   /** plugin.json 最大字节数 */
   manifestBytes: 64 * 1024,
-  /** 插件目录整体最大字节数(粗略扫描) */
-  totalBytes: 50 * 1024 * 1024,
-  /** 单文件最大字节数 */
-  fileBytes: 5 * 1024 * 1024,
   /** id 最大字符数 */
   idChars: 60,
   /** name 最大字符数 */
@@ -98,8 +113,10 @@ export type InstalledClaudePlugin = {
   manifest: ClaudePluginManifestV1
   /** 安装根目录 (~/.kun/plugins/<id>/ 或插件源目录) */
   installRoot: string
-  /** 插件源目录(用户选择安装时的原始路径) */
+  /** 插件源: 本地路径 / "npm:<packageName>" / "https://gitee.com/..." 等 */
   sourceRoot: string
+  /** 市场名 (如 "gis-agent-toolkit"), 从 marketplace 安装时有值 */
+  marketplaceName?: string
   /** 安装时间 ISO */
   installedAt: string
   /** 是否来自项目工作区 (false = 全局安装) */
@@ -147,24 +164,49 @@ export function normalizeClaudePluginManifest(raw: unknown): PluginValidationRes
     return { ok: false, errors: ['plugin.json 必须是 JSON 对象'] }
   }
 
-  const id = readTrimmedString(raw.id, CLAUDE_PLUGIN_LIMITS.idChars)
-  if (!id || !PLUGIN_ID_PATTERN.test(id)) {
-    errors.push('id 需为 2-60 位小写字母/数字/连字符,且以字母或数字开头')
-  } else if (PLUGIN_RESERVED_IDS.has(id)) {
+  // ── 标识符: Claude Code 官方用 `name`; Kun 用 `id` ──────────
+  const rawId = readTrimmedString(raw.id, CLAUDE_PLUGIN_LIMITS.idChars)
+  const rawName = readTrimmedString(raw.name, CLAUDE_PLUGIN_LIMITS.idChars)
+  // 优先 Claude Code 官方的 `name` 作为唯一标识
+  let id = rawName || rawId
+  if (!id) {
+    errors.push('缺少标识符 (Claude Code 格式用 `name`, Kun 也可用 `id`)')
+  } else if (!PLUGIN_ID_PATTERN.test(id)) {
+    // 从 raw.name 来的时候可能含大写/特殊字符, 做 slug 处理
+    const slugged = rawName
+      ? rawName.trim().normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '')
+      : id
+    if (PLUGIN_ID_PATTERN.test(slugged)) {
+      id = slugged
+    } else {
+      errors.push('插件标识符需为 2-60 位小写字母/数字/连字符,且以字母或数字开头')
+    }
+  }
+  if (id && PLUGIN_RESERVED_IDS.has(id)) {
     errors.push(`id "${id}" 是保留字，不可使用`)
   }
 
-  const name = readTrimmedString(raw.name, CLAUDE_PLUGIN_LIMITS.nameChars)
-  if (!name) errors.push(`name 必填 (≤${CLAUDE_PLUGIN_LIMITS.nameChars} 字符)`)
+  // ── 展示名称: Claude Code 官方用 `displayName`; Kun 用 `name` ──
+  const displayName = readTrimmedString(raw.displayName, CLAUDE_PLUGIN_LIMITS.nameChars)
+  const nameFromRaw = readTrimmedString(raw.name, CLAUDE_PLUGIN_LIMITS.nameChars)
+  const name = displayName || nameFromRaw || (id as string | undefined) || ''
+  if (!name) errors.push(`name/displayName 必填 (≤${CLAUDE_PLUGIN_LIMITS.nameChars} 字符)`)
 
+  // ── 版本号 ──────────────────────────────────────────────
   const version = readTrimmedString(raw.version, 60)
   if (!version || !CLAUDE_PLUGIN_VERSION_PATTERN.test(version)) {
     errors.push('version 需为语义化版本号,如 1.0.0')
   }
 
-  const author = readTrimmedString(raw.author, CLAUDE_PLUGIN_LIMITS.authorChars) ?? undefined
+  // ── 作者: 兼容 Claude Code 官方 `{name, email?}` 对象格式 ──
+  let author: string | undefined
+  if (typeof raw.author === 'string') {
+    author = readTrimmedString(raw.author, CLAUDE_PLUGIN_LIMITS.authorChars) ?? undefined
+  } else if (isPlainObject(raw.author)) {
+    author = readTrimmedString(raw.author.name, CLAUDE_PLUGIN_LIMITS.authorChars) ?? undefined
+  }
   if (raw.author !== undefined && author === undefined) {
-    errors.push(`author 过长 (≤${CLAUDE_PLUGIN_LIMITS.authorChars} 字符)`)
+    errors.push(`author 过长或格式无效 (≤${CLAUDE_PLUGIN_LIMITS.authorChars} 字符)`)
   }
 
   const description = readTrimmedString(raw.description, CLAUDE_PLUGIN_LIMITS.descriptionChars) ?? undefined
@@ -180,7 +222,14 @@ export function normalizeClaudePluginManifest(raw: unknown): PluginValidationRes
   const license = readTrimmedString(raw.license, 80) ?? undefined
   const kunVersion = readTrimmedString(raw.kunVersion, 40) ?? undefined
 
-  // 校验 hooks
+  // ── Claude Code 官方字段 ──────────────────────────────
+  const keywords: string[] | undefined = Array.isArray(raw.keywords)
+    ? raw.keywords.filter((k): k is string => typeof k === 'string' && k.trim().length > 0).slice(0, 20)
+    : undefined
+  const skills = readTrimmedString(raw.skills, 256) ?? undefined
+  const commands = readTrimmedString(raw.commands, 256) ?? undefined
+
+  // ── 校验 hooks ────────────────────────────────────────
   let hooks: ClaudePluginHookManifest[] | undefined
   if (raw.hooks !== undefined) {
     if (!Array.isArray(raw.hooks)) {
@@ -238,6 +287,9 @@ export function normalizeClaudePluginManifest(raw: unknown): PluginValidationRes
       ...(description ? { description } : {}),
       ...(homepage ? { homepage } : {}),
       ...(license ? { license } : {}),
+      ...(keywords ? { keywords } : {}),
+      ...(skills ? { skills } : {}),
+      ...(commands ? { commands } : {}),
       ...(kunVersion ? { kunVersion } : {}),
       ...(hooks && hooks.length > 0 ? { hooks } : {}),
       ...(capabilities ? { capabilities } : {})

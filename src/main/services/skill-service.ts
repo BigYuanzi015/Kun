@@ -8,6 +8,7 @@ import {
   COMMON_WORKSPACE_SKILL_DIRS,
   type CommonSkillDir
 } from '../../shared/skill-dirs'
+import { claudePluginsRootDir } from './claude-plugin-service'
 import { expandHomePath } from './workspace-service'
 
 export type GuiSkillScope = 'project' | 'global'
@@ -96,10 +97,16 @@ export async function guiSkillRootsForRuntime(
         .filter((root) => !disabled.has(comparablePath(root)))
         .map((path) => ({ path, scope: 'global' as const }))
 
+  // 扫描 ~/.kun/plugins/*/skills/ 目录 (Claude Code 插件)
+  const kunPluginRoots = (await discoverKunPluginSkillRoots())
+    .filter((root) => existsSync(root) && !disabled.has(comparablePath(root)))
+    .map((path) => ({ path, scope: 'global' as const }))
+
   return uniqueSkillRoots([
     ...projectCommon.map(toGuiSkillRoot),
     ...globalCommon.map(toGuiSkillRoot),
     ...pluginRoots,
+    ...kunPluginRoots,
     ...extra.map(toGuiSkillRoot)
   ])
 }
@@ -127,8 +134,19 @@ export async function listGuiSkillRoots(
     const candidates = collapseCandidatesForDisplay(
       buildSkillRootCandidates(settings, workspaceRootOverride)
     )
+    // 附加插件 skills 目录
+    const kunPluginRoots = (await discoverKunPluginSkillRoots())
+      .filter((root) => existsSync(root))
+    const extraCandidates: CandidateForDisplay[] = kunPluginRoots.map((path) => ({
+      id: `kun-plugin:${basename(resolve(path, '..', '..'))}`,
+      disableKey: path,
+      path,
+      scope: 'global' as const,
+      source: 'extra' as const,
+    }))
+    const allCandidates = [...candidates, ...extraCandidates]
     const roots = await Promise.all(
-      candidates.map(async (candidate): Promise<GuiSkillRootListItem> => {
+      allCandidates.map(async (candidate): Promise<GuiSkillRootListItem> => {
         const exists = existsSync(candidate.path)
         const skillCount = exists ? await countSkillPackages(candidate.path) : 0
         return {
@@ -148,6 +166,16 @@ export async function listGuiSkillRoots(
   } catch (error) {
     return { ok: false, message: errorMessage(error) }
   }
+}
+
+/** 辅助类型：用于 listGuiSkillRoots 的统一候选列表 */
+type CandidateForDisplay = {
+  id: string
+  disableKey: string
+  path: string
+  scope: 'project' | 'global'
+  source: 'common' | 'extra'
+  labelKey?: string
 }
 
 /**
@@ -318,6 +346,29 @@ async function discoverCodexPluginSkillRoots(): Promise<string[]> {
 
 function codexPluginCacheBase(): string {
   return join(homedir(), '.codex', 'plugins', 'cache')
+}
+
+/**
+ * 扫描 ~/.kun/plugins/<id>/skills/ 目录，将其注册为全局 skill roots。
+ * 这样从市场安装的 Claude Code 插件中的 skills 就能被自动发现。
+ */
+async function discoverKunPluginSkillRoots(): Promise<string[]> {
+  const roots: string[] = []
+  const pluginsRoot = claudePluginsRootDir()
+  let dirs: Dirent[]
+  try {
+    dirs = readdirSync(pluginsRoot, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  for (const dir of dirs) {
+    if (!dir.isDirectory() || dir.name.startsWith('.')) continue
+    const skillsDir = join(pluginsRoot, dir.name, 'skills')
+    if (existsSync(skillsDir)) {
+      roots.push(skillsDir)
+    }
+  }
+  return roots
 }
 
 /**

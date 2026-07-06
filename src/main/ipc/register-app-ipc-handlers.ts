@@ -1088,7 +1088,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     return result
   })
 
-  function toSerializable(plugin: { manifest: { id: string; name: string; version: string; description?: string; author?: string; homepage?: string; license?: string }; commandCount: number; skillCount: number }): SerializablePluginEntry {
+  function toSerializable(plugin: { manifest: { id: string; name: string; version: string; description?: string; author?: string; homepage?: string; license?: string }; sourceRoot?: string; marketplaceName?: string; commandCount: number; skillCount: number }): SerializablePluginEntry {
     return {
       id: plugin.manifest.id,
       name: plugin.manifest.name,
@@ -1097,6 +1097,8 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       author: plugin.manifest.author,
       homepage: plugin.manifest.homepage,
       license: plugin.manifest.license,
+      sourceRoot: plugin.sourceRoot,
+      marketplaceName: plugin.marketplaceName,
       commandCount: plugin.commandCount,
       skillCount: plugin.skillCount
     }

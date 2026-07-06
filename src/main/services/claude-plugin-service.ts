@@ -25,10 +25,13 @@ import {
 import {
   normalizeClaudePluginManifest,
   CLAUDE_PLUGIN_MANIFEST_FILENAME,
+  CLAUDE_PLUGIN_DIRNAME,
   CLAUDE_PLUGIN_LIMITS,
   type ClaudePluginManifestV1,
   type InstalledClaudePlugin
 } from '../../shared/claude-plugin-manifest'
+
+const INSTALLED_META_FILENAME = 'installed.json'
 
 // ────────────────────────────────────────
 // 路径工具
@@ -58,6 +61,17 @@ function pluginInstallDir(pluginId: string): string {
 const ALLOWED_COMMAND_EXTENSIONS = new Set(['.md'])
 const ALLOWED_SKILL_EXTENSIONS = new Set(['.md', '.json', '.png', '.webp', '.jpg', '.jpeg', '.gif', '.html', '.css', '.js', '.py', '.sh', '.txt', '.toml', '.yaml', '.yml'])
 const ALLOWED_HOOK_EXTENSIONS = new Set(['.js', '.sh', '.py'])
+const ALLOWED_ASSET_EXTENSIONS = new Set([
+  '.shp', '.shx', '.dbf', '.prj', '.cpg', '.sbn', '.sbx', '.xml',  // GIS 矢量文件
+  '.tiff', '.tif', '.geojson', '.gpkg',                               // 栅格/矢量格式
+  '.png', '.webp', '.jpg', '.jpeg', '.gif', '.svg', '.bmp',          // 图片
+  '.json', '.yml', '.yaml', '.toml', '.ini', '.cfg', '.env',         // 配置文件
+  '.py', '.sh', '.bat', '.ps1', '.js', '.ts',                        // 脚本
+  '.md', '.txt', '.rst', '.csv', '.tsv',                             // 文档/数据
+  '.zip', '.gz', '.tar', '.7z',                                       // 压缩包(示例数据)
+  '.html', '.css', '.jsx', '.tsx',                                    // 前端
+  '.dll', '.so', '.dylib',                                            // 本地库
+])
 const ALLOWED_MCP_FILES = new Set(['mcp.json'])
 const SKIP_DIRS = new Set(['node_modules', '.git', '.venv', '__pycache__', '.DS_Store'])
 
@@ -86,6 +100,20 @@ export type PluginUninstallResult =
  * 扫描源目录，统计可安装的文件。
  * 不做复制，只做计数和验证，用于安装前的预览。
  */
+/**
+ * 查找 plugin.json 的路径。
+ * 先找 `.claude-plugin/plugin.json` (Claude Code 官方路径),
+ * 再找 `plugin.json` (Kun 兼容路径)。
+ */
+async function resolveManifestPath(sourceRoot: string): Promise<string> {
+  const officialPath = join(sourceRoot, CLAUDE_PLUGIN_DIRNAME, CLAUDE_PLUGIN_MANIFEST_FILENAME)
+  try {
+    await stat(officialPath)
+    return officialPath
+  } catch { /* 官方路径不存在 */ }
+  return join(sourceRoot, CLAUDE_PLUGIN_MANIFEST_FILENAME)
+}
+
 export async function scanPluginSource(sourceRoot: string): Promise<{
   manifest: ClaudePluginManifestV1
   commandCount: number
@@ -93,12 +121,12 @@ export async function scanPluginSource(sourceRoot: string): Promise<{
   hookCount: number
   hasMcpConfig: boolean
 }> {
-  const manifestPath = join(sourceRoot, CLAUDE_PLUGIN_MANIFEST_FILENAME)
+  const manifestPath = await resolveManifestPath(sourceRoot)
   let rawManifest: string
   try {
     rawManifest = await readFile(manifestPath, 'utf8')
   } catch {
-    throw new Error(`插件目录缺少 ${CLAUDE_PLUGIN_MANIFEST_FILENAME}`)
+    throw new Error(`插件目录缺少 ${CLAUDE_PLUGIN_MANIFEST_FILENAME} (尝试了 .claude-plugin/plugin.json 和 plugin.json)`)
   }
 
   if (Buffer.byteLength(rawManifest, 'utf8') > CLAUDE_PLUGIN_LIMITS.manifestBytes) {
@@ -164,7 +192,7 @@ async function copyDirContents(
   srcDir: string,
   destDir: string,
   allowedExtensions: Set<string>,
-  maxFileBytes: number
+  _maxFileBytes?: number
 ): Promise<number> {
   let copied = 0
   await mkdir(destDir, { recursive: true })
@@ -187,15 +215,8 @@ async function copyDirContents(
         await mkdir(destPath, { recursive: true })
         await walk(srcPath, destPath)
       } else if (entry.isFile() && isAllowedExtension(entry.name, allowedExtensions)) {
-        let size: number
-        try {
-          size = (await stat(srcPath)).size
-        } catch {
-          continue
-        }
-        if (size > maxFileBytes) continue
         // 只复制，不执行
-        await copyFile(srcPath, destPath, 0) // fs.constants.COPYFILE_FICLONE (0 = default)
+        await copyFile(srcPath, destPath, 0)
         copied++
       }
     }
@@ -235,8 +256,8 @@ export async function installPlugin(sourceRoot: string): Promise<PluginInstallRe
 
     await mkdir(installRoot, { recursive: true })
 
-    // 1. 保存 plugin.json 副本
-    const manifestSrc = join(sourceRoot, CLAUDE_PLUGIN_MANIFEST_FILENAME)
+    // 1. 保存 plugin.json 副本 (自动查找 .claude-plugin/plugin.json 或 plugin.json)
+    const manifestSrc = await resolveManifestPath(sourceRoot)
     await safeCopyFile(manifestSrc, join(installRoot, CLAUDE_PLUGIN_MANIFEST_FILENAME))
 
     // 2. 复制 commands/
@@ -244,11 +265,7 @@ export async function installPlugin(sourceRoot: string): Promise<PluginInstallRe
     try {
       const commandsSrc = join(sourceRoot, 'commands')
       const commandsDest = join(installRoot, 'commands')
-      actualCommandCount = await copyDirContents(
-        commandsSrc, commandsDest,
-        ALLOWED_COMMAND_EXTENSIONS,
-        CLAUDE_PLUGIN_LIMITS.fileBytes
-      )
+      actualCommandCount = await copyDirContents(commandsSrc, commandsDest, ALLOWED_COMMAND_EXTENSIONS)
     } catch { /* commands/ 目录不存在 */ }
 
     // 3. 复制 skills/
@@ -256,11 +273,7 @@ export async function installPlugin(sourceRoot: string): Promise<PluginInstallRe
     try {
       const skillsSrc = join(sourceRoot, 'skills')
       const skillsDest = join(installRoot, 'skills')
-      actualSkillCount = await copyDirContents(
-        skillsSrc, skillsDest,
-        ALLOWED_SKILL_EXTENSIONS,
-        CLAUDE_PLUGIN_LIMITS.fileBytes
-      )
+      actualSkillCount = await copyDirContents(skillsSrc, skillsDest, ALLOWED_SKILL_EXTENSIONS)
     } catch { /* skills/ 目录不存在 */ }
 
     // 4. 复制 hooks/
@@ -268,31 +281,50 @@ export async function installPlugin(sourceRoot: string): Promise<PluginInstallRe
     try {
       const hooksSrc = join(sourceRoot, 'hooks')
       const hooksDest = join(installRoot, 'hooks')
-      actualHookCount = await copyDirContents(
-        hooksSrc, hooksDest,
-        ALLOWED_HOOK_EXTENSIONS,
-        CLAUDE_PLUGIN_LIMITS.fileBytes
-      )
+      actualHookCount = await copyDirContents(hooksSrc, hooksDest, ALLOWED_HOOK_EXTENSIONS)
     } catch { /* hooks/ 目录不存在 */ }
 
-    // 5. 复制 mcp.json
+    // 5. 复制 assets/ (Claude Code 官方插件支持)
+    try {
+      const assetsSrc = join(sourceRoot, 'assets')
+      const assetsDest = join(installRoot, 'assets')
+      await copyDirContents(assetsSrc, assetsDest, ALLOWED_ASSET_EXTENSIONS)
+    } catch { /* assets/ 目录不存在 */ }
+
+    // 6. 复制 scripts/ (社区约定)
+    try {
+      const scriptsSrc = join(sourceRoot, 'scripts')
+      const scriptsDest = join(installRoot, 'scripts')
+      await copyDirContents(scriptsSrc, scriptsDest, ALLOWED_ASSET_EXTENSIONS)
+    } catch { /* scripts/ 目录不存在 */ }
+
+    // 7. 复制 agents/ (Claude Code 官方插件支持)
+    try {
+      const agentsSrc = join(sourceRoot, 'agents')
+      const agentsDest = join(installRoot, 'agents')
+      await copyDirContents(agentsSrc, agentsDest, ALLOWED_SKILL_EXTENSIONS)
+    } catch { /* agents/ 目录不存在 */ }
+
+    // 8. 如果源 manifest 在 .claude-plugin/ 下，保持 Claude Code 官方目录结构
+    if (basename(dirname(manifestSrc)) === CLAUDE_PLUGIN_DIRNAME) {
+      await safeCopyFile(manifestSrc, join(installRoot, CLAUDE_PLUGIN_DIRNAME, CLAUDE_PLUGIN_MANIFEST_FILENAME))
+    }
+
+    // 9. 复制 mcp.json
     let actualMcpMerged = false
     if (hasMcpConfig) {
       try {
         const mcpJsonSrc = join(sourceRoot, 'mcp.json')
         const raw = await readFile(mcpJsonSrc, 'utf8')
-        if (Buffer.byteLength(raw, 'utf8') <= CLAUDE_PLUGIN_LIMITS.fileBytes) {
-          const parsed = JSON.parse(raw)
-          // 合并到全局 mcp.json
-          await mergeMcpConfig(parsed, manifest.id)
-          actualMcpMerged = true
-        }
+        const parsed = JSON.parse(raw)
+        await mergeMcpConfig(parsed, manifest.id)
+        actualMcpMerged = true
       } catch {
         errors.push('mcp.json 无效,已跳过 MCP 配置合并')
       }
     }
 
-    // 6. 如果 hooks 在 manifest 中声明了,也写入 config.json
+    // 10. 如果 hooks 在 manifest 中声明了,也写入 config.json
     if (manifest.hooks && manifest.hooks.length > 0) {
       try {
         await mergeHookConfig(manifest.hooks, installRoot, manifest.id)
@@ -301,7 +333,7 @@ export async function installPlugin(sourceRoot: string): Promise<PluginInstallRe
       }
     }
 
-    // 7. 将插件的 skills 目录注册为全局 skill root
+    // 11. 将插件的 skills 目录注册为全局 skill root
     //    这样 Agent 在对话中就能自动发现和使用这些 skills
     if (actualSkillCount > 0) {
       try {
@@ -320,6 +352,15 @@ export async function installPlugin(sourceRoot: string): Promise<PluginInstallRe
       commandCount: actualCommandCount,
       skillCount: actualSkillCount
     }
+
+    // 8. 保存安装元数据到 installed.json, 供后续更新/卸载使用
+    try {
+      await writeInstalledMeta(installRoot, {
+        sourceRoot: plugin.sourceRoot,
+        marketplaceName: plugin.marketplaceName,
+        installedAt: plugin.installedAt
+      })
+    } catch { /* 不影响安装 */ }
 
     if (errors.length > 0) {
       return { ok: false, errors }
@@ -441,6 +482,37 @@ export async function uninstallPlugin(pluginId: string): Promise<PluginUninstall
 }
 
 // ────────────────────────────────────────
+// 安装元数据 (installed.json)
+// ────────────────────────────────────────
+
+type InstalledMeta = {
+  sourceRoot: string
+  marketplaceName?: string
+  installedAt: string
+}
+
+async function readInstalledMeta(installRoot: string): Promise<InstalledMeta | null> {
+  try {
+    const raw = await readFile(join(installRoot, INSTALLED_META_FILENAME), 'utf8')
+    const parsed = JSON.parse(raw)
+    if (typeof parsed.sourceRoot === 'string' && parsed.sourceRoot.trim()) {
+      return {
+        sourceRoot: parsed.sourceRoot,
+        marketplaceName: typeof parsed.marketplaceName === 'string' ? parsed.marketplaceName : undefined,
+        installedAt: typeof parsed.installedAt === 'string' ? parsed.installedAt : ''
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+async function writeInstalledMeta(installRoot: string, meta: InstalledMeta): Promise<void> {
+  await writeFile(join(installRoot, INSTALLED_META_FILENAME), JSON.stringify(meta, null, 2), 'utf8')
+}
+
+// ────────────────────────────────────────
 // 列出已安装插件
 // ────────────────────────────────────────
 
@@ -456,6 +528,8 @@ export type SerializablePluginEntry = {
   author?: string
   homepage?: string
   license?: string
+  sourceRoot?: string
+  marketplaceName?: string
   commandCount: number
   skillCount: number
 }
@@ -483,6 +557,9 @@ export async function listInstalledPlugins(): Promise<SerializablePluginEntry[]>
       const installRoot = join(root, entry.name)
       const m = validation.manifest
 
+      // 读取安装元数据
+      const meta = await readInstalledMeta(installRoot)
+
       let commandCount = 0
       try {
         const cmdDir = join(installRoot, 'commands')
@@ -497,6 +574,14 @@ export async function listInstalledPlugins(): Promise<SerializablePluginEntry[]>
           .filter((e) => e.isDirectory() && !SKIP_DIRS.has(e.name)).length
       } catch { /* */ }
 
+      // 兼容旧安装: 没有 installed.json 时从 homepage 推断来源
+      let sourceRoot = meta?.sourceRoot
+      if (!sourceRoot && m.homepage) {
+        if (m.homepage.includes('gitee.com') || m.homepage.includes('github.com')) {
+          sourceRoot = m.homepage
+        }
+      }
+
       plugins.push({
         id: m.id,
         name: m.name,
@@ -505,6 +590,8 @@ export async function listInstalledPlugins(): Promise<SerializablePluginEntry[]>
         author: m.author,
         homepage: m.homepage,
         license: m.license,
+        sourceRoot,
+        marketplaceName: meta?.marketplaceName,
         commandCount,
         skillCount
       })
@@ -526,144 +613,75 @@ export type MarketplacePluginEntry = {
   license?: string
   homepage?: string
   repository?: string
-  /** npm 安装名,例如 @anthropic-ai/claude-code-plugin-foo */
+  /** npm 安装名 或 Git 仓库 URL (如 https://gitee.com/user/repo) */
   installName: string
+  /** 安装方式: 'npm' (默认) 或 'git' */
+  installKind?: 'npm' | 'git'
 }
 
 /**
- * Kun 维护的已知 Claude Code 兼容插件列表。
- * 这些插件入口在 npm registry 上存在,无需用户记住名字。
- * 格式: [displayName, installName (npm), description, author?, homepage?]
+ * Kun 内置已知的 Claude Code 兼容插件/市场列表。
+ * 以真实可用的 Git 仓库为主, npm 搜索结果为辅。
+ * 不包含不存在的 @anthropic-ai/claude-code-plugin-* 包。
  */
 const CURATED_PLUGINS: Array<{
   name: string
   installName: string
+  installKind: 'npm' | 'git'
   description: string
   author?: string
   homepage?: string
 }> = [
   {
-    name: 'OpenSpec',
-    installName: '@anthropic-ai/claude-code-plugin-openspec',
-    description: '规范驱动开发工作流: 起草规范, 追踪变更, 从需求到实现',
-    author: 'Anthropic',
-    homepage: 'https://github.com/anthropics/claude-code'
-  },
-  {
-    name: 'Claude Code GitHub Action',
-    installName: '@anthropic-ai/claude-code-plugin-github-action',
-    description: '从 Claude Code 会话触发 GitHub Actions 工作流',
-    author: 'Anthropic'
+    name: 'GIS 遥感数据处理工具集',
+    installName: 'https://gitee.com/yzy0430/gis-agent-toolkit',
+    installKind: 'git',
+    description: '国产遥感数据处理技能集: 影像分市归档、SHP 合并提取字段、缩略图附件等。基于 GDAL/geopandas 开源栈',
+    author: 'yzy'
   },
   {
     name: 'Context7 (Library Docs)',
     installName: '@upstash/context7-mcp',
+    installKind: 'npm',
     description: '为 AI 编码助手提供最新第三方库文档上下文',
     author: 'Upstash',
     homepage: 'https://github.com/upstash/context7'
   },
   {
-    name: 'Perplexity Ask',
-    installName: '@anthropic-ai/claude-code-plugin-perplexity',
-    description: '在 Claude Code 中直接调用 Perplexity 搜索',
-    author: 'Anthropic'
-  },
-  {
-    name: 'Brave Search',
-    installName: '@anthropic-ai/claude-code-plugin-brave-search',
-    description: '通过 Brave Search API 进行 Web 搜索',
-    author: 'Anthropic'
-  },
-  {
-    name: 'Google Maps',
-    installName: '@anthropic-ai/claude-code-plugin-google-maps',
-    description: '地理位置、路线规划和地点搜索',
-    author: 'Anthropic'
-  },
-  {
     name: 'Playwright MCP',
-    installName: '@anthropic-ai/claude-code-plugin-playwright',
+    installName: '@playwright/mcp',
+    installKind: 'npm',
     description: '浏览器自动化测试, 页面截图和交互',
-    author: 'Anthropic',
+    author: 'Microsoft',
     homepage: 'https://github.com/microsoft/playwright-mcp'
   },
   {
     name: 'GitHub MCP Server',
-    installName: '@anthropic-ai/claude-code-plugin-github',
+    installName: '@modelcontextprotocol/server-github',
+    installKind: 'npm',
     description: '仓库管理, PR, Issue, 代码审查等 GitHub 操作',
-    author: 'Anthropic'
+    author: 'ModelContextProtocol'
   },
   {
-    name: 'GitLab MCP Server',
-    installName: '@anthropic-ai/claude-code-plugin-gitlab',
-    description: 'GitLab 仓库管理, MR, Issue 操作',
-    author: 'Anthropic'
+    name: 'Brave Search MCP',
+    installName: '@modelcontextprotocol/server-brave-search',
+    installKind: 'npm',
+    description: '通过 Brave Search API 进行 Web 搜索',
+    author: 'ModelContextProtocol'
   },
   {
-    name: 'Slack MCP',
-    installName: '@anthropic-ai/claude-code-plugin-slack',
-    description: '发送 Slack 消息, 读取频道历史',
-    author: 'Anthropic'
+    name: 'Sequential Thinking MCP',
+    installName: '@modelcontextprotocol/server-sequential-thinking',
+    installKind: 'npm',
+    description: '结构化推理与逐步思考',
+    author: 'ModelContextProtocol'
   },
   {
-    name: 'Linear MCP',
-    installName: '@anthropic-ai/claude-code-plugin-linear',
-    description: 'Linear 项目管理: Issue 创建, 查询, 更新',
-    author: 'Anthropic'
-  },
-  {
-    name: 'Figma MCP',
-    installName: '@anthropic-ai/claude-code-plugin-figma',
-    description: '读取 Figma 设计文件, 导出资源',
-    author: 'Anthropic'
-  },
-  {
-    name: 'Notion MCP',
-    installName: '@anthropic-ai/claude-code-plugin-notion',
-    description: 'Notion 文档读写, 数据库查询',
-    author: 'Anthropic'
-  },
-  {
-    name: 'Obsidian MCP',
-    installName: '@anthropic-ai/claude-code-plugin-obsidian',
-    description: 'Obsidian 知识库读写和搜索',
-    author: 'Anthropic'
-  },
-  {
-    name: 'Docker MCP',
-    installName: '@anthropic-ai/claude-code-plugin-docker',
-    description: 'Docker 容器管理, 镜像构建和运行',
-    author: 'Anthropic'
-  },
-  {
-    name: 'Sentry MCP',
-    installName: '@anthropic-ai/claude-code-plugin-sentry',
-    description: 'Sentry 错误追踪: 查询事件, 分析堆栈',
-    author: 'Anthropic'
-  },
-  {
-    name: 'Postgres MCP',
-    installName: '@anthropic-ai/claude-code-plugin-postgres',
-    description: 'PostgreSQL 数据库查询和管理',
-    author: 'Anthropic'
-  },
-  {
-    name: 'SQLite MCP',
-    installName: '@anthropic-ai/claude-code-plugin-sqlite',
-    description: 'SQLite 本地数据库查询',
-    author: 'Anthropic'
-  },
-  {
-    name: 'Redis MCP',
-    installName: '@anthropic-ai/claude-code-plugin-redis',
-    description: 'Redis 缓存操作和数据管理',
-    author: 'Anthropic'
-  },
-  {
-    name: 'Stripe MCP',
-    installName: '@anthropic-ai/claude-code-plugin-stripe',
-    description: 'Stripe 支付: 客户, 订阅, 发票管理',
-    author: 'Anthropic'
+    name: 'Memory MCP',
+    installName: '@modelcontextprotocol/server-memory',
+    installKind: 'npm',
+    description: '知识图谱记忆系统',
+    author: 'ModelContextProtocol'
   }
 ]
 
@@ -684,6 +702,7 @@ export async function fetchMarketplacePlugins(): Promise<MarketplacePluginEntry[
       author: curated.author,
       homepage: curated.homepage,
       installName: curated.installName,
+      installKind: curated.installKind,
       license: undefined,
       repository: undefined
     })
@@ -802,7 +821,15 @@ export async function installPluginFromNpm(installName: string): Promise<PluginI
     // Step 5: install from the scanned dir
     const result = await installPlugin(scanned)
     if (result.ok) {
-      result.plugin.sourceRoot = `npm:${installName}`
+      const sourceUrl = `npm:${installName}`
+      result.plugin.sourceRoot = sourceUrl
+      // 覆盖 installed.json 中的临时路径为正确的源 URL
+      try {
+        await writeInstalledMeta(result.plugin.installRoot, {
+          sourceRoot: sourceUrl,
+          installedAt: result.plugin.installedAt
+        })
+      } catch { /* */ }
     }
 
     // cleanup
@@ -820,15 +847,20 @@ export async function installPluginFromNpm(installName: string): Promise<PluginI
 /**
  * 从 Git 仓库 (GitHub / Gitee / GitLab) 安装 Claude Code 兼容插件。
  *
- * 支持的格式:
- *   - https://gitee.com/user/repo          (完整 URL, Kun 自动识别)
- *   - https://github.com/user/repo/tree/main/plugins/my-plugin
- *   - github:user/repo[/subpath]           (简写)
- *   - gitee:user/repo[/subpath]            (简写)
+ * 支持三种模式:
+ *   1. Marketplace 模式 (仓库根有 .claude-plugin/marketplace.json):
+ *      读取 marketplace.json → 找到 plugins[].source → 安装子目录中的真正插件
+ *      如果没有指定 subPath，安装 marketplace 中的第一个插件
+ *   2. 单插件模式 (子目录/.claude-plugin/plugin.json):
+ *      Claude Code 官方结构，直接安装
+ *   3. 兼容模式 (仓库根有 commands/skills 等原生结构):
+ *      自动生成 plugin.json 后安装
  *
- * Kun 会额外扫描仓库根目录的 Claude Code 原生结构
- * (commands/、skills/、.mcp.json 等)，即使没有 plugin.json
- * 也可自动生成清单并安装。
+ * 支持的地址格式:
+ *   - https://gitee.com/user/repo
+ *   - https://github.com/user/repo/tree/main/plugins/my-plugin
+ *   - github:user/repo[/subpath]
+ *   - gitee:user/repo[/subpath]
  */
 export async function installPluginFromGitHub(repoUrl: string): Promise<PluginInstallResult> {
   const parsed = parseRepoUrl(repoUrl)
@@ -839,7 +871,6 @@ export async function installPluginFromGitHub(repoUrl: string): Promise<PluginIn
   const { host, owner, repo, subPath } = parsed
   const isGithub = host === 'github.com'
 
-  // GitHub 用 codeload API 下载 zip，Gitee/GitLab 用 archive 端点
   const archiveUrl = isGithub
     ? `https://codeload.github.com/${owner}/${repo}/zip/refs/heads/HEAD`
     : `https://${host}/${owner}/${repo}/repository/archive/main.zip`
@@ -854,10 +885,8 @@ export async function installPluginFromGitHub(repoUrl: string): Promise<PluginIn
     const ctrl = new AbortController()
     const t = setTimeout(() => ctrl.abort(), 60_000)
 
-    // 尝试下载，Gitee 失败时尝试备用 URL
     let response = await fetch(archiveUrl, { signal: ctrl.signal })
     if (!response.ok && !isGithub) {
-      // Gitee 备用: 尝试 master 分支
       const fallbackUrl = `https://${host}/${owner}/${repo}/repository/archive/master.zip`
       response = await fetch(fallbackUrl, { signal: ctrl.signal })
     }
@@ -870,7 +899,7 @@ export async function installPluginFromGitHub(repoUrl: string): Promise<PluginIn
     await mkdir(extractDir, { recursive: true })
     await unzip(zipBuffer, extractDir)
 
-    // Git hosting archive 解压后通常是 `<repo>-<branch>/` 目录
+    // Git archive 解压后通常是 `<repo>-<branch>/` 目录
     let scanDir = extractDir
     const entries = await readdir(extractDir, { withFileTypes: true })
     if (entries.length === 1 && entries[0]!.isDirectory()) {
@@ -880,17 +909,51 @@ export async function installPluginFromGitHub(repoUrl: string): Promise<PluginIn
       scanDir = join(scanDir, ...subPath.split('/').filter(Boolean))
     }
 
+    // ── 模式1: 尝试 marketplace.json ──────────────────────
+    const marketplacePluginDir = await findPluginViaMarketplace(scanDir)
+    if (marketplacePluginDir) {
+      const result = await installPlugin(marketplacePluginDir)
+      if (result.ok) {
+        const sourceUrl = `https://${host}/${owner}/${repo}${subPath ? `/${subPath}` : ''}`
+        result.plugin.sourceRoot = sourceUrl
+        // 从 marketplace.json 获取 market 名称
+        try {
+          const marketJson = JSON.parse(await readFile(join(scanDir, CLAUDE_PLUGIN_DIRNAME, 'marketplace.json'), 'utf8'))
+          if (typeof marketJson.name === 'string') {
+            result.plugin.marketplaceName = marketJson.name
+          }
+        } catch { /* */ }
+        try {
+          await writeInstalledMeta(result.plugin.installRoot, {
+            sourceRoot: sourceUrl,
+            marketplaceName: result.plugin.marketplaceName,
+            installedAt: result.plugin.installedAt
+          })
+        } catch { /* */ }
+      }
+      try { await rm(extractDir, { recursive: true, force: true }) } catch { /* */ }
+      return result
+    }
+
+    // ── 模式2/3: 普通插件 (直接找 plugin.json 或原生结构) ──
     const pluginRoot = await findPluginInDir(scanDir)
     if (!pluginRoot) {
       return {
         ok: false,
-        errors: [`${host}/${owner}/${repo} 下载成功但在 ${subPath || '根目录'} 中未找到 plugin.json 或 Claude Code 原生结构 (commands/、skills/、.mcp.json 等)`]
+        errors: [`${host}/${owner}/${repo} 下载成功但未找到可安装的插件。请确认仓库包含 .claude-plugin/plugin.json、plugin.json、或 commands/skills 等 Claude Code 原生结构`]
       }
     }
 
     const result = await installPlugin(pluginRoot)
     if (result.ok) {
-      result.plugin.sourceRoot = `https://${host}/${owner}/${repo}${subPath ? `/${subPath}` : ''}`
+      const sourceUrl = `https://${host}/${owner}/${repo}${subPath ? `/${subPath}` : ''}`
+      result.plugin.sourceRoot = sourceUrl
+      try {
+        await writeInstalledMeta(result.plugin.installRoot, {
+          sourceRoot: sourceUrl,
+          installedAt: result.plugin.installedAt
+        })
+      } catch { /* */ }
     }
 
     try { await rm(extractDir, { recursive: true, force: true }) } catch { /* */ }
@@ -900,6 +963,72 @@ export async function installPluginFromGitHub(repoUrl: string): Promise<PluginIn
   } finally {
     try { await rm(extractDir, { recursive: true, force: true }) } catch { /* */ }
   }
+}
+
+/**
+ * 读取 marketplace.json，找到并返回真正的插件目录。
+ * marketplace.json 格式: { plugins: [{ name, source: "./plugins/xxx" }] }
+ */
+async function findPluginViaMarketplace(scanDir: string): Promise<string | null> {
+  // 查找 marketplace.json
+  let marketPath = join(scanDir, CLAUDE_PLUGIN_DIRNAME, 'marketplace.json')
+  try {
+    await stat(marketPath)
+  } catch {
+    // 也尝试根目录下的 marketplace.json (非标准但有容错性)
+    marketPath = join(scanDir, 'marketplace.json')
+    try {
+      await stat(marketPath)
+    } catch {
+      return null // 没有 marketplace，不是 marketplace 仓库
+    }
+  }
+
+  let marketJson: unknown
+  try {
+    marketJson = JSON.parse(await readFile(marketPath, 'utf8'))
+  } catch {
+    return null
+  }
+  if (!isJsonRecord(marketJson)) return null
+
+  const plugins = Array.isArray(marketJson.plugins) ? marketJson.plugins : []
+  if (plugins.length === 0) return null
+
+  // 取第一个插件的 source 路径
+  const firstPlugin = plugins[0]
+  if (!isJsonRecord(firstPlugin)) return null
+  const source = typeof firstPlugin.source === 'string' ? firstPlugin.source : null
+  if (!source) return null
+
+  // source 是相对路径 (如 "./plugins/gis-toolkit"), 基于 marketplace.json 所在目录
+  const marketDir = dirname(marketPath)
+  const pluginDir = resolve(marketDir, source)
+
+  // 检查该目录是否存在且包含 .claude-plugin/plugin.json 或 plugin.json
+  try {
+    await stat(pluginDir)
+  } catch {
+    return null
+  }
+  // 查找清单
+  try {
+    await stat(join(pluginDir, CLAUDE_PLUGIN_DIRNAME, CLAUDE_PLUGIN_MANIFEST_FILENAME))
+    return pluginDir
+  } catch { /* */ }
+  try {
+    await stat(join(pluginDir, CLAUDE_PLUGIN_MANIFEST_FILENAME))
+    return pluginDir
+  } catch { /* */ }
+  // 如果插件目录包含 skills/commands/hooks，也接受
+  try {
+    if (await hasNativeClaudeCodeLayout(pluginDir)) {
+      await generatePluginManifest(pluginDir)
+      return pluginDir
+    }
+  } catch { /* */ }
+
+  return null
 }
 
 // ────────────────────────────────────────
@@ -953,41 +1082,71 @@ async function unzip(zipBuffer: Buffer, destDir: string): Promise<void> {
 /**
  * 扫描目录，查找或自动生成插件清单。
  *
- * 兼容三种格式:
- * 1. 有 plugin.json → 直接使用
- * 2. 有 commands/、skills/、.mcp.json、hooks/ 中的任意 → 自动生成 plugin.json
- * 3. 有 package.json 且带 claude-code-plugin keyword → 从 package.json 推断
+ * 优先级:
+ * 1. .claude-plugin/plugin.json  (Claude Code 官方路径)
+ * 2. plugin.json                  (Kun / 社区路径)
+ * 3. plugins/ 子目录中的插件
+ * 4. 当前目录包含 commands/skills/hooks (Claude Code 原生格式,自动生成)
+ * 5. package.json 标记为 claude-code-plugin
  *
- * 这样 GitHub/Gitee 上使用 Claude Code 原生格式的仓库也可以直接安装。
+ * 注意: 如果当前目录包含 marketplace.json, 不会当作单插件处理
+ * (该情况由 findPluginViaMarketplace 负责)
  */
 async function findPluginInDir(dirPath: string): Promise<string | null> {
-  // 1. 有 plugin.json
+  // 先检查不是 marketplace-only 仓库 (有 marketplace.json 但没有自己就是插件)
+  const isMarketplace = await isMarketplaceDir(dirPath)
+  // 如果当前目录是 marketplace 仓库, 先搜索 plugins/ 子目录
+  if (isMarketplace) {
+    try {
+      const pluginsDir = join(dirPath, 'plugins')
+      const entries = await readdir(pluginsDir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue
+        const subPluginRoot = await findPluginInSubDir(join(pluginsDir, entry.name))
+        if (subPluginRoot) return subPluginRoot
+      }
+    } catch { /* */ }
+    // 如果 plugins/ 下没找到, 不把 marketplace 仓库根当作插件
+    return null
+  }
+
+  return findPluginInSubDir(dirPath)
+}
+
+/**
+ * 在单个子目录中查找插件(不递归到 plugins 子目录)
+ */
+async function findPluginInSubDir(dirPath: string): Promise<string | null> {
+  // 1. .claude-plugin/plugin.json (Claude Code 官方路径)
+  try {
+    await stat(join(dirPath, CLAUDE_PLUGIN_DIRNAME, CLAUDE_PLUGIN_MANIFEST_FILENAME))
+    return dirPath
+  } catch { /* */ }
+
+  // 2. plugin.json
   try {
     await stat(join(dirPath, CLAUDE_PLUGIN_MANIFEST_FILENAME))
     return dirPath
   } catch { /* */ }
 
-  // 2. 检查 package/ 子目录
-  try {
-    const pkgDir = join(dirPath, 'package')
-    await stat(join(pkgDir, CLAUDE_PLUGIN_MANIFEST_FILENAME))
-    return pkgDir
-  } catch { /* */ }
-
-  // 3. 递归搜索一层
+  // 3. 递归搜索一层 (非点开头、非 plugins 子目录)
   try {
     const entries = await readdir(dirPath, { withFileTypes: true })
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'plugins') continue
       const subPath = join(dirPath, entry.name)
+      try {
+        await stat(join(subPath, CLAUDE_PLUGIN_DIRNAME, CLAUDE_PLUGIN_MANIFEST_FILENAME))
+        return subPath
+      } catch { /* */ }
       try {
         await stat(join(subPath, CLAUDE_PLUGIN_MANIFEST_FILENAME))
         return subPath
-      } catch { /* continue */ }
+      } catch { /* */ }
     }
   } catch { /* */ }
 
-  // 4. 检测 Claude Code 原生格式: 有 commands/、skills/、hooks/、.mcp.json 任意一个
+  // 4. 检测 Claude Code 原生格式 (但排除只有 README/INSTALL 等的目录)
   try {
     if (await hasNativeClaudeCodeLayout(dirPath)) {
       await generatePluginManifest(dirPath)
@@ -1012,24 +1171,58 @@ async function findPluginInDir(dirPath: string): Promise<string | null> {
 }
 
 /**
+ * 检查目录是否是一个 marketplace（有 marketplace.json 和 plugins/ 子目录）。
+ */
+async function isMarketplaceDir(dirPath: string): Promise<boolean> {
+  try {
+    await stat(join(dirPath, CLAUDE_PLUGIN_DIRNAME, 'marketplace.json'))
+    return true
+  } catch { /* */ }
+  try {
+    await stat(join(dirPath, 'marketplace.json'))
+    return true
+  } catch { /* */ }
+  return false
+}
+
+/**
  * 检测仓库是否包含 Claude Code 原生目录结构。
  */
 async function hasNativeClaudeCodeLayout(dirPath: string): Promise<boolean> {
-  const checks: Array<{ relative: string; isDir: boolean }> = [
+  // 只有 commands/skills/hooks 目录才算真正的 Claude Code 插件结构
+  // .claude/ 和 .codex/ 太泛（可以是 marketplace 仓库的项目配置），需要配合其他目录判断
+  let hasSkillOrCommand = false
+  const primaryChecks: Array<{ relative: string; isDir: boolean }> = [
     { relative: 'commands', isDir: true },
     { relative: 'skills', isDir: true },
     { relative: 'hooks', isDir: true },
-    { relative: '.claude', isDir: true },
-    { relative: '.mcp.json', isDir: false },
-    { relative: 'mcp.json', isDir: false },
-    { relative: '.codex', isDir: true },
+    { relative: 'agents', isDir: true },
   ]
-  for (const check of checks) {
+  for (const check of primaryChecks) {
     try {
       const info = await stat(join(dirPath, check.relative))
-      if (check.isDir ? info.isDirectory() : info.isFile()) return true
+      if (check.isDir ? info.isDirectory() : info.isFile()) {
+        hasSkillOrCommand = true
+        break
+      }
     } catch { /* */ }
   }
+
+  // 有 commands/skills/hooks/agents 目录 → 确认是插件
+  if (hasSkillOrCommand) return true
+
+  // 检查 mcp.json（插件级）
+  try {
+    const info = await stat(join(dirPath, 'mcp.json'))
+    if (info.isFile()) return true
+  } catch { /* */ }
+
+  // .mcp.json 也是
+  try {
+    const info = await stat(join(dirPath, '.mcp.json'))
+    if (info.isFile()) return true
+  } catch { /* */ }
+
   return false
 }
 
