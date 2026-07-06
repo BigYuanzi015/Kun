@@ -103,7 +103,7 @@
 
 :root[data-platform='darwin'] {
   --ds-window-controls-safe-block: 42px;
-  --ds-window-controls-safe-inset: 56px;
+  --ds-window-controls-safe-inset: 112px;
   --ds-collapsed-sidebar-titlebar-extra-inset: 3.5rem;
   --ds-write-titlebar-extra-inset: 20px;
 }
@@ -3124,17 +3124,11 @@ pre {
     justify-content: flex-start;
   }
 
-  .chat-workbench-topbar {
-    flex: 1 1 auto;
-  }
-
-  .chat-agent-switcher-label,
-  .chat-gui-update-label {
+  .chat-agent-switcher-label {
     display: none;
   }
 
-  .chat-agent-switcher,
-  .chat-gui-update-button {
+  .chat-agent-switcher {
     padding-inline: 0.625rem;
   }
 }

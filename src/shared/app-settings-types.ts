@@ -4,6 +4,7 @@ import type { LocalWhisperDownloadSourceId } from './local-whisper'
 import type { ApprovalPolicy, SandboxMode } from '../../kun/src/contracts/policy.js'
 import type { ComputerUseMode } from '../../kun/src/contracts/capabilities.js'
 import type { ModelEndpointFormat } from '../../kun/src/contracts/model-endpoint-format.js'
+import type { ToolOutputLimitsConfig } from '../../kun/src/contracts/tool-output-limits.js'
 export {
   DEFAULT_MODEL_ENDPOINT_FORMAT,
   inferModelEndpointFormatFromUrl,
@@ -21,6 +22,11 @@ export {
   type ApprovalPolicy,
   type SandboxMode
 } from '../../kun/src/contracts/policy.js'
+export {
+  DEFAULT_TOOL_OUTPUT_MAX_BYTES,
+  DEFAULT_TOOL_OUTPUT_MAX_LINES,
+  type ToolOutputLimitsConfig
+} from '../../kun/src/contracts/tool-output-limits.js'
 export const KUN_TOOL_PERMISSION_MODES = ['always-ask', 'read-only', 'sensitive-ask', 'workspace-write', 'bypass'] as const
 export type KunToolPermissionMode = (typeof KUN_TOOL_PERMISSION_MODES)[number]
 /**
@@ -69,9 +75,11 @@ export type ClawModel = 'auto' | ScheduleModel
 
 export const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 export const CUSTOM_IMAGE_GENERATION_PROVIDER_ID = 'custom'
-export const IMAGE_GENERATION_PROTOCOLS = ['openai-images', 'minimax-image'] as const
+export const IMAGE_GENERATION_PROTOCOLS = ['openai-images', 'minimax-image', 'codex-responses-image'] as const
 export type ImageGenerationProtocol = (typeof IMAGE_GENERATION_PROTOCOLS)[number]
 export const DEFAULT_IMAGE_GENERATION_PROTOCOL: ImageGenerationProtocol = 'openai-images'
+export const IMAGE_GENERATION_QUALITIES = ['auto', 'low', 'medium', 'high'] as const
+export type ImageGenerationQuality = (typeof IMAGE_GENERATION_QUALITIES)[number]
 export const CUSTOM_SPEECH_TO_TEXT_PROVIDER_ID = 'custom'
 export const SPEECH_TO_TEXT_PROTOCOLS = ['openai-transcriptions', 'mimo-asr', 'local-whisper'] as const
 export type SpeechToTextProtocol = (typeof SPEECH_TO_TEXT_PROTOCOLS)[number]
@@ -298,6 +306,8 @@ export type KunRuntimeSettingsV1 = {
   tokenEconomyMode: boolean
   /** Detailed token-saving behavior used when building Kun model requests. */
   tokenEconomy: KunTokenEconomySettingsV1
+  /** Model-visible output caps for builtin read/bash-style tools. */
+  toolOutputLimits: KunToolOutputLimitsSettingsV1
   /** When true, the runtime skips bearer-token auth. Local dev only. */
   insecure: boolean
   /** GUI-managed MCP progressive discovery/search settings written into Kun config.json. */
@@ -322,6 +332,8 @@ export type KunRuntimeSettingsV1 = {
   modelProfiles: Record<string, ModelProviderModelProfileV1>
   /** Whether long-term memory is enabled in the Kun runtime. */
   memoryEnabled: boolean
+  /** Native Kun AGENTS.md instructions injected into every turn. */
+  instructions: KunInstructionSettingsV1
   /** Host computer-use (screenshot + mouse/keyboard control) settings. */
   computerUse: KunComputerUseSettingsV1
   /** First-party design-quality linter applied to frontend output. */
@@ -350,6 +362,10 @@ export type KunRuntimeSettingsV1 = {
   summaryReasoningEffort?: ModelReasoningEffort
   /** Reasoning depth for the code-review subagent model call. Default 'off'. */
   codeReviewReasoningEffort?: ModelReasoningEffort
+}
+
+export type KunInstructionSettingsV1 = {
+  enabled: boolean
 }
 
 export function kunToolPermissionModeSettings(
@@ -427,6 +443,8 @@ export type KunImageGenerationSettingsV1 = {
   model: string
   /** Default "WxH" or "auto" used when the model omits aspect ratio and size. Empty means provider default. */
   defaultSize: string
+  /** Provider quality/precision hint. "auto" lets the provider decide. */
+  quality: ImageGenerationQuality
   timeoutMs: number
 }
 
@@ -532,6 +550,8 @@ export type KunTokenEconomySettingsV1 = {
   historyHygiene: KunHistoryHygieneSettingsV1
 }
 
+export type KunToolOutputLimitsSettingsV1 = Required<ToolOutputLimitsConfig>
+
 export type KunContextCompactionSettingsV1 = {
   defaultSoftThreshold: number
   defaultHardThreshold: number
@@ -593,11 +613,12 @@ export type KunTokenEconomySettingsPatchV1 = Partial<
 export type KunRuntimeSettingsPatchV1 = Partial<
   Omit<
     KunRuntimeSettingsV1,
-    'mcpSearch' | 'storage' | 'contextCompaction' | 'runtimeTuning' | 'tokenEconomy' | 'imageGeneration' | 'speechToText' | 'textToSpeech' | 'musicGeneration' | 'videoGeneration' | 'computerUse' | 'quality' | 'modelProfiles'
+    'mcpSearch' | 'storage' | 'contextCompaction' | 'runtimeTuning' | 'tokenEconomy' | 'toolOutputLimits' | 'imageGeneration' | 'speechToText' | 'textToSpeech' | 'musicGeneration' | 'videoGeneration' | 'instructions' | 'computerUse' | 'quality' | 'modelProfiles'
   >
 > & {
   mcpSearch?: Partial<KunMcpSearchSettingsV1>
   tokenEconomy?: KunTokenEconomySettingsPatchV1
+  toolOutputLimits?: Partial<KunToolOutputLimitsSettingsV1>
   storage?: Partial<KunStorageSettingsV1>
   contextCompaction?: Partial<KunContextCompactionSettingsV1>
   runtimeTuning?: KunRuntimeTuningSettingsPatchV1
@@ -606,6 +627,7 @@ export type KunRuntimeSettingsPatchV1 = Partial<
   textToSpeech?: Partial<KunTextToSpeechSettingsV1>
   musicGeneration?: Partial<KunMusicGenerationSettingsV1>
   videoGeneration?: Partial<KunVideoGenerationSettingsV1>
+  instructions?: Partial<KunInstructionSettingsV1>
   computerUse?: Partial<KunComputerUseSettingsV1>
   quality?: Partial<KunDesignQualitySettingsV1>
   modelProfiles?: Record<string, ModelProviderModelProfilePatchV1 | null>
@@ -1678,6 +1700,80 @@ export type WriteSettingsPatchV1 = Partial<Omit<WriteSettingsV1, 'inlineCompleti
   agentPresets?: Array<Partial<WriteAgentPresetV1>>
 }
 
+export type DesignSystemPreset =
+  | 'none'
+  | 'shadcn'
+  | 'radix'
+  | 'material'
+  | 'ios'
+  | 'fluent'
+  | 'ant'
+  | 'chakra'
+  | 'carbon'
+  | 'polaris'
+  | 'bootstrap'
+  | 'geist'
+  | 'brutalism'
+  | 'editorial'
+export type DesignSurfaceSetting = '' | 'brand' | 'product'
+export type DesignRadiusSetting = '' | 'sharp' | 'soft' | 'rounded' | 'pill'
+export type DesignDensitySetting = '' | 'compact' | 'cozy' | 'spacious'
+export type DesignFontStyleSetting = '' | 'system' | 'geometric' | 'humanist' | 'serif' | 'mono'
+export type DesignViewportSetting = 'mobile' | 'tablet' | 'desktop'
+export type DesignCanvasViewSetting = 'preview' | 'code'
+export type DesignCanvasBackgroundSetting = 'light' | 'dark'
+
+export type DesignSettingsV1 = {
+  /** Workspace root for design artifacts; empty = fall back to the active code/write workspace. */
+  defaultWorkspaceRoot: string
+
+  // --- Design system (shared source of truth for design + code) ---
+  /** Anchor brand color (CSS color) injected into the design agent's context. */
+  brandColor: string
+  /** Free-form tone chips (e.g. 编辑风, 专业, 科技感). */
+  tone: string[]
+  /** Named design-system preset that seeds tokens/voice; 'none' = no preset. */
+  designSystemPreset: DesignSystemPreset
+  /** Default surface type for new designs; '' = unset. */
+  designType: DesignSurfaceSetting
+  /** Free-form additional design rules injected alongside the preset and written to DESIGN_SYSTEM.md. */
+  designGuidelines: string
+  /** Corner-radius token; '' = unset. */
+  radius: DesignRadiusSetting
+  /** Spacing-density token; '' = unset. */
+  density: DesignDensitySetting
+  /** Type-style token; '' = unset. */
+  fontStyle: DesignFontStyleSetting
+
+  // --- Design agent ---
+  /** Default model for design turns; '' = inherit runtime default. */
+  model: string
+  providerId: string
+  /** Reasoning effort for design turns; '' = default. */
+  reasoningEffort: string
+  /** Custom override of the single-file HTML generation contract; '' = built-in default. */
+  generationPrompt: string
+
+  // --- Design → code integration ---
+  /** Target stack hint for "implement this design", e.g. "React + Tailwind + shadcn". */
+  implementStackHint: string
+  /** Tell the coding agent to honor the published design system. */
+  injectIntoCode: boolean
+  /** Publish DESIGN_SYSTEM.md to the workspace when implementing. */
+  publishDesignSystem: boolean
+
+  // --- Canvas defaults ---
+  defaultViewport: DesignViewportSetting
+  defaultCanvasView: DesignCanvasViewSetting
+  canvasBackground: DesignCanvasBackgroundSetting
+  /** Auto-refresh the canvas as the agent writes. */
+  liveRefresh: boolean
+  /** Show a device frame for mobile/tablet viewports. */
+  deviceFrame: boolean
+}
+
+export type DesignSettingsPatchV1 = Partial<DesignSettingsV1>
+
 export type ClawGeneratedFileV1 = {
   path: string
   relativePath?: string
@@ -1790,6 +1886,7 @@ export type AppSettingsV1 = {
   claw: ClawSettingsV1
   schedule: ScheduleSettingsV1
   workflow: WorkflowSettingsV1
+  design: DesignSettingsV1
   guiUpdate: GuiUpdateConfigV1
   terminal: TerminalSettingsV1
   codePromptPrefix: string
@@ -1803,7 +1900,7 @@ export type AppSettingsV1 = {
 }
 
 export type AppSettingsPatch = Partial<
-  Omit<AppSettingsV1, 'provider' | 'agents' | 'log' | 'checkpointCleanup' | 'notifications' | 'appBehavior' | 'keyboardShortcuts' | 'write' | 'claw' | 'schedule' | 'workflow' | 'guiUpdate' | 'terminal'>
+  Omit<AppSettingsV1, 'provider' | 'agents' | 'log' | 'checkpointCleanup' | 'notifications' | 'appBehavior' | 'keyboardShortcuts' | 'write' | 'claw' | 'schedule' | 'design' | 'workflow' | 'guiUpdate' | 'terminal'>
 > & {
   provider?: ModelProviderSettingsPatchV1
   agents?: KunSettingsEnvelopePatchV1
@@ -1816,6 +1913,7 @@ export type AppSettingsPatch = Partial<
   claw?: ClawSettingsPatchV1
   schedule?: ScheduleSettingsPatchV1
   workflow?: WorkflowSettingsPatchV1
+  design?: DesignSettingsPatchV1
   guiUpdate?: Partial<GuiUpdateConfigV1>
   terminal?: TerminalSettingsPatchV1
 }

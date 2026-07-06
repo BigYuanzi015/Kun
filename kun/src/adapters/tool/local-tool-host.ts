@@ -10,6 +10,7 @@ import { createApprovalRequest } from '../../domain/approval.js'
 import type { TurnItem } from '../../contracts/items.js'
 import { makeToolResultItem, makeApprovalItem } from '../../domain/item.js'
 import { buildBuiltinLocalTools } from './builtin-tools.js'
+import type { BuiltinLocalToolsOptions } from './builtin-tool-types.js'
 import { CapabilityRegistry } from './capability-registry.js'
 import {
   runPostToolUseHooks,
@@ -84,9 +85,9 @@ export type LocalToolHostOptions = {
  */
 export class LocalToolHost implements ToolHost {
   readonly id = 'local'
-  private readonly registry: CapabilityRegistry
+  private registry: CapabilityRegistry
   private readonly allowList: Set<string>
-  private readonly hooks: readonly ResolvedHook[]
+  private hooks: readonly ResolvedHook[]
   private readonly readTracker: ReadTracker
 
   constructor(options: LocalToolHostOptions) {
@@ -94,6 +95,14 @@ export class LocalToolHost implements ToolHost {
     this.allowList = new Set(options.allowList ?? [])
     this.hooks = options.hooks ?? []
     this.readTracker = new ReadTracker(normalizeReadTrackerOptions(options.readTracker))
+  }
+
+  replaceRuntimeComponents(input: {
+    registry?: CapabilityRegistry
+    hooks?: readonly ResolvedHook[]
+  }): void {
+    if (input.registry) this.registry = input.registry
+    if (input.hooks) this.hooks = input.hooks
   }
 
   listTools(context?: ToolHostContext) {
@@ -576,6 +585,12 @@ import { createCreatePlanTool, type CreatePlanAdapterOptions } from './create-pl
  * `shouldAdvertise` predicate, so it is safe to ship with the
  * default set: non-plan turns never see it in the model tool list.
  */
-export function buildDefaultLocalTools(planOptions: CreatePlanAdapterOptions = {}): LocalTool[] {
-  return [...defaultLocalTools, createCreatePlanTool(planOptions)]
+export function buildDefaultLocalTools(
+  planOptions: CreatePlanAdapterOptions = {},
+  builtinOptions: BuiltinLocalToolsOptions = {}
+): LocalTool[] {
+  const baseTools = Object.keys(builtinOptions).length
+    ? [...buildBuiltinLocalTools(builtinOptions), echoTool, userInputTool, requestUserInputTool]
+    : defaultLocalTools
+  return [...baseTools, createCreatePlanTool(planOptions)]
 }

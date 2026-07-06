@@ -39,6 +39,10 @@ import type {
   LocalPdfTextTarget,
   WorkspaceClipboardImageSavePayload,
   WorkspaceClipboardImageSaveResult,
+  WorkspaceImageBytesSavePayload,
+  WorkspaceImageBytesSaveResult,
+  WorkspaceImagePickPayload,
+  WorkspaceImagePickResult,
   WorkspaceFileReadResult,
   WorkspaceFileSaveAsPayload,
   WorkspaceFileSaveAsResult,
@@ -99,6 +103,11 @@ import type {
   WriteRichClipboardPayload,
   WriteRichClipboardResult
 } from './write-export'
+import type { DesignExportPayload, DesignExportResult } from './design-export'
+import type {
+  MemoryMarkdownExportSavePayload,
+  MemoryMarkdownExportSaveResult
+} from './memory-import-export'
 import type {
   TerminalCreatePayload,
   TerminalCreateResult,
@@ -229,6 +238,24 @@ export type ClawImInstallPollResult =
   | { done: true; kind: 'feishu'; appId: string; appSecret: string; domain: string }
   | { done: true; kind: 'weixin'; accountId: string; sessionKey: string }
   | { done: false; error?: string }
+export type CodexAuthStartResult =
+  | { ok: true; url: string; deviceCode: string; userCode: string; interval: number }
+  | { ok: false; message: string }
+export type CodexOAuthCredentials = {
+  kind: 'codex-oauth'
+  accessToken: string
+  refreshToken: string
+  expiresAt: number
+  accountId: string
+  email?: string
+}
+export type CodexAuthPollResult =
+  | { done: true; credentials: CodexOAuthCredentials }
+  | { done: false; error?: string }
+export type CodexBrowserAuthErrorCode = 'port_in_use'
+export type CodexBrowserAuthResult =
+  | { ok: true; credentials: CodexOAuthCredentials }
+  | { ok: false; message: string; code?: CodexBrowserAuthErrorCode }
 export type ClawImTelegramConnectErrorCode = 'invalid_format' | 'rejected' | 'network' | 'unknown'
 export type ClawImTelegramConnectResult =
   | { ok: true; botId: number; botUsername: string; botFirstName: string }
@@ -359,6 +386,9 @@ export type KunGuiApi = {
     botToken: string,
     allowedChatIds?: string
   ) => Promise<ClawImTelegramConnectResult>
+  startCodexAuth: () => Promise<CodexAuthStartResult>
+  pollCodexAuth: (deviceCode: string, userCode: string) => Promise<CodexAuthPollResult>
+  startCodexBrowserAuth: () => Promise<CodexBrowserAuthResult>
   pickWorkspaceDirectory: (defaultPath?: string) => Promise<WorkspacePickResult>
   pickLocalFiles: (defaultPath?: string) => Promise<LocalFilesPickResult>
   /** 在对话工作目录根下创建一个时间戳子目录作为新对话的工作目录。 */
@@ -464,6 +494,10 @@ export type KunGuiApi = {
   saveWorkspaceClipboardImage: (
     payload: WorkspaceClipboardImageSavePayload
   ) => Promise<WorkspaceClipboardImageSaveResult>
+  pickWorkspaceImage: (payload: WorkspaceImagePickPayload) => Promise<WorkspaceImagePickResult>
+  saveWorkspaceImageBytes: (
+    payload: WorkspaceImageBytesSavePayload
+  ) => Promise<WorkspaceImageBytesSaveResult>
   readClipboardImage: () => Promise<ClipboardImageReadResult>
   getPathForFile: (file: File) => string
   renameWorkspaceEntry: (
@@ -511,6 +545,8 @@ export type KunGuiApi = {
   listWriteInlineCompletionDebugEntries: () => Promise<WriteInlineCompletionDebugEntry[]>
   clearWriteInlineCompletionDebugEntries: () => Promise<boolean>
   exportWriteDocument: (payload: WriteExportPayload) => Promise<WriteExportResult>
+  exportMemoryMarkdown: (payload: MemoryMarkdownExportSavePayload) => Promise<MemoryMarkdownExportSaveResult>
+  exportDesignPrototype: (payload: DesignExportPayload) => Promise<DesignExportResult>
   copyWriteDocumentAsRichText: (
     payload: WriteRichClipboardPayload
   ) => Promise<WriteRichClipboardResult>

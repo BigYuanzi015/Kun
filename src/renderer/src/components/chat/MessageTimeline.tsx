@@ -11,6 +11,7 @@ import { MessageTimelineEmptyHero, ThreadForkBanner, ThreadForkPoint } from './m
 import { GeneratedFilesPanel, MessageBubble } from './message-timeline-bubbles'
 import { ReviewPlanCard, ReviewSummaryCard, TurnChangeSummary, WorkMetaRow } from './message-timeline-cards'
 import { ProcessSectionRow, groupProcessSections } from './message-timeline-process'
+import type { OpenChildThreadHandler } from './SubagentCallCard'
 import {
   AnimatedWorkLogo,
   IKUN_WORK_LOGO_VARIANT_LABEL_KEYS,
@@ -31,6 +32,10 @@ import {
 import { extractPlanMetadataFromBlock } from '../../plan/plan-tool'
 import { InjectedMemoryLookupProvider } from './injected-memory-lookup'
 import { planDisplayNameFromRelativePath } from '../../plan/plan-path'
+import {
+  TimelineFilePreviewWorkspaceProvider,
+  timelineFilePreviewWorkspaceRoot
+} from './timeline-file-preview-workspace'
 
 export { summarizeToolBlock } from './message-timeline-process'
 
@@ -53,6 +58,7 @@ type Props = {
   /** Opens/focuses the Plan panel (Open button on the inline card). */
   onOpenPlan?: () => void
   compactCards?: boolean
+  onOpenChildThread?: OpenChildThreadHandler
 }
 
 type CompactionTimelineBlock = Extract<ChatBlock, { kind: 'compaction' }>
@@ -174,7 +180,8 @@ export function MessageTimeline({
   planActionsBusy,
   onBuildPlan,
   onOpenPlan,
-  compactCards = false
+  compactCards = false,
+  onOpenChildThread
 }: Props): ReactElement {
   const { t } = useTranslation('common')
   const {
@@ -260,6 +267,7 @@ export function MessageTimeline({
     typeof activeThread?.forkedFromTurnCount === 'number'
       ? Math.max(0, activeThread.forkedFromTurnCount)
       : undefined
+  const filePreviewWorkspaceRoot = timelineFilePreviewWorkspaceRoot(activeThread, workspaceRoot)
 
   useEffect(() => {
     const container = containerRef.current
@@ -311,6 +319,7 @@ export function MessageTimeline({
   }
 
   return (
+    <TimelineFilePreviewWorkspaceProvider workspaceRoot={filePreviewWorkspaceRoot}>
     <InjectedMemoryLookupProvider workspaceRoot={workspaceRoot}>
     <div ref={containerRef} className="ds-no-drag relative flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
       {visibleTurnAnchors.length > 2 ? (
@@ -414,6 +423,8 @@ export function MessageTimeline({
                 planActionsBusy={planActionsBusy}
                 onBuildPlan={onBuildPlan}
                 onOpenPlan={onOpenPlan}
+                onOpenChildThread={onOpenChildThread}
+                filePreviewWorkspaceRoot={filePreviewWorkspaceRoot}
                 viewportRef={containerRef}
                 compactCards={compactCards}
               />
@@ -448,7 +459,9 @@ export function MessageTimeline({
             liveReasoning={liveReasoning}
             live={live}
             devPreviewCard={devPreviewCard}
+            filePreviewWorkspaceRoot={filePreviewWorkspaceRoot}
             viewportRef={containerRef}
+            onOpenChildThread={onOpenChildThread}
             compactCards={compactCards}
             durationMs={
               currentTurnUserId && typeof turnStartedAtByUserId[currentTurnUserId] === 'number'
@@ -468,6 +481,7 @@ export function MessageTimeline({
       </div>
     </div>
     </InjectedMemoryLookupProvider>
+    </TimelineFilePreviewWorkspaceProvider>
   )
 }
 
@@ -482,6 +496,8 @@ function MessageTurn({
   planActionsBusy,
   onBuildPlan,
   onOpenPlan,
+  onOpenChildThread,
+  filePreviewWorkspaceRoot,
   viewportRef,
   compactCards = false
 }: {
@@ -495,10 +511,11 @@ function MessageTurn({
   planActionsBusy?: boolean
   onBuildPlan?: () => void
   onOpenPlan?: () => void
+  onOpenChildThread?: OpenChildThreadHandler
+  filePreviewWorkspaceRoot: string
   viewportRef: RefObject<HTMLDivElement | null>
   compactCards?: boolean
 }): ReactElement {
-  const workspaceRoot = useChatStore((s) => s.workspaceRoot)
   const activeThreadGoal = useChatStore((s) => s.activeThreadGoal)
   const forkThreadFromTurn = useChatStore((s) => s.forkThreadFromTurn)
   const rollbackWorkspaceToCheckpoint = useChatStore((s) => s.rollbackWorkspaceToCheckpoint)
@@ -528,9 +545,9 @@ function MessageTurn({
         isProcessing,
         liveProcessText,
         liveContent,
-        workspaceRoot
+        workspaceRoot: filePreviewWorkspaceRoot
       }),
-    [turn, isProcessing, liveProcessText, liveContent, workspaceRoot]
+    [turn, isProcessing, liveProcessText, liveContent, filePreviewWorkspaceRoot]
   )
   const compactionBlocks = useMemo(
     () => processBlocks.filter((block): block is CompactionTimelineBlock => block.kind === 'compaction'),
@@ -542,10 +559,10 @@ function MessageTurn({
   )
   const onlyCompactionProcess = processBlocks.length > 0 && workProcessBlocks.length === 0
   const hasProcessError = workProcessBlocks.some(processBlockHasError)
-  // Error details should stay visible after completion so provider/runtime
-  // failures do not disappear into a collapsed work summary.
+  // Keep active failures visible while a turn is still running, but fold
+  // completed failures into the normal work summary until the user opens it.
   const forceExpandForError = isProcessing && hasProcessError
-  const workExpanded = forceExpandForError || (workExpandedOverride ?? (isProcessing || hasProcessError))
+  const workExpanded = forceExpandForError || (workExpandedOverride ?? isProcessing)
   const reviewBlocks = useMemo(
     () => turn.blocks.filter((block) => block.kind === 'review'),
     [turn.blocks]
@@ -633,7 +650,9 @@ function MessageTurn({
                   processing={isProcessing}
                   reasoningDurationMs={reasoningDurationMs}
                   singleReasoningSection={reasoningSectionCount === 1}
+                  workspaceRoot={filePreviewWorkspaceRoot}
                   viewportRef={viewportRef}
+                  onOpenChildThread={onOpenChildThread}
                 />
               ))}
             </div>
@@ -748,6 +767,7 @@ const MemoMessageTurn = memo(MessageTurn, (prev, next) => (
   prev.planActionsBusy === next.planActionsBusy &&
   prev.onBuildPlan === next.onBuildPlan &&
   prev.onOpenPlan === next.onOpenPlan &&
+  prev.onOpenChildThread === next.onOpenChildThread &&
   prev.compactCards === next.compactCards &&
   prev.viewportRef === next.viewportRef
 ))

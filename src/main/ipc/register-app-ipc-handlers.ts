@@ -80,6 +80,8 @@ import {
   claudePluginGithubInstallPayloadSchema,
   workspaceDirectoryCreatePayloadSchema,
   workspaceClipboardImageSavePayloadSchema,
+  workspaceImageBytesSavePayloadSchema,
+  workspaceImagePickPayloadSchema,
   workspaceDirectoryTargetPayloadSchema,
   workspaceEntryDeletePayloadSchema,
   workspaceEntryRenamePayloadSchema,
@@ -93,6 +95,8 @@ import {
   localWhisperSourceStatusPayloadSchema,
   speechTranscribePayloadSchema,
   writeExportPayloadSchema,
+  memoryMarkdownExportPayloadSchema,
+  designExportPayloadSchema,
   writeRichClipboardPayloadSchema,
   writeInfographicPayloadSchema,
   writeInlineCompletionPayloadSchema,
@@ -120,6 +124,7 @@ import { probeModelProvider } from '../provider-connection'
 import type { ClawRuntime } from '../claw-runtime'
 import type { ScheduleRuntime } from '../schedule-runtime'
 import { verifyTelegramBotToken } from '../telegram-runtime'
+import { startCodexDeviceAuth, pollCodexDeviceAuth, startCodexBrowserAuth } from '../codex-auth'
 import type { WorkflowRuntime } from '../workflow-runtime'
 import { checkWorkflowCode } from '../workflow-runtime'
 import {
@@ -154,6 +159,7 @@ import {
   removeUiPlugin
 } from '../services/ui-plugin-service'
 import { ensureBundledUiPlugins } from '../ui-plugin-bundled'
+import { ensureBundledSkills } from '../skill-bundled'
 import {
   installPlugin as installClaudePlugin,
   uninstallPlugin as uninstallClaudePlugin,
@@ -180,7 +186,9 @@ import {
   renameWorkspaceEntry,
   resolveOpenTargetPath,
   resolveWorkspaceFile,
+  pickAndSaveWorkspaceImage,
   saveWorkspaceClipboardImage,
+  saveWorkspaceImageBytes,
   writeWorkspaceFile
 } from '../services/workspace-service'
 import {
@@ -204,7 +212,12 @@ import {
   getComputerUsePermissions,
   requestComputerUsePermission
 } from '../services/computer-use-permissions'
-import { copyWriteDocumentAsRichText, exportWriteDocument } from '../services/write-export-service'
+import {
+  copyWriteDocumentAsRichText,
+  exportDesignPrototype,
+  exportWriteDocument
+} from '../services/write-export-service'
+import { exportMemoryMarkdown } from '../services/memory-export-service'
 import { importGithubSkillsToRoot } from '../services/github-skill-import-service'
 import { readLocalPdfText } from '../services/write-pdf-text-service'
 import { saveGuiSkillPackage } from '../services/skill-save-service'
@@ -411,6 +424,8 @@ function runDesktopCommand(
 }
 
 export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): void {
+  // Seed the built-in "design system & craft" skill into ~/.kun/skills/ once.
+  void ensureBundledSkills(join(homedir(), '.kun'))
   const {
     store,
     getMainWindow,
@@ -774,6 +789,25 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       return verifyTelegramBotToken(request.botToken)
     }
   )
+
+  ipcMain.handle('codex:auth:start', async () => {
+    return startCodexDeviceAuth()
+  })
+
+  ipcMain.handle('codex:auth:poll', async (_, payload: unknown) => {
+    const request = parseIpcPayload(
+      'codex:auth:poll',
+      z.object({ deviceCode: z.string().min(1), userCode: z.string().min(1) }).strict(),
+      payload
+    )
+    return pollCodexDeviceAuth(request.deviceCode, request.userCode)
+  })
+
+  ipcMain.handle('codex:auth:browser', async () => {
+    return startCodexBrowserAuth(async (url: string) => {
+      await shell.openExternal(url)
+    })
+  })
 
   ipcMain.handle('workspace:pick-directory', async (_, defaultPath: unknown): Promise<WorkspacePickResult> => {
     const normalizedDefaultPath = parseIpcPayload(
@@ -1396,6 +1430,17 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       )
     )
   )
+  ipcMain.handle('file:pick-workspace-image', async (_, payload: unknown) =>
+    pickAndSaveWorkspaceImage(
+      parseIpcPayload('file:pick-workspace-image', workspaceImagePickPayloadSchema, payload),
+      { parentWindow: getMainWindow() }
+    )
+  )
+  ipcMain.handle('file:save-workspace-image-bytes', async (_, payload: unknown) =>
+    saveWorkspaceImageBytes(
+      parseIpcPayload('file:save-workspace-image-bytes', workspaceImageBytesSavePayloadSchema, payload)
+    )
+  )
   ipcMain.handle('clipboard:read-image', async () => readClipboardImage())
   ipcMain.handle('file:rename-workspace-entry', async (_, payload: unknown) =>
     renameWorkspaceEntry(
@@ -1463,6 +1508,18 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
   ipcMain.handle('write:export', async (_, payload: unknown) =>
     exportWriteDocument(
       parseIpcPayload('write:export', writeExportPayloadSchema, payload),
+      { parentWindow: getMainWindow() }
+    )
+  )
+  ipcMain.handle('memory:export-markdown', async (_, payload: unknown) =>
+    exportMemoryMarkdown(
+      parseIpcPayload('memory:export-markdown', memoryMarkdownExportPayloadSchema, payload),
+      { parentWindow: getMainWindow() }
+    )
+  )
+  ipcMain.handle('design:export-prototype', async (_, payload: unknown) =>
+    exportDesignPrototype(
+      parseIpcPayload('design:export-prototype', designExportPayloadSchema, payload),
       { parentWindow: getMainWindow() }
     )
   )

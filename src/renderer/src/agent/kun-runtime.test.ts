@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   defaultClawSettings,
+  defaultDesignSettings,
   defaultKeyboardShortcuts,
   defaultKunRuntimeSettings,
   defaultModelProviderSettings,
@@ -37,6 +38,7 @@ function settings(): AppSettingsV1 {
     claw: defaultClawSettings(),
     schedule: defaultScheduleSettings(),
     workflow: defaultWorkflowSettings(),
+    design: defaultDesignSettings(),
     terminal: defaultTerminalSettings(),
     guiUpdate: { channel: 'stable' },
     codePromptPrefix: '',
@@ -306,6 +308,31 @@ describe('KunRuntimeProvider', () => {
     expect(result.userMessageItemId).toBe('item_user_real')
   })
 
+  it('posts per-turn provider ids with Kun turn requests when provided', async () => {
+    const runtimeRequest = vi.fn(async () => ({
+      ok: true,
+      status: 202,
+      body: JSON.stringify({ threadId: 'thr_1', turnId: 'turn_abc', userMessageItemId: 'item_user_real' })
+    }))
+    installDsGui({ runtimeRequest })
+    const provider = new KunRuntimeProvider()
+    await provider.sendUserMessage('thr_1', 'hello', {
+      model: 'mimo-v2.5',
+      providerId: 'xiaomi-token-plan'
+    })
+    expect(runtimeRequest).toHaveBeenCalledWith(
+      '/v1/threads/thr_1/turns',
+      'POST',
+      JSON.stringify({
+        prompt: 'hello',
+        model: 'mimo-v2.5',
+        providerId: 'xiaomi-token-plan',
+        approvalPolicy: 'auto',
+        sandboxMode: 'danger-full-access'
+      })
+    )
+  })
+
   it('posts workspace checkpoint ids with Kun turn requests when provided', async () => {
     const runtimeRequest = vi.fn(async () => ({
       ok: true,
@@ -323,6 +350,27 @@ describe('KunRuntimeProvider', () => {
         approvalPolicy: 'auto',
         sandboxMode: 'danger-full-access',
         workspaceCheckpointId: 'gcp_1'
+      })
+    )
+  })
+
+  it('posts GUI design canvas turn metadata when provided', async () => {
+    const runtimeRequest = vi.fn(async () => ({
+      ok: true,
+      status: 202,
+      body: JSON.stringify({ threadId: 'thr_1', turnId: 'turn_canvas', userMessageItemId: 'item_user_canvas' })
+    }))
+    installDsGui({ runtimeRequest })
+    const provider = new KunRuntimeProvider()
+    await provider.sendUserMessage('thr_1', 'design a screen', { guiDesignCanvas: true })
+    expect(runtimeRequest).toHaveBeenCalledWith(
+      '/v1/threads/thr_1/turns',
+      'POST',
+      JSON.stringify({
+        prompt: 'design a screen',
+        approvalPolicy: 'auto',
+        sandboxMode: 'danger-full-access',
+        guiDesignCanvas: true
       })
     )
   })

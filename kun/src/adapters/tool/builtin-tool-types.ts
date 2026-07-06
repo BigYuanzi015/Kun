@@ -149,6 +149,8 @@ export type BackgroundShellHooks = {
 
 export type BashLocalToolOptions = {
   defaultTimeoutSeconds?: number
+  maxLines?: number
+  maxBytes?: number
   operations?: BashLocalToolOperations
   backgroundShell?: BackgroundShellHooks
   backgroundShellDataDir?: string
