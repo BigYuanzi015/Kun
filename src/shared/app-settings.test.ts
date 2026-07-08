@@ -181,6 +181,10 @@ describe('kun defaults', () => {
       approvalPolicy: 'on-request',
       sandboxMode: 'workspace-write'
     })
+    expect(kunToolPermissionModeSettings('trusted-workspace')).toEqual({
+      approvalPolicy: 'auto',
+      sandboxMode: 'workspace-write'
+    })
     expect(kunToolPermissionModeSettings('bypass')).toEqual({
       approvalPolicy: 'auto',
       sandboxMode: 'danger-full-access'
@@ -198,6 +202,10 @@ describe('kun defaults', () => {
       approvalPolicy: 'on-request',
       sandboxMode: 'workspace-write'
     })).toBe('workspace-write')
+    expect(kunToolPermissionModeFromSettings({
+      approvalPolicy: 'auto',
+      sandboxMode: 'workspace-write'
+    })).toBe('trusted-workspace')
   })
 
   it('defaults token economy mode to off', () => {
@@ -298,7 +306,7 @@ describe('kun defaults', () => {
         defaultHardThreshold: 108800,
         summaryMode: 'model',
         summaryTimeoutMs: 15000,
-        summaryMaxTokens: 1200,
+        summaryMaxTokens: 2048,
         summaryInputMaxBytes: 98304
       },
       runtimeTuning: {
@@ -432,6 +440,24 @@ describe('claw settings', () => {
     })
 
     expect(normalized.claw.im.weixinBridgeUrl).toBe('http://127.0.0.1:18787/rpc')
+  })
+
+  it('normalizes the IM recent thread list limit', () => {
+    const defaults = defaultClawSettings()
+    expect(defaults.im.recentThreadListLimit).toBe(5)
+
+    const normalized = normalizeAppSettings({
+      ...settings(),
+      claw: {
+        ...defaults,
+        im: {
+          ...defaults.im,
+          recentThreadListLimit: 500
+        }
+      }
+    })
+
+    expect(normalized.claw.im.recentThreadListLimit).toBe(50)
   })
 
   it('migrates the legacy OpenClaw Gateway URL into the WeChat bridge URL', () => {
@@ -641,8 +667,20 @@ describe('mergeKunRuntimeSettings', () => {
     expect(kunToolPermissionModeFromSettings(next)).toBe('workspace-write')
   })
 
+  it('preserves trusted workspace when normalizing unified tool permission settings', () => {
+    const current = defaultKunRuntimeSettings()
+    const next = mergeKunRuntimeSettings(current, {
+      approvalPolicy: 'auto',
+      sandboxMode: 'workspace-write'
+    })
+
+    expect(next.approvalPolicy).toBe('auto')
+    expect(next.sandboxMode).toBe('workspace-write')
+    expect(kunToolPermissionModeFromSettings(next)).toBe('trusted-workspace')
+  })
+
   it('preserves non-UI approval/sandbox combinations instead of canonicalizing them', () => {
-    // The unified 5-mode selector cannot represent every approvalPolicy/sandboxMode
+    // The unified 6-mode selector cannot represent every approvalPolicy/sandboxMode
     // combination. mergeKunRuntimeSettings must NOT snap these to a canonical mode,
     // otherwise it would silently weaken a user's saved security posture.
     const current = defaultKunRuntimeSettings()
@@ -960,6 +998,15 @@ describe('legacy Kun defaults migration', () => {
       approvalPolicy: 'on-request',
       sandboxMode: 'workspace-write'
     }))
+  })
+
+  it('drops legacy top-level instructions during normalization', () => {
+    const normalized = normalizeAppSettings({
+      ...settings(),
+      instructions: { enabled: true }
+    } as unknown as AppSettingsV1)
+
+    expect('instructions' in normalized).toBe(false)
   })
 
   it('moves the legacy local HTTP default port to the Kun default port', () => {
@@ -1407,6 +1454,23 @@ describe('write inline completion runtime config', () => {
 })
 
 describe('write selection assist settings', () => {
+  it('keeps write auto-save enabled by default and preserves explicit opt-out', () => {
+    expect(defaultWriteSettings().autoSaveEnabled).toBe(true)
+    expect(defaultWriteSettings().autoSaveDelayMs).toBe(180_000)
+    expect(normalizeWriteSettings({}).autoSaveEnabled).toBe(true)
+    expect(normalizeWriteSettings({ autoSaveEnabled: false }).autoSaveEnabled).toBe(false)
+    expect(normalizeWriteSettings({ autoSaveDelayMs: 30_000 }).autoSaveDelayMs).toBe(30_000)
+    expect(normalizeWriteSettings({ autoSaveDelayMs: 1 }).autoSaveDelayMs).toBe(5_000)
+    expect(normalizeWriteSettings({ autoSaveDelayMs: 3_600_000 }).autoSaveDelayMs).toBe(1_800_000)
+
+    const next = mergeWriteSettings(defaultWriteSettings(), {
+      autoSaveEnabled: false,
+      autoSaveDelayMs: 120_000
+    })
+    expect(next.autoSaveEnabled).toBe(false)
+    expect(next.autoSaveDelayMs).toBe(120_000)
+  })
+
   it('defaults to the built-in quick actions with empty overrides', () => {
     const write = defaultWriteSettings()
     expect(write.selectionAssist.infographicPrompt).toBe('')

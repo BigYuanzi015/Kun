@@ -8,6 +8,8 @@ function makeBaseState(): WriteWorkspaceState {
   return {
     defaultWorkspaceRoot: '',
     workspaceRoots: [],
+    autoSaveEnabled: true,
+    autoSaveDelayMs: defaultWriteSettings().autoSaveDelayMs,
     inlineCompletion: defaultWriteSettings().inlineCompletion,
     inlineCompletionApiReady: false,
     selectionAssist: defaultWriteSettings().selectionAssist,
@@ -58,6 +60,7 @@ function makeBaseState(): WriteWorkspaceState {
 function createHarness(): {
   actions: ReturnType<typeof createWriteFileActions>
   get: WriteWorkspaceGet
+  set: WriteWorkspaceSet
 } {
   let state = makeBaseState()
   const set: WriteWorkspaceSet = (partial) => {
@@ -72,7 +75,7 @@ function createHarness(): {
     setLastSavedContent: vi.fn()
   })
   state = { ...state, ...actions }
-  return { actions, get }
+  return { actions, get, set }
 }
 
 function installDsGui(overrides: Partial<Window['kunGui']>): void {
@@ -86,6 +89,44 @@ afterEach(() => {
 })
 
 describe('write workspace file actions', () => {
+  it('refreshes an initialized workspace without resetting the active draft', async () => {
+    const listWorkspaceDirectory = vi.fn(async () => ({
+      ok: true as const,
+      root: '/tmp/write',
+      entries: [{
+        name: 'new.md',
+        path: '/tmp/write/new.md',
+        type: 'file' as const,
+        ext: '.md'
+      }]
+    }))
+    installDsGui({ listWorkspaceDirectory })
+    const { actions, get, set } = createHarness()
+    set({
+      workspaceRoot: '/tmp/write',
+      rootDirectory: '/tmp/write',
+      expandedDirs: new Set(['/tmp/write']),
+      activeFilePath: '/tmp/write/draft.md',
+      fileContent: 'unsaved draft',
+      saveStatus: 'dirty'
+    })
+
+    await actions.initializeWorkspace('/tmp/write')
+
+    expect(listWorkspaceDirectory).toHaveBeenCalledWith({
+      workspaceRoot: '/tmp/write',
+      path: '/tmp/write'
+    })
+    expect(get().entriesByDir['/tmp/write']).toEqual([
+      expect.objectContaining({ name: 'new.md' })
+    ])
+    expect(get()).toMatchObject({
+      activeFilePath: '/tmp/write/draft.md',
+      fileContent: 'unsaved draft',
+      saveStatus: 'dirty'
+    })
+  })
+
   it('clears loading state and records list errors when directory IPC throws', async () => {
     installDsGui({
       listWorkspaceDirectory: vi.fn(async () => {
@@ -127,6 +168,75 @@ describe('write workspace file actions', () => {
 
     expect(result).toBeNull()
     expect(get().fileError).toBe('rename failed')
+  })
+
+  it('keeps dirty content when auto-save is disabled and file navigation is cancelled', async () => {
+    const readWorkspaceFile = vi.fn()
+    const confirm = vi.fn(() => false)
+    vi.stubGlobal('window', {
+      kunGui: { readWorkspaceFile },
+      confirm
+    })
+    const { actions, get, set } = createHarness()
+    const flushSave = vi.fn(async () => true)
+    set({
+      autoSaveEnabled: false,
+      activeFilePath: '/tmp/write/draft.md',
+      activeFileKind: 'text',
+      fileContent: 'unsaved draft',
+      saveStatus: 'dirty',
+      flushSave
+    })
+
+    await actions.openFile('/tmp/write', '/tmp/write/next.md')
+
+    expect(confirm).toHaveBeenCalled()
+    expect(flushSave).not.toHaveBeenCalled()
+    expect(readWorkspaceFile).not.toHaveBeenCalled()
+    expect(get()).toMatchObject({
+      activeFilePath: '/tmp/write/draft.md',
+      fileContent: 'unsaved draft',
+      saveStatus: 'dirty'
+    })
+  })
+
+  it('opens another text file without saving dirty content when auto-save is disabled and discard is confirmed', async () => {
+    const readWorkspaceFile = vi.fn(async () => ({
+      ok: true as const,
+      path: '/tmp/write/next.md',
+      content: 'next content',
+      size: 12,
+      truncated: false
+    }))
+    const confirm = vi.fn(() => true)
+    vi.stubGlobal('window', {
+      kunGui: { readWorkspaceFile },
+      confirm
+    })
+    const { actions, get, set } = createHarness()
+    const flushSave = vi.fn(async () => true)
+    set({
+      autoSaveEnabled: false,
+      activeFilePath: '/tmp/write/draft.md',
+      activeFileKind: 'text',
+      fileContent: 'unsaved draft',
+      saveStatus: 'dirty',
+      flushSave
+    })
+
+    await actions.openFile('/tmp/write', '/tmp/write/next.md')
+
+    expect(confirm).toHaveBeenCalled()
+    expect(flushSave).not.toHaveBeenCalled()
+    expect(readWorkspaceFile).toHaveBeenCalledWith({
+      workspaceRoot: '/tmp/write',
+      path: '/tmp/write/next.md'
+    })
+    expect(get()).toMatchObject({
+      activeFilePath: '/tmp/write/next.md',
+      fileContent: 'next content',
+      saveStatus: 'saved'
+    })
   })
 
   it('keeps markdown files visible when renaming without an extension', async () => {

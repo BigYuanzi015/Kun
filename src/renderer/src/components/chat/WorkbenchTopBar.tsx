@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { EditorInfo } from '@shared/editor'
 import type { GuiUpdateState } from '@shared/gui-update'
 import {
@@ -40,8 +40,6 @@ type Props = {
   onToggleRightPanelMode: (mode: Exclude<RightPanelMode, null>) => void
   planPanelEnabled?: boolean
   canvasEnabled?: boolean
-  terminalOpen?: boolean
-  onToggleTerminal?: () => void
   sideChatCount?: number
   sideChatRunningCount?: number
   sideChatOpen?: boolean
@@ -52,24 +50,32 @@ type Props = {
   onOpenSideChat?: () => void
 }
 
-const TOPBAR_ICON_CLASS = 'h-4 w-4'
+type WorkbenchTopActionsProps = {
+  terminalOpen?: boolean
+  onToggleTerminal?: () => void
+}
 
-export function WorkbenchSideRail({
-  rightPanelMode,
-  onToggleRightPanelMode,
-  planPanelEnabled = false,
-  canvasEnabled = false,
+const TOPBAR_ICON_CLASS = 'h-4 w-4'
+const SIDE_RAIL_BUTTON_BASE =
+  'ds-side-rail-button inline-flex h-8 w-8 items-center justify-center rounded-[0.9rem] border shadow-[inset_0_1px_0_rgba(255,255,255,0.45)] transition dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]'
+const SIDE_RAIL_BUTTON_ACTIVE = 'border-ds-border-strong bg-white/70 text-ds-ink dark:bg-white/10'
+const SIDE_RAIL_BUTTON_IDLE =
+  'border-transparent bg-white/38 text-ds-faint opacity-90 hover:border-ds-border-muted hover:bg-white/55 hover:text-ds-ink hover:opacity-100 dark:bg-white/4 dark:hover:bg-white/8'
+const TOPBAR_ACTION_BUTTON_BASE =
+  'ds-topbar-action-button inline-flex h-8 w-8 items-center justify-center rounded-[0.9rem] border shadow-[inset_0_1px_0_rgba(255,255,255,0.45)] transition dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]'
+
+function sideRailButtonClass(active: boolean, extra?: string): string {
+  return `${SIDE_RAIL_BUTTON_BASE} ${active ? SIDE_RAIL_BUTTON_ACTIVE : SIDE_RAIL_BUTTON_IDLE}${extra ? ` ${extra}` : ''}`
+}
+
+function topbarActionButtonClass(active: boolean, extra?: string): string {
+  return `${TOPBAR_ACTION_BUTTON_BASE} ${active ? SIDE_RAIL_BUTTON_ACTIVE : SIDE_RAIL_BUTTON_IDLE}${extra ? ` ${extra}` : ''}`
+}
+
+export function WorkbenchTopActions({
   terminalOpen = false,
-  onToggleTerminal,
-  sideChatCount = 0,
-  sideChatRunningCount = 0,
-  sideChatOpen = false,
-  sideChatEnabled = true,
-  fileTreeOpen = false,
-  fileTreeEnabled = true,
-  onToggleFileTree,
-  onOpenSideChat
-}: Props): ReactElement {
+  onToggleTerminal
+}: WorkbenchTopActionsProps): ReactElement {
   const { t } = useTranslation(['common', 'settings'])
   const [editors, setEditors] = useState<EditorInfo[]>([])
   const [selectedEditorId, setSelectedEditorId] = useState(() => readPreferredEditorId() ?? '')
@@ -78,18 +84,13 @@ export function WorkbenchSideRail({
   const [guiUpdateState, setGuiUpdateState] = useState<GuiUpdateState>({ status: 'idle' })
   const [applyingGuiUpdate, setApplyingGuiUpdate] = useState(false)
   const editorMenuRef = useRef<HTMLDivElement>(null)
-  const items = [
-    { mode: 'todo' as const, label: t('rightPanelTodo'), icon: ListTodo },
-    ...(planPanelEnabled ? [{ mode: 'plan' as const, label: t('rightPanelPlan'), icon: ClipboardList }] : []),
-    { mode: 'changes' as const, label: t('rightPanelChanges'), icon: FileEdit },
-    { mode: 'browser' as const, label: t('rightPanelBrowser'), icon: Globe2 },
-    ...(canvasEnabled ? [{ mode: 'canvas' as const, label: t('rightPanelWhiteboard'), icon: Shapes }] : []),
-    { mode: 'subagents' as const, label: t('rightPanelSubagents'), icon: Bot }
-  ]
   const selectedEditor = useMemo(
     () => editors.find((editor) => editor.id === selectedEditorId) ?? editors[0],
     [editors, selectedEditorId]
   )
+  const editorButtonTitle = selectedEditor
+    ? t('editorPickerTitleWithEditor', { editor: selectedEditor.label })
+    : t('editorPickerTitle')
 
   useEffect(() => {
     let cancelled = false
@@ -274,15 +275,15 @@ export function WorkbenchSideRail({
   }
 
   return (
-    <div className="ds-no-drag flex h-full w-12 shrink-0 flex-col items-center gap-1.5 border-l border-ds-border-muted bg-white/80 py-3 backdrop-blur-xl dark:bg-ds-canvas">
+    <div className="ds-workbench-top-actions ds-no-drag relative flex shrink-0 items-center gap-1.5">
       {guiUpdateAction ? (
         <button
           type="button"
           onClick={() => void runGuiUpdateAction()}
           disabled={guiUpdateBusy}
-          className="relative inline-flex h-8 w-8 items-center justify-center rounded-[0.9rem] border border-amber-300/75 bg-amber-50/92 text-amber-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-700/70 dark:bg-amber-950/35 dark:text-amber-100 dark:hover:bg-amber-900/45"
+          className="ds-topbar-action-button relative inline-flex h-8 w-8 items-center justify-center rounded-[0.9rem] border border-amber-300/75 bg-amber-50/92 text-amber-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-700/70 dark:bg-amber-950/35 dark:text-amber-100 dark:hover:bg-amber-900/45"
+          data-tooltip={guiUpdateBusy ? guiUpdateLabel : guiUpdateTitle}
           aria-label={guiUpdateBusy ? guiUpdateLabel : guiUpdateTitle}
-          title={guiUpdateBusy ? guiUpdateLabel : guiUpdateTitle}
         >
           {renderGuiUpdateIcon()}
           {!guiUpdateBusy ? (
@@ -295,20 +296,16 @@ export function WorkbenchSideRail({
         <button
           type="button"
           onClick={() => setEditorMenuOpen((value) => !value)}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-[0.9rem] border border-transparent bg-white/38 text-ds-faint opacity-90 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)] transition hover:border-ds-border-muted hover:bg-white/55 hover:text-ds-ink hover:opacity-100 dark:bg-white/4 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] dark:hover:bg-white/8"
+          className={topbarActionButtonClass(false)}
+          data-tooltip={editorButtonTitle}
           aria-label={t('editorPickerTitle')}
           aria-expanded={editorMenuOpen}
-          title={
-            selectedEditor
-              ? t('editorPickerTitleWithEditor', { editor: selectedEditor.label })
-              : t('editorPickerTitle')
-          }
         >
           {renderEditorIcon(selectedEditor, 'h-4 w-4')}
         </button>
 
         {editorMenuOpen ? (
-          <div className="ds-card-strong absolute right-full top-0 z-50 mr-2 w-64 overflow-hidden rounded-[18px] border border-ds-border py-1.5 shadow-[0_18px_52px_rgba(20,47,95,0.18)] backdrop-blur-xl dark:shadow-[0_22px_58px_rgba(0,0,0,0.38)]">
+          <div className="ds-card-strong absolute right-0 top-full z-50 mt-2 w-64 overflow-hidden rounded-[18px] border border-ds-border py-1.5 shadow-[0_18px_52px_rgba(20,47,95,0.18)] backdrop-blur-xl dark:shadow-[0_22px_58px_rgba(0,0,0,0.38)]">
             <div className="border-b border-ds-border-muted px-3 pb-2 pt-1.5 text-[11px] font-semibold text-ds-faint">
               {t('editorPickerMenuTitle')}
             </div>
@@ -340,19 +337,57 @@ export function WorkbenchSideRail({
         ) : null}
       </div>
 
+      {onToggleTerminal ? (
+        <button
+          type="button"
+          onClick={onToggleTerminal}
+          className={topbarActionButtonClass(terminalOpen)}
+          data-tooltip={t('rightPanelTerminal')}
+          aria-label={t('rightPanelTerminal')}
+          aria-pressed={terminalOpen}
+        >
+          <Terminal className={TOPBAR_ICON_CLASS} strokeWidth={1.75} />
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+export function WorkbenchSideRail({
+  rightPanelMode,
+  onToggleRightPanelMode,
+  planPanelEnabled = false,
+  canvasEnabled = false,
+  sideChatCount = 0,
+  sideChatRunningCount = 0,
+  sideChatOpen = false,
+  sideChatEnabled = true,
+  fileTreeOpen = false,
+  fileTreeEnabled = true,
+  onToggleFileTree,
+  onOpenSideChat
+}: Props): ReactElement {
+  const { t } = useTranslation(['common', 'settings'])
+  const items = [
+    { mode: 'todo' as const, label: t('rightPanelTodo'), icon: ListTodo },
+    ...(planPanelEnabled ? [{ mode: 'plan' as const, label: t('rightPanelPlan'), icon: ClipboardList }] : []),
+    { mode: 'changes' as const, label: t('rightPanelChanges'), icon: FileEdit },
+    { mode: 'browser' as const, label: t('rightPanelBrowser'), icon: Globe2 },
+    ...(canvasEnabled ? [{ mode: 'canvas' as const, label: t('rightPanelWhiteboard'), icon: Shapes }] : []),
+    { mode: 'subagents' as const, label: t('rightPanelSubagents'), icon: Bot }
+  ]
+
+  return (
+    <div className="ds-no-drag flex h-full w-12 shrink-0 flex-col items-center gap-1.5 border-l border-ds-border-muted bg-white/80 py-3 backdrop-blur-xl dark:bg-ds-canvas">
       {onOpenSideChat ? (
         <button
           type="button"
           onClick={onOpenSideChat}
           disabled={!sideChatEnabled}
-          className={`relative inline-flex h-8 w-8 items-center justify-center rounded-[0.9rem] border shadow-[inset_0_1px_0_rgba(255,255,255,0.45)] transition disabled:cursor-not-allowed disabled:opacity-45 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${
-            sideChatOpen
-              ? 'border-ds-border-strong bg-white/70 text-ds-ink dark:bg-white/10'
-              : 'border-transparent bg-white/38 text-ds-faint opacity-90 hover:border-ds-border-muted hover:bg-white/55 hover:text-ds-ink hover:opacity-100 dark:bg-white/4 dark:hover:bg-white/8'
-          }`}
+          className={sideRailButtonClass(sideChatOpen, 'relative disabled:cursor-not-allowed disabled:opacity-45')}
+          data-tooltip={t('sidePanelOpen')}
           aria-label={t('sidePanelOpen')}
           aria-pressed={sideChatOpen}
-          title={t('sidePanelOpen')}
         >
           <MessageCircleMore className={TOPBAR_ICON_CLASS} strokeWidth={1.75} />
           {sideChatCount > 0 ? (
@@ -369,40 +404,18 @@ export function WorkbenchSideRail({
       {items.map((item) => {
         const active = rightPanelMode === item.mode
         const Icon = item.icon
-        const isChanges = item.mode === 'changes'
         return (
-          <Fragment key={item.mode}>
-            <button
-              type="button"
-              onClick={() => onToggleRightPanelMode(item.mode)}
-              className={`inline-flex h-8 w-8 items-center justify-center rounded-[0.9rem] border shadow-[inset_0_1px_0_rgba(255,255,255,0.45)] transition dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${
-                active
-                  ? 'border-ds-border-strong bg-white/70 text-ds-ink dark:bg-white/10'
-                  : 'border-transparent bg-white/38 text-ds-faint opacity-90 hover:border-ds-border-muted hover:bg-white/55 hover:text-ds-ink hover:opacity-100 dark:bg-white/4 dark:hover:bg-white/8'
-              }`}
-              aria-label={item.label}
-              aria-pressed={active}
-              title={item.label}
-            >
-              <Icon className={TOPBAR_ICON_CLASS} strokeWidth={1.75} />
-            </button>
-            {isChanges && onToggleTerminal ? (
-              <button
-                type="button"
-                onClick={onToggleTerminal}
-                className={`inline-flex h-8 w-8 items-center justify-center rounded-[0.9rem] border shadow-[inset_0_1px_0_rgba(255,255,255,0.45)] transition dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${
-                  terminalOpen
-                    ? 'border-ds-border-strong bg-white/70 text-ds-ink dark:bg-white/10'
-                    : 'border-transparent bg-white/38 text-ds-faint opacity-90 hover:border-ds-border-muted hover:bg-white/55 hover:text-ds-ink hover:opacity-100 dark:bg-white/4 dark:hover:bg-white/8'
-                }`}
-                aria-label={t('rightPanelTerminal')}
-                aria-pressed={terminalOpen}
-                title={t('rightPanelTerminal')}
-              >
-                <Terminal className={TOPBAR_ICON_CLASS} strokeWidth={1.75} />
-              </button>
-            ) : null}
-          </Fragment>
+          <button
+            key={item.mode}
+            type="button"
+            onClick={() => onToggleRightPanelMode(item.mode)}
+            className={sideRailButtonClass(active)}
+            data-tooltip={item.label}
+            aria-label={item.label}
+            aria-pressed={active}
+          >
+            <Icon className={TOPBAR_ICON_CLASS} strokeWidth={1.75} />
+          </button>
         )
       })}
 
@@ -411,14 +424,10 @@ export function WorkbenchSideRail({
           type="button"
           onClick={onToggleFileTree}
           disabled={!fileTreeEnabled}
-          className={`inline-flex h-8 w-8 items-center justify-center rounded-[0.9rem] border shadow-[inset_0_1px_0_rgba(255,255,255,0.45)] transition disabled:cursor-not-allowed disabled:opacity-45 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] ${
-            fileTreeOpen
-              ? 'border-ds-border-strong bg-white/70 text-ds-ink dark:bg-white/10'
-              : 'border-transparent bg-white/38 text-ds-faint opacity-90 hover:border-ds-border-muted hover:bg-white/55 hover:text-ds-ink hover:opacity-100 dark:bg-white/4 dark:hover:bg-white/8'
-          }`}
+          className={sideRailButtonClass(fileTreeOpen, 'disabled:cursor-not-allowed disabled:opacity-45')}
+          data-tooltip={t('rightPanelFiles')}
           aria-label={t('rightPanelFiles')}
           aria-pressed={fileTreeOpen}
-          title={t('rightPanelFiles')}
         >
           <Folders className={TOPBAR_ICON_CLASS} strokeWidth={1.75} />
         </button>

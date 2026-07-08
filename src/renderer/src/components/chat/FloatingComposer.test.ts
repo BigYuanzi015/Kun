@@ -4,6 +4,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import {
   FloatingComposer,
   buildResearchPrompt,
+  calculateComposerMenuScrollTop,
+  calculateContextCapacityPopoverPlacement,
   formatGoalElapsedSeconds,
   handleComposerImagePaste,
   imageFilesFromTransfer,
@@ -13,6 +15,7 @@ import {
   parseNewCommand,
   parseResearchCommand,
   parseReviewCommand,
+  shouldCaptureFileMentionCommitKey,
   shouldShowGoalFloater
 } from './FloatingComposer'
 import {
@@ -23,6 +26,7 @@ import {
   composerModelMenuItemSelected,
   composerMenuSupportsModel,
   composerReasoningEffortRequestValue,
+  buildComposerModelOptions,
   canSwitchComposerModelFromCurrent,
   filterComposerModelIds,
   normalizeComposerReasoningEffort
@@ -39,6 +43,7 @@ import {
   filterWorkspaceFileMentionSuggestions,
   formatComposerFileMentionToken,
   getFileMentionAtCursor,
+  hasComposerFileMentionToken,
   isFileWithinDirectory,
   removeComposerFileMentionToken,
   replaceFileMentionInInput,
@@ -172,9 +177,59 @@ describe('FloatingComposer goal helpers', () => {
       composerMenuOpen: false
     })).toBe(false)
   })
+
+  it('scrolls keyboard-highlighted menu items into view', () => {
+    expect(calculateComposerMenuScrollTop({
+      containerScrollTop: 0,
+      containerClientHeight: 100,
+      itemOffsetTop: 120,
+      itemOffsetHeight: 30
+    })).toBe(50)
+
+    expect(calculateComposerMenuScrollTop({
+      containerScrollTop: 60,
+      containerClientHeight: 100,
+      itemOffsetTop: 30,
+      itemOffsetHeight: 24
+    })).toBe(30)
+
+    expect(calculateComposerMenuScrollTop({
+      containerScrollTop: 40,
+      containerClientHeight: 100,
+      itemOffsetTop: 70,
+      itemOffsetHeight: 24
+    })).toBe(40)
+  })
 })
 
 describe('FloatingComposer file references', () => {
+  it('captures file mention commit keys while the menu is active before candidates load', () => {
+    expect(shouldCaptureFileMentionCommitKey({
+      key: 'Enter',
+      shiftKey: false,
+      metaKey: false,
+      ctrlKey: false
+    })).toBe(true)
+    expect(shouldCaptureFileMentionCommitKey({
+      key: 'Tab',
+      shiftKey: false,
+      metaKey: false,
+      ctrlKey: false
+    })).toBe(true)
+    expect(shouldCaptureFileMentionCommitKey({
+      key: 'Enter',
+      shiftKey: true,
+      metaKey: false,
+      ctrlKey: false
+    })).toBe(false)
+    expect(shouldCaptureFileMentionCommitKey({
+      key: 'Enter',
+      shiftKey: false,
+      metaKey: true,
+      ctrlKey: false
+    })).toBe(false)
+  })
+
   it('parses @ file mention queries at the current cursor', () => {
     expect(getFileMentionAtCursor('please inspect @src/ren', 'please inspect @src/ren'.length)).toEqual({
       start: 15,
@@ -230,6 +285,14 @@ describe('FloatingComposer file references', () => {
     expect(removeComposerFileMentionToken(reordered, 'src', true)).toBe('review @src/App.tsx and now')
   })
 
+  it('detects exact inserted mention tokens without matching path prefixes', () => {
+    expect(hasComposerFileMentionToken('review @src/renderer/src/App.tsx now', 'src/renderer/src/App.tsx')).toBe(true)
+    expect(hasComposerFileMentionToken('review @"docs/product plan.md" now', 'docs/product plan.md')).toBe(true)
+    expect(hasComposerFileMentionToken('review @src/ now', 'src', true)).toBe(true)
+    expect(hasComposerFileMentionToken('review @src/App.tsx now', 'src', true)).toBe(false)
+    expect(hasComposerFileMentionToken('email test@src/App.tsx now', 'src/App.tsx')).toBe(false)
+  })
+
   it('ranks directories alongside files and favors them for trailing-slash queries', () => {
     const entries: ComposerFileReference[] = [
       { path: '/repo/src', relativePath: 'src', name: 'src', type: 'directory' },
@@ -239,6 +302,18 @@ describe('FloatingComposer file references', () => {
     const suggestions = filterWorkspaceFileMentionSuggestions(entries, 'src/')
     expect(suggestions[0]).toEqual(entries[0])
     expect(suggestions.map((entry) => entry.relativePath)).toContain('src/App.tsx')
+  })
+
+  it('filters path-like @ queries and excludes already selected duplicate paths', () => {
+    const entries: ComposerFileReference[] = [
+      { path: '/repo/src/renderer', relativePath: 'src/renderer', name: 'renderer', type: 'directory' },
+      { path: '/repo/src/renderer/src/FloatingComposer.tsx', relativePath: 'src/renderer/src/FloatingComposer.tsx', name: 'FloatingComposer.tsx', type: 'file' },
+      { path: '/repo/packages/ui/src/FloatingComposer.tsx', relativePath: 'packages/ui/src/FloatingComposer.tsx', name: 'FloatingComposer.tsx', type: 'file' }
+    ]
+
+    const suggestions = filterWorkspaceFileMentionSuggestions(entries, 'src/ren', [entries[1]!])
+
+    expect(suggestions.map((entry) => entry.relativePath)).toEqual(['src/renderer'])
   })
 
   it('lists every indexed file beneath a referenced directory', () => {
@@ -309,6 +384,33 @@ describe('FloatingComposer model controls', () => {
 
     expect(placement.left).toBe(712)
     expect(placement.top).toBe(633)
+  })
+
+  it('keeps the context capacity popover inside the viewport', () => {
+    const placement = calculateContextCapacityPopoverPlacement({
+      anchorRect: { top: 760, right: 970, bottom: 792 },
+      popoverHeight: 252,
+      viewportHeight: 900,
+      viewportWidth: 1000
+    })
+
+    expect(placement.left).toBe(670)
+    expect(placement.top).toBe(500)
+    expect(placement.width).toBe(300)
+  })
+
+  it('keeps the context capacity popover anchored when the app UI is zoomed', () => {
+    const placement = calculateContextCapacityPopoverPlacement({
+      anchorRect: { top: 608, right: 776, bottom: 633.6 },
+      popoverHeight: 252,
+      viewportHeight: 720,
+      viewportWidth: 800,
+      coordinateScale: 0.8
+    })
+
+    expect(placement.left).toBe(670)
+    expect(placement.top).toBe(500)
+    expect(placement.width).toBe(300)
   })
 
   it('keeps execution menus anchored when the app UI is zoomed', () => {
@@ -406,6 +508,16 @@ describe('FloatingComposer model controls', () => {
       label: 'Other models',
       modelIds: ['loose-model']
     })
+  })
+
+  it('builds model picker options only from configured picks, not the current model', () => {
+    expect(buildComposerModelOptions([
+      ' deepseek-v4-pro ',
+      'mock-model',
+      'deepseek-v4-pro',
+      ' '
+    ])).toEqual(['deepseek-v4-pro', 'mock-model'])
+    expect(buildComposerModelOptions(['deepseek-v4-pro'])).not.toContain('stale-thread-model')
   })
 
   it('deduplicates models within a provider but keeps the same model id across providers', () => {
@@ -685,6 +797,58 @@ describe('FloatingComposer image transfer helpers', () => {
 })
 
 describe('FloatingComposer capability controls', () => {
+  it('hides the default slash footer hint but keeps status hints', async () => {
+    const previousLanguage = i18n.language
+    await i18n.changeLanguage('en')
+    useChatStore.setState({
+      activeThreadId: null,
+      activeThreadGoal: null,
+      route: 'chat',
+      runtimeConnection: 'ready',
+      workspaceRoot: '/workspace/deepseek-gui',
+      threads: []
+    })
+
+    const baseProps = {
+      input: '',
+      setInput: () => undefined,
+      workspaceRootOverride: '/workspace/deepseek-gui',
+      mode: 'agent' as const,
+      setMode: () => undefined,
+      busy: false,
+      hasActiveThread: false,
+      composerModel: '',
+      composerPickList: [],
+      onComposerModelChange: () => undefined,
+      queuedMessages: [],
+      onRemoveQueuedMessage: () => undefined,
+      onSend: () => undefined,
+      onInterrupt: () => undefined,
+      attachmentUploadEnabled: false,
+      webAccessAvailable: false
+    }
+
+    try {
+      const readyHtml = renderToStaticMarkup(
+        createElement(FloatingComposer, {
+          ...baseProps,
+          runtimeReady: true
+        })
+      )
+      const offlineHtml = renderToStaticMarkup(
+        createElement(FloatingComposer, {
+          ...baseProps,
+          runtimeReady: false
+        })
+      )
+
+      expect(readyHtml).not.toContain('Type / for commands')
+      expect(offlineHtml).toContain('Reconnect the runtime before sending another message.')
+    } finally {
+      await i18n.changeLanguage(previousLanguage)
+    }
+  })
+
   it('renders localized execution values in Chinese without visible category prefixes', async () => {
     const previousLanguage = i18n.language
     await i18n.changeLanguage('zh')
@@ -724,10 +888,27 @@ describe('FloatingComposer capability controls', () => {
       })
     )
 
-    expect(html).toContain('Workspace write')
-    expect(html).toContain('Can modify the workspace')
+    expect(html).toContain('Ask in workspace')
+    expect(html).toContain('Asks before workspace file changes')
     expect(html).toContain('aria-label="Tool permission"')
     expect(html).toContain('lucide-folder-pen')
+  })
+
+  it('renders the trusted workspace permission mode in the execution picker', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposerExecutionPicker, {
+        value: {
+          approvalPolicy: 'auto',
+          sandboxMode: 'workspace-write'
+        },
+        onChange: () => undefined
+      })
+    )
+
+    expect(html).toContain('Trusted workspace')
+    expect(html).toContain('Workspace file changes run without prompts')
+    expect(html).toContain('aria-label="Tool permission"')
+    expect(html).toContain('lucide-shield-check')
   })
 
   it('renders the sensitive-ask permission mode in the execution picker', () => {

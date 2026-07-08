@@ -9,7 +9,7 @@ describe('WorkspaceModeTabs', () => {
     await i18n.changeLanguage('en')
   })
 
-  function props(activeView: 'chat' | 'write' | 'design' = 'chat') {
+  function props(activeView: 'chat' | 'workflow' | 'write' | 'design' = 'chat') {
     return {
       activeView,
       onCodeOpen: vi.fn(),
@@ -18,12 +18,13 @@ describe('WorkspaceModeTabs', () => {
     }
   }
 
-  it('renders three tab buttons', () => {
+  it('renders three top-level mode tab buttons', () => {
     const html = renderToStaticMarkup(createElement(WorkspaceModeTabs, props()))
 
     expect(html).toContain('Code')
     expect(html).toContain('Write')
     expect(html).toContain('Design')
+    expect(html).not.toContain('Loop')
     expect(html.match(/role="tab"/g)?.length).toBe(3)
   })
 
@@ -54,21 +55,27 @@ describe('WorkspaceModeTabs', () => {
     }
   })
 
-  it('preserves truncate class on button text for narrow sidebars', () => {
-    const html = renderToStaticMarkup(
-      createElement(WorkspaceModeTabs, props())
-    )
+  it('does not mark a top tab active while the moved Loop view is active', () => {
+    const html = renderToStaticMarkup(createElement(WorkspaceModeTabs, props('workflow')))
 
-    const truncateMatches = html.match(/truncate/g)
-    expect(truncateMatches?.length).toBe(3)
+    expect(html).not.toContain('aria-selected="true"')
+    expect(html.match(/aria-selected="false"/g)?.length).toBe(3)
   })
 
-  it('preserves min-w-0 on buttons for flex truncation', () => {
+  it('uses all-or-icon labels instead of truncating tab text', () => {
     const html = renderToStaticMarkup(
       createElement(WorkspaceModeTabs, props())
     )
 
-    // min-w-0 must be present to allow truncate to work in flex children
+    expect(html).toContain('workspace-mode-tab-label')
+    expect(html).not.toContain('truncate')
+  })
+
+  it('preserves min-w-0 on buttons for flex sizing', () => {
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceModeTabs, props())
+    )
+
     expect(html).toContain('min-w-0')
   })
 

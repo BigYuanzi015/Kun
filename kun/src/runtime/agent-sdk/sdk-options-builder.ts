@@ -7,7 +7,7 @@
  * permission/hook engines at the runtime layer; here they are plain injected
  * functions so the wiring is testable with fakes.
  */
-import type { ApprovalPolicy } from '../../contracts/policy.js'
+import type { ApprovalPolicy, SandboxMode } from '../../contracts/policy.js'
 import type {
   SdkCanUseTool,
   SdkMcpServerConfig,
@@ -86,10 +86,13 @@ export function buildScopedEnv(
  */
 export function mapApprovalPolicyToPermissionMode(
   policy: ApprovalPolicy,
-  planMode = false
+  planMode = false,
+  sandboxMode?: SandboxMode
 ): SdkPermissionMode {
   if (planMode) return 'plan'
-  if (policy === 'auto') return 'bypassPermissions'
+  if (policy === 'auto' && (!sandboxMode || sandboxMode === 'danger-full-access')) {
+    return 'bypassPermissions'
+  }
   return 'default'
 }
 
@@ -174,6 +177,7 @@ export interface AssembleSdkOptionsParams {
   kunSystemPrompt: string
   threadPersona?: string
   approvalPolicy: ApprovalPolicy
+  sandboxMode?: SandboxMode
   planMode?: boolean
   /** `mcp__kun__*` names from the tool bridge. */
   bridgedToolModelNames: readonly string[]
@@ -200,7 +204,11 @@ export function assembleSdkOptions(params: AssembleSdkOptionsParams): SdkQueryOp
     systemPrompt: buildClaudeSystemPrompt(params.kunSystemPrompt, params.threadPersona),
     allowedTools,
     disallowedTools: [...DEFAULT_SDK_DISALLOWED_TOOLS],
-    permissionMode: mapApprovalPolicyToPermissionMode(params.approvalPolicy, params.planMode),
+    permissionMode: mapApprovalPolicyToPermissionMode(
+      params.approvalPolicy,
+      params.planMode,
+      params.sandboxMode
+    ),
     includePartialMessages: true,
     env: buildScopedEnv(params.baseEnv, params.oauthToken),
     // Only load kun-provided config; don't auto-absorb the host's ~/.claude.

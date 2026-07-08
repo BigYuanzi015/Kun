@@ -61,6 +61,7 @@ export function buildDelegationToolProviders(runtime: DelegationRuntime | undefi
           if (args.timeBudgetMs !== undefined && !isPositiveInteger(args.timeBudgetMs)) {
             return { output: { error: 'timeBudgetMs must be a positive integer' }, isError: true }
           }
+          const inheritedProviderId = context.modelProviderId?.trim()
           const record = await runtime.runChild({
             parentThreadId: context.threadId,
             parentTurnId: context.turnId,
@@ -69,6 +70,7 @@ export function buildDelegationToolProviders(runtime: DelegationRuntime | undefi
             workspace: typeof args.workspace === 'string' ? args.workspace : context.workspace,
             ...(typeof args.model === 'string' ? { model: args.model } : {}),
             ...(typeof args.profile === 'string' ? { profile: args.profile } : {}),
+            ...(inheritedProviderId ? { inheritedProviderId } : {}),
             ...(context.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
             ...(args.detach === true ? { detach: true } : {}),
             ...(isPositiveInteger(args.tokenBudget) ? { tokenBudget: args.tokenBudget } : {}),
@@ -79,7 +81,12 @@ export function buildDelegationToolProviders(runtime: DelegationRuntime | undefi
             // child is still running — not only after it completes.
             onStart: (childId, profile) => {
               void onUpdate?.({
-                output: { childId, status: 'running', ...(profile ? { profile } : {}) },
+                output: {
+                  childId,
+                  status: 'running',
+                  detached: args.detach === true,
+                  ...(profile ? { profile } : {})
+                },
                 isError: false
               })
             },
@@ -89,6 +96,7 @@ export function buildDelegationToolProviders(runtime: DelegationRuntime | undefi
             output: {
               childId: record.id,
               status: record.status,
+              detached: record.detached === true,
               summary: record.summary,
               error: record.error,
               evidence: record.evidence,

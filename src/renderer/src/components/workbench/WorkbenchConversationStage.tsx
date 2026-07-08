@@ -55,8 +55,6 @@ export type WorkbenchConversationStageProps = {
       : never
     onToggleRightPanelMode: Parameters<typeof WorkbenchSideRail>[0]['onToggleRightPanelMode']
     planPanelEnabled: boolean
-    terminalOpen: boolean
-    onToggleTerminal: () => void
     onToggleFileTree: () => void
   }
 }
@@ -111,8 +109,6 @@ export function WorkbenchConversationStage({
             onToggleRightPanelMode={sideRail.onToggleRightPanelMode}
             planPanelEnabled={sideRail.planPanelEnabled}
             canvasEnabled={route === 'chat'}
-            terminalOpen={sideRail.terminalOpen}
-            onToggleTerminal={sideRail.onToggleTerminal}
             sideChatCount={sideChat.count}
             sideChatRunningCount={sideChat.runningCount}
             sideChatOpen={sideChat.open}

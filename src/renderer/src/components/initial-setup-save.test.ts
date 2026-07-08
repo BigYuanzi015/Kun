@@ -62,6 +62,11 @@ describe('initialSetupSelection', () => {
       agents: { kun: { approvalPolicy: 'on-request', sandboxMode: 'workspace-write' } }
     })
     expect(initialSetupSelection(current).permissionMode).toBe('workspace-write')
+
+    const trusted = settings({
+      agents: { kun: { approvalPolicy: 'auto', sandboxMode: 'workspace-write' } }
+    })
+    expect(initialSetupSelection(trusted).permissionMode).toBe('trusted-workspace')
   })
 })
 
@@ -117,16 +122,16 @@ describe('buildInitialSetupSettings', () => {
     const next = buildInitialSetupSettings(current, drafts, {
       presetId: 'deepseek',
       mode: 'api',
-      permissionMode: 'workspace-write'
+      permissionMode: 'trusted-workspace'
     })
 
     const runtime = getKunRuntimeSettings(next)
-    expect(runtime.approvalPolicy).toBe('on-request')
+    expect(runtime.approvalPolicy).toBe('auto')
     expect(runtime.sandboxMode).toBe('workspace-write')
   })
 
   it('preserves a non-UI permission policy when the selector is untouched', () => {
-    // A persisted policy the 5-mode UI cannot represent: stricter approval gate
+    // A persisted policy the 6-mode UI cannot represent: stricter approval gate
     // plus a sandboxed filesystem. Reopening onboarding seeds the selector from
     // the lossy fromSettings mapping (-> 'read-only'); when the user does not
     // move it, the save must leave the strict pair intact rather than rewrite it
@@ -165,11 +170,11 @@ describe('buildInitialSetupSettings', () => {
     const next = buildInitialSetupSettings(current, initialSetupDrafts(current), {
       presetId: 'deepseek',
       mode: 'api',
-      permissionMode: 'workspace-write'
+      permissionMode: 'trusted-workspace'
     })
 
     const runtime = getKunRuntimeSettings(next)
-    expect(runtime.approvalPolicy).toBe('on-request')
+    expect(runtime.approvalPolicy).toBe('auto')
     expect(runtime.sandboxMode).toBe('workspace-write')
   })
 

@@ -168,6 +168,15 @@ export function isWriteThreadId(
   return Boolean(threadId && writeThreadIds(registry).has(threadId))
 }
 
+export function isWriteAssistantThread(
+  thread: Pick<NormalizedThread, 'id'> & Partial<Pick<NormalizedThread, 'title'>>,
+  registry: WriteThreadRegistry = readWriteThreadRegistry()
+): boolean {
+  return isWriteThreadId(thread.id, registry) ||
+    writeAssistantTitleMatches(thread.title) ||
+    writeContextTitleMatches(thread.title)
+}
+
 export function writeWorkspaceForThreadId(
   threadId: string | null | undefined,
   registry: WriteThreadRegistry = readWriteThreadRegistry()

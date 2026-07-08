@@ -372,6 +372,7 @@ export function Workbench(): ReactElement {
 
   const { handleSend, sendWritePrompt } = useWorkbenchComposerSubmitController({
     activeClawChannelId, activeClawChannelModel: activeClawChannel?.model,
+    activeClawChannelProviderId: activeClawChannel?.providerId,
     activeSddDraft: Boolean(activeSddDraft), activeThreadId, attachmentUploadEnabled,
     buildCodeCanvasOutboundPrompt, clearComposerAttachments, clearComposerFileReferences,
     composerAttachments, composerFileReferences, composerMode, composerModelGroups,
@@ -701,8 +702,6 @@ export function Workbench(): ReactElement {
             rightPanelMode,
             onToggleRightPanelMode: toggleRightPanelMode,
             planPanelEnabled: Boolean(activeGuiPlan),
-            terminalOpen,
-            onToggleTerminal: toggleTerminal,
             onToggleFileTree: toggleFileTreeSidePanel
           }
         }}

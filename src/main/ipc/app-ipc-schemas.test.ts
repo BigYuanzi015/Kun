@@ -219,6 +219,8 @@ describe('app-ipc-schemas', () => {
         }
       },
       write: {
+        autoSaveEnabled: false,
+        autoSaveDelayMs: 180000,
         inlineCompletion: {
           model: 'deepseek-v4-pro',
           maxTokens: 128
@@ -246,6 +248,8 @@ describe('app-ipc-schemas', () => {
     expect(payload.agents?.kun?.tokenEconomy?.historyHygiene?.maxToolResultTokens).toBe(4000)
     expect(payload.agents?.kun?.toolOutputLimits?.maxLines).toBe(30000)
     expect(payload.agents?.kun?.toolOutputLimits?.maxBytes).toBe(1048576)
+    expect(payload.write?.autoSaveEnabled).toBe(false)
+    expect(payload.write?.autoSaveDelayMs).toBe(180000)
     expect(payload.write?.inlineCompletion?.model).toBe('deepseek-v4-pro')
     expect(payload.write?.selectionAssist?.infographicPrompt).toBe('手绘风格信息图。')
     expect(payload.write?.selectionAssist?.quickActions).toHaveLength(2)
@@ -339,6 +343,39 @@ describe('app-ipc-schemas', () => {
     expect(payload.agents?.kun?.textToSpeech?.enabled).toBe(true)
     expect(payload.agents?.kun?.musicGeneration?.model).toBe('music-2.6')
     expect(payload.agents?.kun?.videoGeneration?.defaultResolution).toBe('1080P')
+  })
+
+  it('accepts provider and resolved runtime retry settings', () => {
+    const payload = settingsPatchSchema.parse({
+      provider: {
+        providers: [{
+          id: 'deepseek',
+          name: 'DeepSeek',
+          apiKey: 'sk-test',
+          baseUrl: 'https://api.deepseek.com',
+          endpointFormat: 'chat_completions',
+          retry: {
+            maxAttempts: 3,
+            initialDelayMs: 3000,
+            httpStatusCodes: [429, 503]
+          },
+          models: ['deepseek-chat'],
+          modelProfiles: {}
+        }]
+      },
+      agents: {
+        kun: {
+          retry: {
+            maxAttempts: 3,
+            initialDelayMs: 3000,
+            httpStatusCodes: [429, 503]
+          }
+        }
+      }
+    })
+
+    expect(payload.provider?.providers?.[0]?.retry?.maxAttempts).toBe(3)
+    expect(payload.agents?.kun?.retry?.httpStatusCodes).toEqual([429, 503])
   })
 
   it('accepts long provider model ids imported from upstream catalogs', () => {

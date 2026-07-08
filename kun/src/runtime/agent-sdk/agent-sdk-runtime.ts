@@ -9,9 +9,10 @@
  * fully unit-testable with a fake SDK + fake deps. The concrete binding to kun's
  * real services lives in the runtime factory (a thin adapter).
  */
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { RuntimeEventDraft } from '../../services/runtime-event-recorder.js'
 import type { TurnItem } from '../../contracts/items.js'
-import type { ApprovalPolicy } from '../../contracts/policy.js'
+import type { ApprovalPolicy, SandboxMode } from '../../contracts/policy.js'
 import { SdkEventMapper } from './sdk-event-mapper.js'
 import {
   assembleSdkOptions,
@@ -39,6 +40,7 @@ export interface SdkTurnContext {
   /** Thread-level persona appended to the system prompt. */
   threadPersona?: string
   approvalPolicy: ApprovalPolicy
+  sandboxMode?: SandboxMode
   planMode?: boolean
   model?: string
   /** Prior SDK session id for multi-turn continuity. */
@@ -171,6 +173,7 @@ export class AgentSdkRuntime {
         kunSystemPrompt: this.deps.kunSystemPrompt(),
         threadPersona: ctx.threadPersona,
         approvalPolicy: ctx.approvalPolicy,
+        ...(ctx.sandboxMode ? { sandboxMode: ctx.sandboxMode } : {}),
         // Deliberately NOT mapping kun's plan turn to the SDK's 'plan' permission
         // mode: that mode blocks tool execution, which would also block kun's
         // bridged create_plan tool (the whole point of a plan turn). kun's plan
@@ -178,9 +181,11 @@ export class AgentSdkRuntime {
         // instruction instead (see resolveTurnPlanContext + contextInstructions).
         bridgedToolModelNames: bridgedToolModelNames(bridged),
         mcpServers,
-        canUseTool: buildCanUseTool((name, input) =>
-          this.deps.decideToolApproval(threadId, turnId, name, input)
-        ),
+        canUseTool: buildCanUseTool((name, input) => {
+          const sandboxDecision = decideSdkBuiltinSandbox(name, input, ctx)
+          if (sandboxDecision) return sandboxDecision
+          return this.deps.decideToolApproval(threadId, turnId, name, input)
+        }),
         baseEnv: this.deps.baseEnv(),
         oauthToken: ctx.oauthToken,
         abortController: abort,
@@ -246,4 +251,68 @@ export class AgentSdkRuntime {
       signal.removeEventListener('abort', onAbort)
     }
   }
+}
+
+const SDK_COMMAND_TOOLS = new Set(['Bash'])
+const SDK_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+const SDK_READ_PATH_TOOLS = new Set(['Read', 'Glob', 'Grep', 'NotebookRead'])
+
+export function decideSdkBuiltinSandbox(
+  toolName: string,
+  input: Record<string, unknown>,
+  context: Pick<SdkTurnContext, 'workspace' | 'sandboxMode'>
+): ToolApprovalDecision | null {
+  const mode = context.sandboxMode ?? 'danger-full-access'
+  if (mode === 'danger-full-access') return null
+
+  if (SDK_COMMAND_TOOLS.has(toolName)) {
+    return denySandbox(`tool ${toolName} is blocked because the "${mode}" sandbox mode does not run host shell commands`)
+  }
+
+  if (SDK_WRITE_TOOLS.has(toolName)) {
+    if (mode === 'read-only') return denySandbox(`tool ${toolName} is blocked by the read-only sandbox`)
+    if (mode === 'external-sandbox') {
+      return denySandbox(`tool ${toolName} is blocked because external-sandbox does not allow SDK file mutation`)
+    }
+    const path = sdkInputPath(input)
+    if (!path) return denySandbox(`tool ${toolName} is blocked because no workspace path was provided`)
+    if (!isPathInsideWorkspace(path, context.workspace)) {
+      return denySandbox(`tool ${toolName} is limited to the workspace sandbox: ${path}`)
+    }
+  }
+
+  if (SDK_READ_PATH_TOOLS.has(toolName)) {
+    const path = sdkInputPath(input)
+    if (!path && toolName === 'Read') {
+      return denySandbox(`tool ${toolName} is blocked because no workspace path was provided`)
+    }
+    if (path && !isPathInsideWorkspace(path, context.workspace)) {
+      return denySandbox(`tool ${toolName} is limited to workspace paths: ${path}`)
+    }
+  }
+
+  return null
+}
+
+function denySandbox(message: string): ToolApprovalDecision {
+  return { allow: false, message }
+}
+
+function sdkInputPath(input: Record<string, unknown>): string {
+  for (const key of ['file_path', 'path', 'notebook_path']) {
+    const value = input[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+function isPathInsideWorkspace(inputPath: string, workspace: string): boolean {
+  const root = workspace.trim()
+    ? isAbsolute(workspace)
+      ? resolve(workspace)
+      : resolve(process.cwd(), workspace)
+    : process.cwd()
+  const candidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath)
+  const rel = relative(root, candidate)
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }

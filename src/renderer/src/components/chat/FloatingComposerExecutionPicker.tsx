@@ -7,6 +7,7 @@ import {
   FolderPen,
   Hand,
   LockKeyholeOpen,
+  ShieldCheck,
   ShieldQuestion
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -47,7 +48,7 @@ type ExecutionMenuPlacement = {
 const EXECUTION_MENU_MARGIN = 12
 const EXECUTION_MENU_GAP = 8
 const EXECUTION_MENU_WIDTH = 288
-const EXECUTION_MENU_ESTIMATED_HEIGHT = 316
+const EXECUTION_MENU_ESTIMATED_HEIGHT = 376
 
 const APPROVAL_OPTIONS: ApprovalOption[] = [
   {
@@ -77,6 +78,13 @@ const APPROVAL_OPTIONS: ApprovalOption[] = [
     descriptionKey: 'toolPermissionWorkspaceWriteDesc',
     Icon: FolderPen,
     iconClass: 'border-indigo-400/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-200'
+  },
+  {
+    value: 'trusted-workspace',
+    labelKey: 'toolPermissionTrustedWorkspaceShort',
+    descriptionKey: 'toolPermissionTrustedWorkspaceDesc',
+    Icon: ShieldCheck,
+    iconClass: 'border-teal-400/30 bg-teal-500/10 text-teal-700 dark:text-teal-200'
   },
   {
     value: 'bypass',

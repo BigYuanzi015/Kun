@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ContextCapacity, ContextCategoryKey } from '../../lib/context-capacity'
 import { formatCompactNumber, formatPercent } from '../../hooks/use-thread-usage'
@@ -25,9 +25,10 @@ type Props = {
   capacity: ContextCapacity
   /** Approximate auto-compaction trigger, as a share of the window. */
   thresholdRatio?: number
+  style?: CSSProperties
 }
 
-export function ContextCapacityPopover({ capacity, thresholdRatio = 0.9 }: Props): ReactElement {
+export function ContextCapacityPopover({ capacity, thresholdRatio = 0.9, style }: Props): ReactElement {
   const { t } = useTranslation()
   const accent = stateColor(capacity.usedRatio, thresholdRatio)
 
@@ -47,7 +48,8 @@ export function ContextCapacityPopover({ capacity, thresholdRatio = 0.9 }: Props
 
   return (
     <div
-      className="ds-context-capacity w-[300px] rounded-2xl border border-ds-border-muted bg-ds-card p-3.5 text-ds-ink shadow-[0_14px_34px_rgba(20,47,95,0.16)]"
+      className="ds-context-capacity w-[300px] max-w-[calc(100vw-1.5rem)] rounded-2xl border border-ds-border-muted bg-ds-card p-3.5 text-ds-ink shadow-[0_14px_34px_rgba(20,47,95,0.16)]"
+      style={style}
       role="dialog"
       aria-label={t('contextCapacityTitle')}
     >

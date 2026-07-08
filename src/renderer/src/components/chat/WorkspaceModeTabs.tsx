@@ -18,7 +18,7 @@ export function WorkspaceModeTabs({
   const { t } = useTranslation('common')
 
   const tabClass = (active: boolean): string =>
-    `group inline-flex min-h-[28px] flex-1 min-w-0 items-center justify-center gap-1.5 rounded-[6px] px-2 py-0.5 text-[13px] outline-none transition-[background-color,color,box-shadow] duration-150 focus-visible:ring-2 focus-visible:ring-black/10 dark:focus-visible:ring-white/20 ${
+    `workspace-mode-tab group inline-flex min-h-[28px] flex-1 min-w-0 items-center justify-center gap-1.5 rounded-[6px] px-2 py-0.5 text-[13px] outline-none transition-[background-color,color,box-shadow] duration-150 focus-visible:ring-2 focus-visible:ring-black/10 dark:focus-visible:ring-white/20 ${
       active
         ? 'bg-white font-medium text-[#1f2733] shadow-[0_1px_2px_rgba(20,47,95,0.12),0_2px_5px_rgba(20,47,95,0.06)] dark:bg-white/[0.12] dark:text-white dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]'
         : 'font-normal text-[#646e7c] hover:text-[#1f2733] dark:text-white/55 dark:hover:text-white/90'
@@ -35,7 +35,7 @@ export function WorkspaceModeTabs({
     <div
       role="tablist"
       aria-label={`${t('code')} / ${t('write')} / ${t('design')}`}
-      className="mb-1.5 flex flex-row gap-1 rounded-[8px] bg-[color-mix(in_srgb,var(--ds-sidebar-field-bg)_72%,transparent)] p-0.5 shadow-[inset_0_0_0_1px_var(--ds-sidebar-row-ring)] dark:bg-white/[0.045] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]"
+      className="workspace-mode-tabs mb-1.5 flex flex-row gap-1 rounded-[8px] bg-[color-mix(in_srgb,var(--ds-sidebar-field-bg)_72%,transparent)] p-0.5 shadow-[inset_0_0_0_1px_var(--ds-sidebar-row-ring)] dark:bg-white/[0.045] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]"
     >
       <button
         type="button"
@@ -44,9 +44,10 @@ export function WorkspaceModeTabs({
         aria-selected={activeView === 'chat'}
         onClick={onCodeOpen}
         className={tabClass(activeView === 'chat')}
+        title={t('code')}
       >
         <Code2 className={iconClass(activeView === 'chat')} strokeWidth={1.9} />
-        <span className="truncate">{t('code')}</span>
+        <span className="workspace-mode-tab-label whitespace-nowrap">{t('code')}</span>
       </button>
       <button
         type="button"
@@ -55,9 +56,10 @@ export function WorkspaceModeTabs({
         aria-selected={activeView === 'write'}
         onClick={onWriteOpen}
         className={tabClass(activeView === 'write')}
+        title={t('write')}
       >
         <PencilLine className={iconClass(activeView === 'write')} strokeWidth={1.9} />
-        <span className="truncate">{t('write')}</span>
+        <span className="workspace-mode-tab-label whitespace-nowrap">{t('write')}</span>
       </button>
       <button
         type="button"
@@ -66,9 +68,10 @@ export function WorkspaceModeTabs({
         aria-selected={activeView === 'design'}
         onClick={onDesignOpen}
         className={tabClass(activeView === 'design')}
+        title={t('design')}
       >
         <Palette className={iconClass(activeView === 'design')} strokeWidth={1.9} />
-        <span className="truncate">{t('design')}</span>
+        <span className="workspace-mode-tab-label whitespace-nowrap">{t('design')}</span>
       </button>
     </div>
   )

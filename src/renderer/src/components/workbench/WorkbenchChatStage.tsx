@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next'
 import type { ChatBlock, RuntimeConnectionStatus } from '../../agent/types'
 import { FloatingComposer } from '../chat/FloatingComposer'
 import { SubagentReturnBar } from '../chat/message-timeline-empty'
+import { WorkbenchTopActions } from '../chat/WorkbenchTopBar'
 import { IkunCameoLayer, KunCelebrationLayer } from '../chat/AnimatedWorkLogo'
 import { DevPreviewLaunchCard } from '../DevPreviewLaunchCard'
 import { SessionHeader } from '../SessionHeader'
@@ -113,6 +114,10 @@ export function WorkbenchChatStage({
               <SessionHeader compact className="min-w-0 flex-1" />
             </div>
             <div className="chat-topbar-actions flex min-w-0 flex-wrap items-center justify-end gap-2 self-center">
+              <WorkbenchTopActions
+                terminalOpen={terminalOpen}
+                onToggleTerminal={onToggleTerminal}
+              />
               {busy ? (
                 <span className="inline-flex shrink-0 rounded-full bg-amber-500/16 px-2.5 py-1 text-[11.5px] font-semibold text-amber-950 dark:text-amber-100">
                   {t('running')}

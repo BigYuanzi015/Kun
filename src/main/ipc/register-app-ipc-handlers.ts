@@ -52,6 +52,7 @@ import {
   notificationPayloadSchema,
   openEditorPathPayloadSchema,
   providerProbePayloadSchema,
+  promptOptimizationPayloadSchema,
   rootPathSchema,
   worktreeCommitSchema,
   worktreeContinueMergeSchema,
@@ -200,6 +201,7 @@ import { retrieveWriteContext } from '../services/write-retrieval-service'
 import { requestWriteInfographic } from '../services/write-infographic-service'
 import { authorizePrototypePath } from '../services/prototype-embed-registry'
 import { requestSpeechTranscription } from '../services/speech-to-text-service'
+import { optimizePrompt } from '../services/prompt-optimization-service'
 import {
   cancelLocalWhisperModel,
   deleteLocalWhisperModel,
@@ -593,6 +595,11 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
   ipcMain.handle('provider:probe', async (_, payload: unknown) => {
     const request = parseIpcPayload('provider:probe', providerProbePayloadSchema, payload)
     return probeModelProvider(request, await store.load())
+  })
+
+  ipcMain.handle('prompt:optimize', async (_, payload: unknown) => {
+    const request = parseIpcPayload('prompt:optimize', promptOptimizationPayloadSchema, payload)
+    return optimizePrompt(await store.load(), request.text)
   })
 
   ipcMain.handle('claw:status', async (): Promise<ClawRuntimeStatus> =>

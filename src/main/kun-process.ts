@@ -367,10 +367,6 @@ async function startKunChildOnce(
     host: '127.0.0.1',
     port: runtime.port,
     dataDir,
-    baseUrl: runtime.baseUrl,
-    modelProxyUrl: resolveModelProviderProxyUrl(settings),
-    endpointFormat: runtime.endpointFormat,
-    model: runtime.model,
     approvalPolicy: runtime.approvalPolicy,
     sandboxMode: runtime.sandboxMode,
     tokenEconomyMode: runtime.tokenEconomyMode,
@@ -473,7 +469,11 @@ export async function syncGuiManagedKunConfig(
   runtime: Pick<
     KunRuntimeSettingsV1,
     | 'apiKey'
+    | 'baseUrl'
+    | 'endpointFormat'
+    | 'model'
     | 'mcpSearch'
+    | 'retry'
     | 'tokenEconomy'
     | 'toolOutputLimits'
     | 'storage'
@@ -546,6 +546,9 @@ export async function syncGuiManagedKunConfig(
   const providers = options?.scheduleMcp?.settings
     ? providersConfigForRuntime(options.scheduleMcp.settings)
     : undefined
+  const defaultModelProxyUrl = options?.scheduleMcp?.settings
+    ? resolveModelProviderProxyUrl(options.scheduleMcp.settings)
+    : undefined
   // When the active provider is Codex, emit its required headers as the default
   // client's serve.headers (the bare access token goes to DEEPSEEK_API_KEY).
   // Always set the key explicitly (undefined clears it) so switching away from
@@ -555,6 +558,11 @@ export async function syncGuiManagedKunConfig(
     serve: {
       ...serve,
       storage,
+      baseUrl: runtime.baseUrl.trim() || undefined,
+      endpointFormat: runtime.endpointFormat,
+      model: runtime.model.trim() || undefined,
+      modelProxyUrl: defaultModelProxyUrl || undefined,
+      retry: runtime.retry,
       tokenEconomy: tokenEconomyConfigForRuntime(runtime.tokenEconomy, existingTokenEconomy),
       toolOutputLimits: toolOutputLimitsConfigForRuntime(runtime.toolOutputLimits),
       headers: defaultClientHeaders,
@@ -921,6 +929,7 @@ function providersConfigForRuntime(settings: AppSettingsV1): Record<string, Reco
       ...(baseUrl ? { baseUrl } : {}),
       ...(provider.kind ? { kind: provider.kind } : {}),
       ...(provider.endpointFormat ? { endpointFormat: provider.endpointFormat } : {}),
+      retry: provider.retry,
       ...(proxyUrl ? { modelProxyUrl: proxyUrl } : {}),
       ...(resolved.headers ? { headers: resolved.headers } : {})
     }

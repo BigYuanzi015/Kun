@@ -65,6 +65,17 @@ function withoutLoadingDirs(
   return next
 }
 
+async function prepareActiveFileForNavigation(
+  get: WriteWorkspaceGet,
+  workspaceRoot: string
+): Promise<boolean> {
+  const state = get()
+  if (!state.activeFilePath || state.activeFileKind !== 'text') return true
+  if (state.autoSaveEnabled) return get().flushSave(workspaceRoot)
+  if (state.saveStatus !== 'dirty' && state.saveStatus !== 'error') return true
+  return window.confirm(i18n.t('common:writeDiscardUnsavedChangesConfirm'))
+}
+
 export function createWriteFileActions({
   set,
   get,
@@ -81,7 +92,14 @@ export function createWriteFileActions({
         return
       }
       const current = get()
-      if (current.workspaceRoot === normalized && current.rootDirectory) return
+      if (current.workspaceRoot === normalized && current.rootDirectory) {
+        await get().refreshWorkspace(normalized)
+        return
+      }
+      if (current.workspaceRoot && current.workspaceRoot !== normalized) {
+        const canLeaveCurrentFile = await prepareActiveFileForNavigation(get, current.workspaceRoot)
+        if (!canLeaveCurrentFile) return
+      }
 
       setLastSavedContent('')
       cancelExternalSyncAnimation()
@@ -171,8 +189,6 @@ export function createWriteFileActions({
 
     openFile: async (workspaceRoot, path) => {
       cancelExternalSyncAnimation()
-      const saved = await get().flushSave(workspaceRoot)
-      if (!saved) return
       if (!isWriteWorkspaceFilePath(path)) {
         set({
           fileLoading: false,
@@ -180,6 +196,8 @@ export function createWriteFileActions({
         })
         return
       }
+      const canLeaveCurrentFile = await prepareActiveFileForNavigation(get, workspaceRoot)
+      if (!canLeaveCurrentFile) return
       set({ fileLoading: true, fileError: null })
       try {
         if (isWriteImageFilePath(path)) {

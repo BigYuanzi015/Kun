@@ -13,7 +13,11 @@ import type { SessionStore } from '../../ports/session-store.js'
 import type { ThreadStore } from '../../ports/thread-store.js'
 import type { CapabilityRegistry } from '../../adapters/tool/capability-registry.js'
 import type { ToolHostContext } from '../../ports/tool-host.js'
-import type { ApprovalPolicy } from '../../contracts/policy.js'
+import {
+  DEFAULT_SANDBOX_MODE,
+  type ApprovalPolicy,
+  type SandboxMode
+} from '../../contracts/policy.js'
 import type { ServeProviderConfig } from '../../config/kun-config.js'
 import type { AttachmentStore } from '../../attachments/attachment-store.js'
 import type { SkillRuntime } from '../../skills/skill-runtime.js'
@@ -53,6 +57,7 @@ export interface AgentSdkRuntimeFactoryDeps {
   /** Provider ids whose kind is 'agent-sdk' (this runtime owns them). */
   agentSdkProviderIds: ReadonlySet<string>
   defaultApprovalPolicy: ApprovalPolicy
+  defaultSandboxMode?: SandboxMode
   /** Runtime default model — used as the Claude model when a thread carries a non-Anthropic id. */
   defaultModel?: string
   /** True when the runtime's own default provider is agent-sdk (Claude sub as main model). */
@@ -217,6 +222,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
     opts?: {
       planMode?: boolean
       guiPlan?: GuiPlanContext
+      sandboxMode?: SandboxMode
       awaitUserInput?: ToolHostContext['awaitUserInput']
     }
   ): ToolHostContext => ({
@@ -224,6 +230,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
     turnId,
     workspace,
     approvalPolicy: deps.defaultApprovalPolicy,
+    sandboxMode: opts?.sandboxMode ?? deps.defaultSandboxMode ?? DEFAULT_SANDBOX_MODE,
     abortSignal: new AbortController().signal,
     // Expose plan state so `create_plan` is advertised (listTools) and executable
     // (executeKunTool) on plan turns — both are gated on it.
@@ -290,6 +297,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
       const plan = resolveTurnPlanContext(thread, turnId)
       const ctx = toolContext(threadId, turnId, thread.workspace, {
         ...plan,
+        sandboxMode: thread.sandboxMode,
         awaitUserInput: makeAwaitUserInput(threadId, turnId, new AbortController().signal)
       })
       const bridgeableTools: BridgeableTool[] = deps.registry.listTools(ctx).map((spec) => ({
@@ -354,6 +362,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
         userText,
         threadPersona: thread.systemPrompt?.trim() || undefined,
         approvalPolicy: deps.defaultApprovalPolicy,
+        sandboxMode: thread.sandboxMode,
         planMode,
         // Claude Code only accepts Anthropic models; coerce a thread's non-Claude
         // model (e.g. an old deepseek thread now routed to the subscription) to
@@ -374,6 +383,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
       // Real per-call signal so an interactive user_input cancels on turn abort.
       const ctx = toolContext(threadId, turnId, thread?.workspace ?? process.cwd(), {
         ...(plan ?? {}),
+        ...(thread?.sandboxMode ? { sandboxMode: thread.sandboxMode } : {}),
         awaitUserInput: makeAwaitUserInput(threadId, turnId, signal ?? new AbortController().signal)
       })
       try {

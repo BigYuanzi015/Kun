@@ -67,6 +67,11 @@ describe('mapApprovalPolicyToPermissionMode', () => {
   })
   test('auto -> bypassPermissions', () => {
     expect(mapApprovalPolicyToPermissionMode('auto')).toBe('bypassPermissions')
+    expect(mapApprovalPolicyToPermissionMode('auto', false, 'danger-full-access')).toBe('bypassPermissions')
+  })
+  test('auto with a sandboxed filesystem still uses per-tool gating', () => {
+    expect(mapApprovalPolicyToPermissionMode('auto', false, 'workspace-write')).toBe('default')
+    expect(mapApprovalPolicyToPermissionMode('auto', false, 'read-only')).toBe('default')
   })
   test('gated policies -> default', () => {
     expect(mapApprovalPolicyToPermissionMode('always')).toBe('default')

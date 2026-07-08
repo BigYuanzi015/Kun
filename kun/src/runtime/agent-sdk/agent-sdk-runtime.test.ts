@@ -1,6 +1,11 @@
 import { describe, expect, test, vi } from 'vitest'
-import { AgentSdkRuntime, type SdkRuntimeDeps, type SdkTurnContext } from './agent-sdk-runtime.js'
-import type { SdkApi, SdkMessage, SdkQueryResult } from './sdk-protocol.js'
+import {
+  AgentSdkRuntime,
+  decideSdkBuiltinSandbox,
+  type SdkRuntimeDeps,
+  type SdkTurnContext
+} from './agent-sdk-runtime.js'
+import type { SdkApi, SdkCanUseTool, SdkMessage, SdkQueryResult } from './sdk-protocol.js'
 import type { RuntimeEventDraft } from '../../services/runtime-event-recorder.js'
 import type { TurnItem } from '../../contracts/items.js'
 
@@ -101,6 +106,20 @@ const STREAM: SdkMessage[] = [
 ]
 
 describe('AgentSdkRuntime.runTurn', () => {
+  test('decideSdkBuiltinSandbox limits SDK reads to the workspace in workspace-write mode', () => {
+    expect(decideSdkBuiltinSandbox('Read', { file_path: '/tmp/outside.txt' }, {
+      workspace: '/ws',
+      sandboxMode: 'workspace-write'
+    })).toMatchObject({
+      allow: false,
+      message: expect.stringContaining('limited to workspace paths')
+    })
+    expect(decideSdkBuiltinSandbox('Read', { file_path: '/ws/inside.txt' }, {
+      workspace: '/ws',
+      sandboxMode: 'workspace-write'
+    })).toBeNull()
+  })
+
   test('drives the SDK stream into kun events/items and completes the turn', async () => {
     const { deps, events, items, finished, sessions } = makeDeps({ loadSdk: async () => fakeSdk(STREAM) })
     const runtime = new AgentSdkRuntime(deps)
@@ -141,6 +160,42 @@ describe('AgentSdkRuntime.runTurn', () => {
     await new AgentSdkRuntime(deps).runTurn('th', 'tn', new AbortController().signal)
     expect(seenOptions.env?.ANTHROPIC_API_KEY).toBeUndefined()
     expect(seenOptions.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-tok')
+  })
+
+  test('gates SDK built-ins with the workspace sandbox before approval policy', async () => {
+    let canUseTool: SdkCanUseTool | undefined
+    let permissionMode: unknown
+    const sdk = fakeSdk(STREAM, (opts) => {
+      canUseTool = (opts as { canUseTool?: SdkCanUseTool }).canUseTool
+      permissionMode = (opts as { permissionMode?: unknown }).permissionMode
+    })
+    const { deps } = makeDeps({
+      loadSdk: async () => sdk,
+      loadTurnContext: async () => ({
+        workspace: '/ws',
+        userText: 'hi',
+        approvalPolicy: 'auto',
+        sandboxMode: 'workspace-write',
+        bridgeableTools: []
+      })
+    })
+
+    await new AgentSdkRuntime(deps).runTurn('th', 'tn', new AbortController().signal)
+
+    expect(permissionMode).toBe('default')
+    expect(canUseTool).toBeDefined()
+    await expect(canUseTool!('Bash', { command: 'pwd' })).resolves.toMatchObject({
+      behavior: 'deny',
+      message: expect.stringContaining('does not run host shell commands')
+    })
+    await expect(canUseTool!('Write', { file_path: '/tmp/outside.txt', content: 'x' })).resolves.toMatchObject({
+      behavior: 'deny',
+      message: expect.stringContaining('limited to the workspace sandbox')
+    })
+    await expect(canUseTool!('Write', { file_path: '/ws/inside.txt', content: 'x' })).resolves.toEqual({
+      behavior: 'allow',
+      updatedInput: { file_path: '/ws/inside.txt', content: 'x' }
+    })
   })
 
   test('null turn context fails the turn early', async () => {

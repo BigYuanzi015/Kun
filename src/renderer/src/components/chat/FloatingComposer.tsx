@@ -3,6 +3,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ChangeEvent,
   type ClipboardEvent as ReactClipboardEvent,
   type DragEvent as ReactDragEvent,
@@ -10,6 +11,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactElement
 } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Archive,
   BarChart3,
@@ -47,10 +49,12 @@ import type { AttachmentReference, ChatBlock, ReviewTarget } from '../../agent/t
 import { useChatStore } from '../../store/chat-store'
 import { normalizeWorkspaceRoot } from '../../lib/workspace-path'
 import {
+  composerFileReferenceKey,
   composerFileReferenceFromPath,
   filterWorkspaceFileMentionSuggestions,
   formatComposerFileMentionToken,
   getFileMentionAtCursor,
+  hasComposerFileMentionToken,
   isComposerDirectoryReference,
   removeComposerFileMentionToken,
   replaceFileMentionInInput,
@@ -110,7 +114,7 @@ import {
 } from './FloatingComposerExecutionPicker'
 import { ImagePreviewLightbox } from './ImagePreviewLightbox'
 import { useComposerDraft } from './use-composer-draft'
-import { useSpeechToTextSettings, useVoiceDictation } from './use-voice-dictation'
+import { usePromptOptimizationSettings, useSpeechToTextSettings, useVoiceDictation } from './use-voice-dictation'
 import { VoiceRecordingStrip } from './VoiceRecordingStrip'
 import type { ComposerChangedFile } from '../../lib/composer-change-summary'
 import type { DesignComposerContext } from '../../design/design-composer-context'
@@ -123,6 +127,21 @@ const CONTEXT_CAPACITY_RING_SIZE = 24
 const CONTEXT_CAPACITY_RING_STROKE = 2.5
 const CONTEXT_CAPACITY_RING_RADIUS = (CONTEXT_CAPACITY_RING_SIZE - CONTEXT_CAPACITY_RING_STROKE) / 2
 const CONTEXT_CAPACITY_RING_CIRCUMFERENCE = 2 * Math.PI * CONTEXT_CAPACITY_RING_RADIUS
+const CONTEXT_CAPACITY_POPOVER_WIDTH = 300
+const CONTEXT_CAPACITY_POPOVER_MIN_HEIGHT = 180
+const CONTEXT_CAPACITY_POPOVER_MAX_HEIGHT = 360
+const CONTEXT_CAPACITY_POPOVER_ESTIMATED_HEIGHT = 252
+const CONTEXT_CAPACITY_POPOVER_MARGIN = 12
+const CONTEXT_CAPACITY_POPOVER_GAP = 8
+
+type ContextCapacityPopoverAnchorRect = Pick<DOMRect, 'bottom' | 'right' | 'top'>
+
+type ContextCapacityPopoverPlacement = {
+  left: number
+  top: number
+  width: number
+  maxHeight: number
+}
 
 function contextCapacityColor(usedRatio: number): string {
   if (usedRatio >= 0.9) return '#d9544e'
@@ -130,10 +149,109 @@ function contextCapacityColor(usedRatio: number): string {
   return 'var(--ds-accent)'
 }
 
-function formatContextCapacityChipNumber(value: number | null): string {
-  if (value == null || !Number.isFinite(value)) return '-'
-  const percent = Math.max(0, Math.min(100, value * 100))
-  return String(Math.round(percent))
+export function calculateContextCapacityPopoverPlacement({
+  anchorRect,
+  popoverHeight,
+  viewportHeight,
+  viewportWidth,
+  coordinateScale = 1
+}: {
+  anchorRect: ContextCapacityPopoverAnchorRect
+  popoverHeight: number
+  viewportHeight: number
+  viewportWidth: number
+  coordinateScale?: number
+}): ContextCapacityPopoverPlacement {
+  const scale = Number.isFinite(coordinateScale) && coordinateScale > 0 ? coordinateScale : 1
+  const normalizedAnchorRect = {
+    bottom: anchorRect.bottom / scale,
+    right: anchorRect.right / scale,
+    top: anchorRect.top / scale
+  }
+  const normalizedViewportHeight = viewportHeight / scale
+  const normalizedViewportWidth = viewportWidth / scale
+  const viewportMaxWidth = Math.max(1, normalizedViewportWidth - CONTEXT_CAPACITY_POPOVER_MARGIN * 2)
+  const width = Math.min(CONTEXT_CAPACITY_POPOVER_WIDTH, viewportMaxWidth)
+  const left = clampComposerNumber(
+    normalizedAnchorRect.right - width,
+    CONTEXT_CAPACITY_POPOVER_MARGIN,
+    Math.max(CONTEXT_CAPACITY_POPOVER_MARGIN, normalizedViewportWidth - CONTEXT_CAPACITY_POPOVER_MARGIN - width)
+  )
+  const contentHeight = Math.max(popoverHeight, CONTEXT_CAPACITY_POPOVER_MIN_HEIGHT)
+  const spaceAbove = Math.max(
+    1,
+    normalizedAnchorRect.top - CONTEXT_CAPACITY_POPOVER_MARGIN - CONTEXT_CAPACITY_POPOVER_GAP
+  )
+  const spaceBelow = Math.max(
+    1,
+    normalizedViewportHeight - normalizedAnchorRect.bottom - CONTEXT_CAPACITY_POPOVER_MARGIN - CONTEXT_CAPACITY_POPOVER_GAP
+  )
+  const targetHeight = Math.min(contentHeight, CONTEXT_CAPACITY_POPOVER_MAX_HEIGHT)
+  const openAbove = spaceAbove >= targetHeight || spaceAbove >= spaceBelow
+  const availableHeight = openAbove ? spaceAbove : spaceBelow
+  const maxHeight = Math.min(CONTEXT_CAPACITY_POPOVER_MAX_HEIGHT, availableHeight)
+  const visibleHeight = Math.min(contentHeight, maxHeight)
+  const preferredTop = openAbove
+    ? normalizedAnchorRect.top - CONTEXT_CAPACITY_POPOVER_GAP - visibleHeight
+    : normalizedAnchorRect.bottom + CONTEXT_CAPACITY_POPOVER_GAP
+  const top = clampComposerNumber(
+    preferredTop,
+    CONTEXT_CAPACITY_POPOVER_MARGIN,
+    Math.max(CONTEXT_CAPACITY_POPOVER_MARGIN, normalizedViewportHeight - CONTEXT_CAPACITY_POPOVER_MARGIN - visibleHeight)
+  )
+
+  return { left, top, width, maxHeight }
+}
+
+function currentComposerBodyZoom(): number {
+  if (typeof window === 'undefined') return 1
+  const zoom = window.getComputedStyle(document.body).zoom
+  const parsed = Number.parseFloat(zoom)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1
+}
+
+function clampComposerNumber(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
+}
+
+export function calculateComposerMenuScrollTop({
+  containerScrollTop,
+  containerClientHeight,
+  itemOffsetTop,
+  itemOffsetHeight
+}: {
+  containerScrollTop: number
+  containerClientHeight: number
+  itemOffsetTop: number
+  itemOffsetHeight: number
+}): number {
+  const currentTop = Math.max(0, containerScrollTop)
+  const visibleHeight = Math.max(0, containerClientHeight)
+  if (visibleHeight <= 0) return currentTop
+
+  const itemTop = Math.max(0, itemOffsetTop)
+  const itemBottom = itemTop + Math.max(0, itemOffsetHeight)
+  const currentBottom = currentTop + visibleHeight
+
+  if (itemTop < currentTop) return itemTop
+  if (itemBottom > currentBottom) return Math.max(0, itemBottom - visibleHeight)
+  return currentTop
+}
+
+function syncComposerMenuScroll(
+  container: HTMLElement | null,
+  item: HTMLElement | null
+): void {
+  if (!container || !item) return
+  const nextScrollTop = calculateComposerMenuScrollTop({
+    containerScrollTop: container.scrollTop,
+    containerClientHeight: container.clientHeight,
+    itemOffsetTop: item.offsetTop,
+    itemOffsetHeight: item.offsetHeight
+  })
+  if (nextScrollTop !== container.scrollTop) {
+    container.scrollTop = nextScrollTop
+  }
 }
 
 type Props = {
@@ -227,6 +345,13 @@ type Props = {
 }
 
 type SkillCommand = NonNullable<Props['skillCommands']>[number]
+
+export function shouldCaptureFileMentionCommitKey(
+  event: Pick<ReactKeyboardEvent<HTMLTextAreaElement>, 'key' | 'shiftKey' | 'metaKey' | 'ctrlKey'>
+): boolean {
+  if (event.key === 'Tab') return true
+  return event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey
+}
 
 const EMPTY_CONTEXT_BLOCKS: ChatBlock[] = []
 const EMPTY_MODEL_GROUPS: ModelProviderModelGroup[] = []
@@ -567,6 +692,7 @@ export function FloatingComposer({
   const userInput = useComposerUserInput(pendingUserInputBlock, resolveUserInput)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const speechToTextSettings = useSpeechToTextSettings()
+  const promptOptimizationSettings = usePromptOptimizationSettings()
   const dictationInputRef = useRef(input)
   useEffect(() => {
     dictationInputRef.current = input
@@ -674,12 +800,24 @@ export function FloatingComposer({
   const [worktreeBranches, setWorktreeBranches] = useState<string[]>([])
   const [goalPanelOpen, setGoalPanelOpen] = useState(false)
   const [contextCapacityOpen, setContextCapacityOpen] = useState(false)
+  const [contextCapacityPlacement, setContextCapacityPlacement] =
+    useState<ContextCapacityPopoverPlacement | null>(null)
   const [goalRuntimeNowMs, setGoalRuntimeNowMs] = useState(() => Date.now())
+  const [promptOptimizationBusy, setPromptOptimizationBusy] = useState(false)
+  const [promptOptimizationError, setPromptOptimizationError] = useState<string | null>(null)
   const composerRootRef = useRef<HTMLDivElement | null>(null)
   const composerMenuButtonRef = useRef<HTMLButtonElement | null>(null)
   const composerMenuPanelRef = useRef<HTMLDivElement | null>(null)
   const goalPanelRef = useRef<HTMLDivElement | null>(null)
   const contextCapacityRef = useRef<HTMLDivElement | null>(null)
+  const contextCapacityButtonRef = useRef<HTMLButtonElement | null>(null)
+  const contextCapacityPopoverRef = useRef<HTMLDivElement | null>(null)
+  const contextCapacityHoverCloseTimerRef = useRef<number | null>(null)
+  const slashCommandMenuRef = useRef<HTMLDivElement | null>(null)
+  const slashCommandItemRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+  const fileMentionMenuRef = useRef<HTMLDivElement | null>(null)
+  const fileMentionItemRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+  const fileMentionPresenceRef = useRef<Map<string, boolean>>(new Map())
   const messageTokenCacheRef = useRef<WeakMap<object, number>>(new WeakMap())
   // Cache the last-known runtime capacity inputs. `runtimeInfo` (and thus these
   // props) goes null whenever the runtime drops/reconnects; without caching, the
@@ -795,7 +933,7 @@ export function FloatingComposer({
             : t('clawComposerHintNeedsInbound')
           : useWorktreePool
             ? t('composerWorktreeModeHint')
-            : t('composerSlashHint')
+            : null
 
   useEffect(() => {
     if (!useWorktreePool || !effectiveWorkspaceRoot || typeof window.kunGui?.getGitBranches !== 'function') {
@@ -990,6 +1128,7 @@ export function FloatingComposer({
     filteredSlashCommands.length > 0
       ? filteredSlashCommands[Math.min(selectedCommandIndex, filteredSlashCommands.length - 1)]
       : null
+  const highlightedSlashCommandId = highlightedSlashCommand?.id ?? null
   const activeFileMention = useMemo<ComposerFileMention | null>(() => {
     if (!fileReferenceEnabled || slashQuery != null || !effectiveWorkspaceRoot) return null
     return getFileMentionAtCursor(input, composerCursor)
@@ -1007,6 +1146,9 @@ export function FloatingComposer({
     fileMentionSuggestions.length > 0
       ? fileMentionSuggestions[Math.min(selectedFileMentionIndex, fileMentionSuggestions.length - 1)]
       : null
+  const highlightedFileMentionKey = highlightedFileMention
+    ? composerFileReferenceKey(highlightedFileMention)
+    : null
   const parsedGoalCommand = parseGoalCommand(input)
   const goalPanelDraftObjective = getGoalPanelDraftObjective(input, goalPanelOpen)
   const canSetGoalPanelDraft =
@@ -1027,6 +1169,13 @@ export function FloatingComposer({
       ? false
     : !canSend
   const primaryActionLoading = !runtimeReady
+  const canOptimizePrompt =
+    promptOptimizationSettings?.enabled === true &&
+    canEditComposer &&
+    !promptOptimizationBusy &&
+    input.trim().length > 0 &&
+    typeof window !== 'undefined' &&
+    typeof window.kunGui?.optimizePrompt === 'function'
   const goalRuntimeStartedAtMs = goalRuntimeStartedAtRef.current
   const liveGoalElapsedSeconds =
     busy && activeThreadGoal?.status === 'active' && goalRuntimeStartedAtMs != null
@@ -1048,6 +1197,22 @@ export function FloatingComposer({
     goalPanelOpen,
     composerMenuOpen
   })
+
+  useEffect(() => {
+    if (slashQuery == null || !highlightedSlashCommandId) return
+    syncComposerMenuScroll(
+      slashCommandMenuRef.current,
+      slashCommandItemRefs.current.get(highlightedSlashCommandId) ?? null
+    )
+  }, [filteredSlashCommands.length, highlightedSlashCommandId, selectedCommandIndex, slashQuery])
+
+  useEffect(() => {
+    if (!showFileMentionMenu || !highlightedFileMentionKey) return
+    syncComposerMenuScroll(
+      fileMentionMenuRef.current,
+      fileMentionItemRefs.current.get(highlightedFileMentionKey) ?? null
+    )
+  }, [fileMentionSuggestions.length, highlightedFileMentionKey, selectedFileMentionIndex, showFileMentionMenu])
 
   useEffect(() => {
     setSelectedCommandIndex(0)
@@ -1111,6 +1276,29 @@ export function FloatingComposer({
   ])
 
   useEffect(() => {
+    const previous = fileMentionPresenceRef.current
+    const next = new Map<string, boolean>()
+    const removedRelativePaths: string[] = []
+
+    for (const reference of fileReferences) {
+      const isDirectory = isComposerDirectoryReference(reference)
+      const key = composerFileReferenceKey(reference)
+      const present = hasComposerFileMentionToken(input, reference.relativePath, isDirectory)
+      if (previous.get(key) === true && !present) {
+        removedRelativePaths.push(reference.relativePath)
+      }
+      next.set(key, present)
+    }
+
+    fileMentionPresenceRef.current = next
+
+    if (!onRemoveFileReference || removedRelativePaths.length === 0) return
+    for (const relativePath of removedRelativePaths) {
+      onRemoveFileReference(relativePath)
+    }
+  }, [fileReferences, input, onRemoveFileReference])
+
+  useEffect(() => {
     if (!composerMenuOpen && !goalPanelOpen) return
 
     const onPointerDown = (event: PointerEvent): void => {
@@ -1138,11 +1326,47 @@ export function FloatingComposer({
   }, [composerMenuOpen, goalPanelOpen])
 
   useEffect(() => {
+    if (!showContextCapacity && contextCapacityOpen) setContextCapacityOpen(false)
+  }, [contextCapacityOpen, showContextCapacity])
+
+  useEffect(() => {
+    if (!contextCapacityOpen || !showContextCapacity) {
+      setContextCapacityPlacement(null)
+      return
+    }
+
+    const updatePlacement = (): void => {
+      const button = contextCapacityButtonRef.current
+      if (!button) return
+      setContextCapacityPlacement(
+        calculateContextCapacityPopoverPlacement({
+          anchorRect: button.getBoundingClientRect(),
+          popoverHeight: contextCapacityPopoverRef.current?.offsetHeight ?? CONTEXT_CAPACITY_POPOVER_ESTIMATED_HEIGHT,
+          viewportHeight: window.innerHeight,
+          viewportWidth: window.innerWidth,
+          coordinateScale: currentComposerBodyZoom()
+        })
+      )
+    }
+
+    updatePlacement()
+    const frame = window.requestAnimationFrame(updatePlacement)
+    window.addEventListener('resize', updatePlacement)
+    window.addEventListener('scroll', updatePlacement, true)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('resize', updatePlacement)
+      window.removeEventListener('scroll', updatePlacement, true)
+    }
+  }, [contextCapacityOpen, showContextCapacity, contextCapacity])
+
+  useEffect(() => {
     if (!contextCapacityOpen) return
     const onPointerDown = (event: PointerEvent): void => {
       const target = event.target
       if (!(target instanceof Node)) return
       if (contextCapacityRef.current?.contains(target)) return
+      if (contextCapacityPopoverRef.current?.contains(target)) return
       setContextCapacityOpen(false)
     }
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -1155,6 +1379,15 @@ export function FloatingComposer({
       window.removeEventListener('keydown', onKeyDown)
     }
   }, [contextCapacityOpen])
+
+  useEffect(() => {
+    return () => {
+      if (contextCapacityHoverCloseTimerRef.current != null) {
+        window.clearTimeout(contextCapacityHoverCloseTimerRef.current)
+        contextCapacityHoverCloseTimerRef.current = null
+      }
+    }
+  }, [])
 
   useEffect(() => {
     const shouldTimeGoal = busy && activeThreadGoal?.status === 'active'
@@ -1353,6 +1586,33 @@ export function FloatingComposer({
     draft.focusComposer()
   }
 
+  const handlePromptOptimizationClick = (): void => {
+    if (!canOptimizePrompt) return
+    const sourceText = input
+    setPromptOptimizationBusy(true)
+    setPromptOptimizationError(null)
+    void window.kunGui.optimizePrompt({ text: sourceText })
+      .then((result) => {
+        if (!result.ok) {
+          setPromptOptimizationError(result.message)
+          return
+        }
+        setInput(result.text)
+        window.requestAnimationFrame(() => {
+          const textarea = draft.textareaRef.current
+          if (!textarea) return
+          textarea.focus()
+          const cursor = result.text.length
+          textarea.setSelectionRange(cursor, cursor)
+          setComposerCursor(cursor)
+        })
+      })
+      .catch((error) => {
+        setPromptOptimizationError(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => setPromptOptimizationBusy(false))
+  }
+
   const syncComposerCursor = (element = draft.textareaRef.current): void => {
     if (!element) return
     setComposerCursor(element.selectionStart ?? input.length)
@@ -1375,6 +1635,7 @@ export function FloatingComposer({
 
   const removeFileReference = (reference: ComposerFileReference): void => {
     onRemoveFileReference?.(reference.relativePath)
+    fileMentionPresenceRef.current.set(composerFileReferenceKey(reference), false)
     const nextInput = removeComposerFileMentionToken(
       input,
       reference.relativePath,
@@ -1491,9 +1752,11 @@ export function FloatingComposer({
         )
         return
       }
-      if ((event.key === 'Enter' || event.key === 'Tab') && highlightedFileMention) {
+      if (shouldCaptureFileMentionCommitKey(event)) {
         event.preventDefault()
-        applyFileMention(highlightedFileMention)
+        if (highlightedFileMention) {
+          applyFileMention(highlightedFileMention)
+        }
         return
       }
       if (event.key === 'Escape') {
@@ -1632,6 +1895,71 @@ export function FloatingComposer({
     draft.focusComposer()
   }
 
+  const contextCapacityPopoverStyle: CSSProperties = contextCapacityPlacement
+    ? {
+        left: `${contextCapacityPlacement.left}px`,
+        top: `${contextCapacityPlacement.top}px`,
+        width: `${contextCapacityPlacement.width}px`,
+        maxHeight: `${contextCapacityPlacement.maxHeight}px`
+      }
+    : {
+        left: 0,
+        top: 0,
+        width: `${CONTEXT_CAPACITY_POPOVER_WIDTH}px`,
+        maxHeight: `${CONTEXT_CAPACITY_POPOVER_MAX_HEIGHT}px`,
+        visibility: 'hidden'
+      }
+  const contextCapacityPortal =
+    contextCapacityOpen && contextCapacity && typeof document !== 'undefined'
+      ? createPortal(
+          <div
+            ref={contextCapacityPopoverRef}
+            className="ds-no-drag fixed z-[1000]"
+            style={contextCapacityPopoverStyle}
+            data-context-capacity-popover
+            onMouseEnter={() => {
+              if (contextCapacityHoverCloseTimerRef.current != null) {
+                window.clearTimeout(contextCapacityHoverCloseTimerRef.current)
+                contextCapacityHoverCloseTimerRef.current = null
+              }
+            }}
+            onMouseLeave={() => {
+              if (contextCapacityHoverCloseTimerRef.current != null) {
+                window.clearTimeout(contextCapacityHoverCloseTimerRef.current)
+              }
+              contextCapacityHoverCloseTimerRef.current = window.setTimeout(() => {
+                contextCapacityHoverCloseTimerRef.current = null
+                setContextCapacityOpen(false)
+              }, 120)
+            }}
+          >
+            <ContextCapacityPopover
+              capacity={contextCapacity}
+              style={{ width: '100%', maxHeight: 'inherit', overflowY: 'auto' }}
+            />
+          </div>,
+          document.body
+        )
+      : null
+  const contextCapacityChipPercent = contextCapacity ? formatPercent(contextCapacity.usedRatio) : ''
+  const openContextCapacityPreview = (): void => {
+    if (!showContextCapacity) return
+    if (contextCapacityHoverCloseTimerRef.current != null) {
+      window.clearTimeout(contextCapacityHoverCloseTimerRef.current)
+      contextCapacityHoverCloseTimerRef.current = null
+    }
+    setContextCapacityOpen(true)
+  }
+  const closeContextCapacityPreviewSoon = (): void => {
+    if (contextCapacityHoverCloseTimerRef.current != null) {
+      window.clearTimeout(contextCapacityHoverCloseTimerRef.current)
+    }
+    contextCapacityHoverCloseTimerRef.current = window.setTimeout(() => {
+      contextCapacityHoverCloseTimerRef.current = null
+      setContextCapacityOpen(false)
+    }, 120)
+  }
+
   return (
     <div
       ref={composerRootRef}
@@ -1639,6 +1967,7 @@ export function FloatingComposer({
         ? 'ds-floating-composer ds-no-drag pointer-events-auto w-full pb-0 pt-0'
         : 'ds-floating-composer ds-no-drag ds-chat-column-inset ds-chat-content-max-width pointer-events-auto w-full pb-3 pt-0'}
     >
+      {contextCapacityPortal}
       <FloatingComposerQueuedMessages
         messages={queuedMessages}
         onRemove={onRemoveQueuedMessage}
@@ -1847,12 +2176,19 @@ export function FloatingComposer({
               {t('slashCommandMenuTitle')}
             </div>
             {filteredSlashCommands.length > 0 ? (
-              <div className="flex max-h-[min(300px,calc(100vh-260px))] flex-col gap-0.5 overflow-y-auto pr-1">
+              <div
+                ref={slashCommandMenuRef}
+                className="flex max-h-[min(300px,calc(100vh-260px))] flex-col gap-0.5 overflow-y-auto pr-1"
+              >
                 {filteredSlashCommands.map((command) => {
                   const active = highlightedSlashCommand?.id === command.id
                   return (
                     <button
                       key={command.id}
+                      ref={(node) => {
+                        if (node) slashCommandItemRefs.current.set(command.id, node)
+                        else slashCommandItemRefs.current.delete(command.id)
+                      }}
                       type="button"
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => applySlashCommand(command.id)}
@@ -1910,15 +2246,23 @@ export function FloatingComposer({
               ) : null}
             </div>
             {fileMentionSuggestions.length > 0 ? (
-              <div className="flex max-h-[min(280px,calc(100vh-260px))] flex-col gap-0.5 overflow-y-auto pr-1">
+              <div
+                ref={fileMentionMenuRef}
+                className="flex max-h-[min(280px,calc(100vh-260px))] flex-col gap-0.5 overflow-y-auto pr-1"
+              >
                 {fileMentionSuggestions.map((reference) => {
                   const isDirectory = isComposerDirectoryReference(reference)
+                  const referenceKey = composerFileReferenceKey(reference)
                   const active =
                     highlightedFileMention?.relativePath === reference.relativePath &&
                     highlightedFileMention?.type === reference.type
                   return (
                     <button
                       key={`${reference.type ?? 'file'}:${reference.relativePath}`}
+                      ref={(node) => {
+                        if (node) fileMentionItemRefs.current.set(referenceKey, node)
+                        else fileMentionItemRefs.current.delete(referenceKey)
+                      }}
                       type="button"
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => applyFileMention(reference)}
@@ -2273,13 +2617,20 @@ export function FloatingComposer({
               </span>
             </div>
           ) : null}
+          {promptOptimizationError ? (
+            <div className="px-1">
+              <span className="min-w-0 break-words text-[12px] font-medium text-red-600 dark:text-red-300">
+                {promptOptimizationError}
+              </span>
+            </div>
+          ) : null}
           <div
-            className={`ds-composer-toolbar flex min-h-9 items-center gap-2 ${
+            className={`ds-composer-toolbar flex min-h-9 min-w-0 items-center gap-2 ${
               showToolbarStartControls ? 'justify-between' : 'justify-end'
             }`}
           >
             {showToolbarStartControls ? (
-              <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden">
+              <div className="ds-composer-toolbar-start flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden">
                 {showComposerMenuButton ? (
                   <>
                     <button
@@ -2326,8 +2677,8 @@ export function FloatingComposer({
               </div>
             ) : null}
             <div
-              className={`flex min-w-0 items-center justify-end gap-1.5 ${
-                stretchModelPicker || dictation.status === 'recording' ? 'flex-1' : 'shrink-0'
+              className={`ds-composer-toolbar-actions flex min-w-0 items-center justify-end gap-1.5 ${
+                showToolbarStartControls || stretchModelPicker || dictation.status === 'recording' ? 'flex-1' : 'shrink-0'
               }`}
             >
               {dictation.status === 'recording' ? (
@@ -2356,128 +2707,141 @@ export function FloatingComposer({
                   </button>
                 </>
               ) : (
-              <>
-              {showContextCapacity && contextCapacity ? (
-                <div className="relative shrink-0" ref={contextCapacityRef}>
-                  <button
-                    type="button"
-                    onClick={() => setContextCapacityOpen((open) => !open)}
-                    className="ds-composer-context ds-no-drag relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-ds-border-muted bg-ds-card p-0 text-[9px] font-semibold leading-none text-ds-muted transition hover:bg-ds-hover"
-                    aria-label={t('contextCapacityChipAria', {
-                      percent: formatPercent(contextCapacity.usedRatio)
-                    })}
-                    aria-expanded={contextCapacityOpen}
-                    title={t('contextCapacityTitle')}
-                  >
-                    <svg
-                      className="h-6 w-6 -rotate-90 shrink-0"
-                      viewBox={`0 0 ${CONTEXT_CAPACITY_RING_SIZE} ${CONTEXT_CAPACITY_RING_SIZE}`}
-                      aria-hidden="true"
-                    >
-                      <circle
-                        cx={CONTEXT_CAPACITY_RING_SIZE / 2}
-                        cy={CONTEXT_CAPACITY_RING_SIZE / 2}
-                        r={CONTEXT_CAPACITY_RING_RADIUS}
-                        fill="none"
-                        stroke="var(--ds-surface-subtle)"
-                        strokeWidth={CONTEXT_CAPACITY_RING_STROKE}
-                      />
-                      <circle
-                        cx={CONTEXT_CAPACITY_RING_SIZE / 2}
-                        cy={CONTEXT_CAPACITY_RING_SIZE / 2}
-                        r={CONTEXT_CAPACITY_RING_RADIUS}
-                        fill="none"
-                        stroke={contextCapacityColor(contextCapacity.usedRatio)}
-                        strokeWidth={CONTEXT_CAPACITY_RING_STROKE}
-                        strokeLinecap="round"
-                        strokeDasharray={CONTEXT_CAPACITY_RING_CIRCUMFERENCE}
-                        strokeDashoffset={
-                          CONTEXT_CAPACITY_RING_CIRCUMFERENCE *
-                          (1 - Math.min(1, Math.max(0, contextCapacity.usedRatio)))
-                        }
-                      />
-                    </svg>
-                    <span className="pointer-events-none absolute inset-0 flex items-center justify-center tabular-nums">
-                      {formatContextCapacityChipNumber(contextCapacity.usedRatio)}
-                    </span>
-                  </button>
-                  {contextCapacityOpen ? (
-                    <div className="absolute bottom-full right-0 z-30 mb-2">
-                      <ContextCapacityPopover capacity={contextCapacity} />
+                <>
+                  {showContextCapacity && contextCapacity ? (
+                    <div className="relative shrink-0" ref={contextCapacityRef}>
+                      <button
+                        ref={contextCapacityButtonRef}
+                        type="button"
+                        onClick={openContextCapacityPreview}
+                        onFocus={openContextCapacityPreview}
+                        onBlur={closeContextCapacityPreviewSoon}
+                        onMouseEnter={openContextCapacityPreview}
+                        onMouseLeave={closeContextCapacityPreviewSoon}
+                        className="ds-composer-context ds-no-drag inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-transparent text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                        aria-label={t('contextCapacityChipAria', {
+                          percent: contextCapacityChipPercent
+                        })}
+                        aria-expanded={contextCapacityOpen}
+                        aria-haspopup="dialog"
+                      >
+                        <svg
+                          className="h-5 w-5 -rotate-90 shrink-0"
+                          viewBox={`0 0 ${CONTEXT_CAPACITY_RING_SIZE} ${CONTEXT_CAPACITY_RING_SIZE}`}
+                          aria-hidden="true"
+                        >
+                          <circle
+                            cx={CONTEXT_CAPACITY_RING_SIZE / 2}
+                            cy={CONTEXT_CAPACITY_RING_SIZE / 2}
+                            r={CONTEXT_CAPACITY_RING_RADIUS}
+                            fill="none"
+                            stroke="var(--ds-surface-subtle)"
+                            strokeWidth={CONTEXT_CAPACITY_RING_STROKE}
+                          />
+                          <circle
+                            cx={CONTEXT_CAPACITY_RING_SIZE / 2}
+                            cy={CONTEXT_CAPACITY_RING_SIZE / 2}
+                            r={CONTEXT_CAPACITY_RING_RADIUS}
+                            fill="none"
+                            stroke={contextCapacityColor(contextCapacity.usedRatio)}
+                            strokeWidth={CONTEXT_CAPACITY_RING_STROKE}
+                            strokeLinecap="round"
+                            strokeDasharray={CONTEXT_CAPACITY_RING_CIRCUMFERENCE}
+                            strokeDashoffset={
+                              CONTEXT_CAPACITY_RING_CIRCUMFERENCE *
+                              (1 - Math.min(1, Math.max(0, contextCapacity.usedRatio)))
+                            }
+                          />
+                        </svg>
+                      </button>
                     </div>
                   ) : null}
-                </div>
-              ) : null}
-              {hideModelPicker ? null : (
-                <FloatingComposerModelPicker
-                  compact={compact}
-                  mode={modelPickerMode}
-                  composerModel={composerModel}
-                  composerProviderId={composerProviderId}
-                  composerPickList={composerPickList}
-                  composerModelGroups={composerModelGroups}
-                  composerReasoningEffort={composerReasoningEffort}
-                  lockVisionToTextModelSwitch={lockVisionToTextModelSwitch}
-                  canChangeModel={canChangeModel}
-                  stretch={stretchModelPicker}
-                  onComposerModelChange={onComposerModelChange}
-                  onComposerReasoningEffortChange={onComposerReasoningEffortChange}
-                  onConfigureProviders={onConfigureProviders}
-                />
-              )}
-              {hideModelPicker ? null : (
-                <FloatingComposerAgentPicker compact={compact} disabled={!canChangeModel} />
-              )}
-              {showVoiceDictation ? (
-                <button
-                  type="button"
-                  disabled={dictation.status === 'transcribing' || !canEditComposer}
-                  onClick={dictation.toggle}
-                  className="ds-no-drag flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-60"
-                  aria-label={
-                    dictation.status === 'transcribing'
-                      ? t('composerVoiceTranscribing')
-                      : t('composerVoiceStart')
-                  }
-                  title={
-                    dictation.status === 'transcribing'
-                      ? t('composerVoiceTranscribing')
-                      : t('composerVoiceStart')
-                  }
-                >
-                  {dictation.status === 'transcribing' ? (
-                    <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.2} />
-                  ) : (
-                    <Mic className="h-4 w-4" strokeWidth={2} />
+                  {hideModelPicker ? null : (
+                    <FloatingComposerModelPicker
+                      compact={compact}
+                      mode={modelPickerMode}
+                      composerModel={composerModel}
+                      composerProviderId={composerProviderId}
+                      composerPickList={composerPickList}
+                      composerModelGroups={composerModelGroups}
+                      composerReasoningEffort={composerReasoningEffort}
+                      lockVisionToTextModelSwitch={lockVisionToTextModelSwitch}
+                      canChangeModel={canChangeModel}
+                      stretch={stretchModelPicker || showToolbarStartControls}
+                      onComposerModelChange={onComposerModelChange}
+                      onComposerReasoningEffortChange={onComposerReasoningEffortChange}
+                      onConfigureProviders={onConfigureProviders}
+                    />
                   )}
-                </button>
-              ) : null}
-              {busy ? (
-                <button
-                  type="button"
-                  onClick={() => onInterrupt()}
-                  className="ds-no-drag flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-white shadow-[0_10px_22px_rgba(20,47,95,0.22)] transition hover:bg-zinc-800 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
-                  aria-label={t('interrupt')}
-                  title={t('interrupt')}
-                >
-                  <Square className="h-3.5 w-3.5 fill-current" strokeWidth={2.4} />
-                </button>
-              ) : null}
-              <button
-                type="button"
-                disabled={primaryActionDisabled}
-                onClick={handlePrimaryAction}
-                className="ds-no-drag flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-white shadow-[0_10px_22px_rgba(20,47,95,0.22)] transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-ds-card disabled:text-ds-faint disabled:shadow-none dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200 dark:disabled:bg-ds-card dark:disabled:text-ds-faint"
-                aria-label={primaryActionLabel}
-                title={primaryActionLabel}
-              >
-                {primaryActionLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.2} />
-                ) : (
-                  <Send className="h-4 w-4" strokeWidth={2.2} />
-                )}
-              </button>
-              </>
+                  {hideModelPicker ? null : (
+                    <FloatingComposerAgentPicker compact={compact} disabled={!canChangeModel} />
+                  )}
+                  {showVoiceDictation ? (
+                    <button
+                      type="button"
+                      disabled={dictation.status === 'transcribing' || !canEditComposer}
+                      onClick={dictation.toggle}
+                      className="ds-no-drag flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-60"
+                      aria-label={
+                        dictation.status === 'transcribing'
+                          ? t('composerVoiceTranscribing')
+                          : t('composerVoiceStart')
+                      }
+                      title={
+                        dictation.status === 'transcribing'
+                          ? t('composerVoiceTranscribing')
+                          : t('composerVoiceStart')
+                      }
+                    >
+                      {dictation.status === 'transcribing' ? (
+                        <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.2} />
+                      ) : (
+                        <Mic className="h-4 w-4" strokeWidth={2} />
+                      )}
+                    </button>
+                  ) : null}
+                  {promptOptimizationSettings?.enabled === true ? (
+                    <button
+                      type="button"
+                      disabled={!canOptimizePrompt}
+                      onClick={handlePromptOptimizationClick}
+                      className="ds-no-drag flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-not-allowed disabled:opacity-60"
+                      aria-label={promptOptimizationBusy ? t('composerPromptOptimizing') : t('composerPromptOptimize')}
+                      title={promptOptimizationBusy ? t('composerPromptOptimizing') : t('composerPromptOptimize')}
+                    >
+                      {promptOptimizationBusy ? (
+                        <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.2} />
+                      ) : (
+                        <Sparkles className="h-4 w-4" strokeWidth={2} />
+                      )}
+                    </button>
+                  ) : null}
+                  {busy ? (
+                    <button
+                      type="button"
+                      onClick={() => onInterrupt()}
+                      className="ds-no-drag flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-white shadow-[0_10px_22px_rgba(20,47,95,0.22)] transition hover:bg-zinc-800 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
+                      aria-label={t('interrupt')}
+                      title={t('interrupt')}
+                    >
+                      <Square className="h-3.5 w-3.5 fill-current" strokeWidth={2.4} />
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={primaryActionDisabled}
+                    onClick={handlePrimaryAction}
+                    className="ds-no-drag flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-white shadow-[0_10px_22px_rgba(20,47,95,0.22)] transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-ds-card disabled:text-ds-faint disabled:shadow-none dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200 dark:disabled:bg-ds-card dark:disabled:text-ds-faint"
+                    aria-label={primaryActionLabel}
+                    title={primaryActionLabel}
+                  >
+                    {primaryActionLoading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.2} />
+                    ) : (
+                      <Send className="h-4 w-4" strokeWidth={2.2} />
+                    )}
+                  </button>
+                </>
               )}
             </div>
           </div>

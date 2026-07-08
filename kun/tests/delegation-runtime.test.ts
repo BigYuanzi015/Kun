@@ -183,6 +183,69 @@ describe('DelegationRuntime', () => {
     }
   })
 
+  it('inherits the parent model providerId through delegate_task', async () => {
+    const seen: Array<string | undefined> = []
+    const runtime = createRuntime({
+      executor: async (input) => {
+        seen.push(input.providerId)
+        return { summary: 'done' }
+      }
+    })
+    const host = new LocalToolHost({
+      registry: new CapabilityRegistry(buildDelegationToolProviders(runtime))
+    })
+
+    const result = await host.execute({
+      callId: 'call_provider',
+      toolName: 'delegate_task',
+      arguments: { label: 'Provider', prompt: 'Check routing' }
+    }, {
+      threadId: 'thr_provider',
+      turnId: 'turn_provider',
+      workspace: '/tmp/ws',
+      modelProviderId: 'opencode-go',
+      approvalPolicy: 'auto',
+      abortSignal: new AbortController().signal,
+      awaitApproval: async () => 'allow'
+    })
+
+    expect(result.item).toMatchObject({ kind: 'tool_result', isError: false })
+    expect(seen).toEqual(['opencode-go'])
+    expect((await runtime.diagnostics('thr_provider')).childRuns[0]?.providerId).toBe('opencode-go')
+  })
+
+  it('keeps a subagent profile providerId ahead of the inherited parent provider', async () => {
+    const seen: Array<string | undefined> = []
+    const runtime = createRuntime({
+      defaultProfile: 'reviewer',
+      profiles: { reviewer: { providerId: 'profile-provider', toolPolicy: 'readOnly' } },
+      executor: async (input) => {
+        seen.push(input.providerId)
+        return { summary: 'done' }
+      }
+    })
+    const host = new LocalToolHost({
+      registry: new CapabilityRegistry(buildDelegationToolProviders(runtime))
+    })
+
+    await host.execute({
+      callId: 'call_profile_provider',
+      toolName: 'delegate_task',
+      arguments: { label: 'Profile', prompt: 'Check profile routing' }
+    }, {
+      threadId: 'thr_profile_provider',
+      turnId: 'turn_profile_provider',
+      workspace: '/tmp/ws',
+      modelProviderId: 'opencode-go',
+      approvalPolicy: 'auto',
+      abortSignal: new AbortController().signal,
+      awaitApproval: async () => 'allow'
+    })
+
+    expect(seen).toEqual(['profile-provider'])
+    expect((await runtime.diagnostics('thr_profile_provider')).childRuns[0]?.providerId).toBe('profile-provider')
+  })
+
   it('forwards guiDesignCanvas from delegate_task context into the child run', async () => {
     const seen: boolean[] = []
     const runtime = createRuntime({

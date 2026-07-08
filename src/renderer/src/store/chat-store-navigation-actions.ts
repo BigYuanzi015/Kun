@@ -64,7 +64,7 @@ import {
   activeWriteThreadForWorkspace,
   forgetWriteThread,
   hydrateWriteThreadRegistry,
-  isWriteThreadId,
+  isWriteAssistantThread,
   markWriteThread,
   pruneWriteThreadRegistry,
   readWriteThreadRegistry,
@@ -924,7 +924,7 @@ export function createNavigationActions(
       const activeThreadIsManagedInCodeRoute =
         get().route === 'chat' &&
         activeThread != null &&
-        (isWriteThreadId(activeThread.id, writeRegistry) ||
+        (isWriteAssistantThread(activeThread, writeRegistry) ||
           isClawThread(activeThread, get().clawChannels) ||
           isDesignThreadId(activeThread.id, designRegistry) ||
           isInternalDeepSeekGuiWorkspace(activeThread.workspace))

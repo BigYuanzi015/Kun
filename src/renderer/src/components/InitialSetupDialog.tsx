@@ -36,6 +36,7 @@ import {
   LockKeyholeOpen,
   MessageCircle,
   Mic,
+  ShieldCheck,
   ShieldQuestion,
   Sparkles,
   Sun,
@@ -99,6 +100,14 @@ const PERMISSION_OPTIONS: PermissionOption[] = KUN_TOOL_PERMISSION_MODES.map((va
         descriptionKey: 'toolPermissionWorkspaceWriteDesc',
         Icon: FolderPen,
         iconClass: 'border-indigo-400/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-200'
+      }
+    case 'trusted-workspace':
+      return {
+        value,
+        labelKey: 'toolPermissionTrustedWorkspace',
+        descriptionKey: 'toolPermissionTrustedWorkspaceDesc',
+        Icon: ShieldCheck,
+        iconClass: 'border-teal-400/30 bg-teal-500/10 text-teal-700 dark:text-teal-200'
       }
     case 'bypass':
       return {
