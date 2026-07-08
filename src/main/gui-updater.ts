@@ -16,13 +16,11 @@ import type {
 import { nextGuiUpdateCheckDelay } from '../shared/gui-update-schedule'
 import { DEFAULT_GUI_UPDATE_CHANNEL, normalizeGuiUpdateChannel } from '../shared/gui-update'
 
-// R2 prefix 保持旧值:线上还在运行的 DeepSeek GUI 老版本轮询的
-// 就是 `deepseek-gui/channels/<channel>/latest/`,prefix 一改老客户端
-// 就再也收不到 Kun 的升级包。域名优先使用 kun-agent,旧域名仅作兜底。
-const PRIMARY_R2_PUBLIC_BASE_URL = 'https://www.kun-agent.com/api/r2'
-const SECONDARY_R2_PUBLIC_BASE_URL = 'https://kun-agent.com/api/r2'
-const LEGACY_R2_PUBLIC_BASE_URL = 'https://deepseek-gui.com/api/r2'
-const DEFAULT_R2_RELEASE_PREFIX = 'deepseek-gui'
+// 自托管更新源：HTTPS 服务器，单频道扁平结构。
+// feed 根 = https://<host>/<prefix>/ ，直接放 latest.yml 和安装包。
+// 可用环境变量 R2_PUBLIC_BASE_URL / R2_RELEASE_PREFIX 覆盖。
+const PRIMARY_R2_PUBLIC_BASE_URL = 'https://app.sun-golden.cn'
+const DEFAULT_R2_RELEASE_PREFIX = 'sungolden-agent'
 const UPDATE_FEED_PROBE_TIMEOUT_MS = 5_000
 const { autoUpdater } = electronUpdater
 
@@ -91,16 +89,18 @@ function uniqueStrings(values: string[]): string[] {
 function defaultR2BaseUrls(): string[] {
   const configured = process.env.R2_PUBLIC_BASE_URL?.trim()
   if (configured) return [configured]
-  return [PRIMARY_R2_PUBLIC_BASE_URL, SECONDARY_R2_PUBLIC_BASE_URL, LEGACY_R2_PUBLIC_BASE_URL]
+  return [PRIMARY_R2_PUBLIC_BASE_URL]
 }
 
 function updateFeedUrlCandidates(channel: GuiUpdateChannel): string[] {
   const direct = envUpdateUrl(channel)
   if (direct) return [direct]
 
+  // 单频道扁平结构：http://<host>/<prefix>/ ，不带 channels/<channel>/latest 子路径。
+  // channel 参数保留是为了兼容旧的 env 直配（KUN_UPDATE_URL_<CHANNEL>）。
   const prefix = process.env.R2_RELEASE_PREFIX?.trim() || DEFAULT_R2_RELEASE_PREFIX
   return uniqueStrings(
-    defaultR2BaseUrls().map((base) => `${joinUrl(base, prefix, 'channels', channel, 'latest')}/`)
+    defaultR2BaseUrls().map((base) => `${joinUrl(base, prefix)}/`)
   )
 }
 

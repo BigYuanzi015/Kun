@@ -562,7 +562,7 @@ function syncTray(settings: AppSettingsV1): void {
     tray.on('right-click', showTrayMenu)
   }
 
-  tray.setToolTip('Kun')
+  tray.setToolTip('SunGolden')
   trayMenu = createTrayMenu(settings, [])
   tray.setContextMenu(null)
 }

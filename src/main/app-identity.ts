@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app } from "electron";
 
 /**
  * 项目对外展示的产品名,需要和:
@@ -15,7 +15,7 @@ import { app } from 'electron'
  * 不随品牌改名 —— macOS 自动更新的签名校验和 NSIS 升级卸载的注册表
  * GUID 都锚定在 appId 上,改了老版本就无法平滑升级到新版本。
  */
-export const APP_PRODUCT_NAME = 'Kun'
+export const APP_PRODUCT_NAME = "SunGolden";
 
 /**
  * 在 main 进程最早期调用,把 app 的对外名称设好。
@@ -27,5 +27,5 @@ export const APP_PRODUCT_NAME = 'Kun'
  * 专用的,放在 main/index.ts 的 win32 分支里更直观。
  */
 export function configureAppIdentity(): void {
-  app.setName(APP_PRODUCT_NAME)
+  app.setName(APP_PRODUCT_NAME);
 }
