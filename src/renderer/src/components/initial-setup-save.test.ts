@@ -49,12 +49,13 @@ describe('initialSetupSelection', () => {
     })
   })
 
-  it('falls back to deepseek for unknown or empty active providers', () => {
-    expect(initialSetupSelection(settings())).toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'bypass' })
+  it('falls back to LiteLLM for unknown or empty active providers', () => {
+    expect(initialSetupSelection(settings())).toEqual({ presetId: 'litellm', mode: 'api', permissionMode: 'bypass' })
     expect(initialSetupSelection(settings({ agents: { kun: { providerId: 'custom-provider-2' } } })))
-      .toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'bypass' })
+      .toEqual({ presetId: 'litellm', mode: 'api', permissionMode: 'bypass' })
+    // LiteLLM is now explicitly recognized
     expect(initialSetupSelection(settings({ agents: { kun: { providerId: 'litellm' } } })))
-      .toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'bypass' })
+      .toEqual({ presetId: 'litellm', mode: 'api', permissionMode: 'bypass' })
   })
 
   it('preselects the saved permission mode', () => {
@@ -82,13 +83,14 @@ describe('initialSetupDrafts', () => {
     expect(drafts['minimax-token-plan'].baseUrl).toBe('https://api.minimaxi.com/anthropic')
   })
 
-  it('does not seed LiteLLM as an onboarding provider', () => {
-    expect(initialSetupDrafts(settings()).litellm).toBeUndefined()
+  it('seeds LiteLLM as the default onboarding provider', () => {
+    const drafts = initialSetupDrafts(settings())
+    expect(drafts.litellm).toBeDefined()
+    expect(drafts.litellm.apiKey).toBe('')
   })
 
   it('keeps coding and Moonshot presets out of onboarding', () => {
     const excludedIds = [
-      'litellm',
       'zhipu-coding-plan',
       'zai-coding-plan',
       'kimi-code',
@@ -100,8 +102,6 @@ describe('initialSetupDrafts', () => {
     expect(INITIAL_SETUP_PROVIDER_PRESETS.map((preset) => preset.id)).toEqual(['xiaomi', 'minimax'])
     for (const id of excludedIds) {
       expect(drafts[id]).toBeUndefined()
-      expect(initialSetupSelection(settings({ agents: { kun: { providerId: id } } })))
-        .toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'bypass' })
     }
   })
 })

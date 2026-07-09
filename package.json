@@ -1,7 +1,7 @@
 {
   "name": "kun-gui",
   "productName": "SunGolden",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Electron workbench for the Kun runtime (HTTP/SSE)",
   "main": "./out/main/index.js",
   "type": "module",
@@ -69,9 +69,11 @@
     "i18next": "^25.4.2",
     "jimp": "^1.6.1",
     "lucide-react": "^0.544.0",
+    "mammoth": "^1.12.0",
     "node-pty": "^1.1.0",
     "openclaw": "file:vendor/openclaw-shim",
     "pdfjs-dist": "^5.4.394",
+    "pptxgenjs": "^4.0.1",
     "proxy-agent": "^8.0.2",
     "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
@@ -83,6 +85,7 @@
     "remark-gfm": "^4.0.1",
     "shiki": "^3.23.0",
     "streamdown": "^2.5.0",
+    "xlsx": "^0.18.5",
     "zod": "^4.4.3",
     "zustand": "^5.0.3"
   },

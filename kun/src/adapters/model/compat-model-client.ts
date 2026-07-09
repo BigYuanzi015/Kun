@@ -155,7 +155,7 @@ const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000
 // the SAME output budget, so a long think left almost nothing for the tool
 // call, truncating its arguments into invalid JSON. Give thinking models much
 // more headroom; a per-model `maxOutputTokens` capability still overrides both.
-const DEFAULT_MESSAGES_MAX_TOKENS = 8192
+const DEFAULT_MESSAGES_MAX_TOKENS = 16_384
 const DEFAULT_MESSAGES_REASONING_MAX_TOKENS = 32_768
 
 /**

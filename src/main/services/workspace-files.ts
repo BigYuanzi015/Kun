@@ -59,6 +59,69 @@ const MAX_PDF_PREVIEW_BYTES = 64 * 1024 * 1024
 const WORKSPACE_IMAGE_DIR = 'img'
 const CLIPBOARD_TEMP_DIR = join(tmpdir(), 'kun')
 
+/**
+ * 把 .docx 当作纯文本预览：用 mammoth 解 zip 提取正文。
+ * 走在这里就绕过了 readWorkspaceFile 的二进制检测（docx 内含大量 0x00 字节）。
+ */
+async function readDocxAsText(filePath: string, fileSize: number): Promise<WorkspaceFileReadResult> {
+  try {
+    const mammoth = (await import('mammoth')).default
+    const result = await mammoth.extractRawText({ path: filePath })
+    const text = result.value.trim().length > 0
+      ? result.value
+      : '(文档内容为空或仅含图片/表格等无法提取的元素)'
+    return {
+      ok: true,
+      path: filePath,
+      content: text,
+      size: fileSize,
+      truncated: false
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      message: `无法解析此 Word 文档: ${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+}
+
+/**
+ * 把 .xlsx/.xls/.xlsm 当作纯文本预览：用 sheetjs 读取，每个工作表转 CSV 拼接。
+ * 走在这里就绕过了 readWorkspaceFile 的二进制检测（xlsx 内含大量 0x00 字节）。
+ */
+async function readXlsxAsText(filePath: string, fileSize: number): Promise<WorkspaceFileReadResult> {
+  try {
+    const XLSXModule = await import('xlsx')
+    // electron-vite 打包后 CJS 模块动态 import 的内容跑到 .default 上，需要兜底
+    const XLSX = (XLSXModule.default ?? XLSXModule) as typeof import('xlsx')
+    const workbook = XLSX.readFile(filePath, { cellDates: true })
+    const sheets = workbook.SheetNames
+      .map((name) => {
+        const sheet = workbook.Sheets[name]
+        if (!sheet) return ''
+        const csv = XLSX.utils.sheet_to_csv(sheet)
+        return `=== 工作表: ${name} ===\n${csv}`
+      })
+      .filter(Boolean)
+      .join('\n\n')
+    const text = sheets.trim().length > 0
+      ? sheets
+      : '(工作簿为空或无可读取的工作表)'
+    return {
+      ok: true,
+      path: filePath,
+      content: text,
+      size: fileSize,
+      truncated: false
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      message: `无法解析此 Excel 文档: ${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+}
+
 const WORKSPACE_IMAGE_MIME_BY_EXT = new Map([
   ['.png', 'image/png'],
   ['.jpg', 'image/jpeg'],
@@ -102,6 +165,15 @@ export async function readWorkspaceFile(payload: WorkspaceFileTarget): Promise<W
     const fileInfo = await stat(targetPath)
     if (fileInfo.isDirectory()) {
       return { ok: false, message: 'Cannot preview a directory.' }
+    }
+
+    // .docx/.xlsx 等 Office 文档是 zip 压缩的二进制格式，直接读会撞上二进制检测；走专门解析
+    const lowerExt = extensionFromName(targetPath).toLowerCase()
+    if (lowerExt === '.docx') {
+      return await readDocxAsText(targetPath, fileInfo.size)
+    }
+    if (lowerExt === '.xlsx' || lowerExt === '.xls' || lowerExt === '.xlsm') {
+      return await readXlsxAsText(targetPath, fileInfo.size)
     }
 
     const maxBytes = Math.min(fileInfo.size, MAX_FILE_PREVIEW_BYTES)

@@ -9,6 +9,7 @@ const TEXT_PREVIEW_EXTENSIONS = new Set([
   '.css',
   '.csv',
   '.dart',
+  '.docx',
   '.env',
   '.fish',
   '.go',
@@ -45,6 +46,9 @@ const TEXT_PREVIEW_EXTENSIONS = new Set([
   '.xml',
   '.yaml',
   '.yml',
+  '.xls',
+  '.xlsm',
+  '.xlsx',
   '.zsh'
 ])
 

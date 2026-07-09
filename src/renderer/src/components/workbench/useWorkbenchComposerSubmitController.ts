@@ -411,10 +411,10 @@ export function useWorkbenchComposerSubmitController({
           return null
         }
         try {
-          const fileContext = await readComposerFileContextEntries(fileReferences, workspace)
+          // 不注入文件全文，只将路径引用传给 runtime，让 AI 用 read 工具按需读取
           const displayText = v || emptyDisplayText
           return {
-            text: buildComposerFileContextPrompt(messageText, fileContext),
+            text: messageText,
             ...(displayText ? { displayText } : {})
           }
         } catch (error) {

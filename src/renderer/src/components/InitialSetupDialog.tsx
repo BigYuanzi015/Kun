@@ -27,12 +27,14 @@ import { emitRendererSettingsChanged } from '../lib/keyboard-shortcut-settings'
 import { useChatStore } from '../store/chat-store'
 import type { InitialSetupMode } from '../store/chat-store-types'
 import {
+  Download,
   Eye,
   EyeOff,
   ExternalLink,
   FolderPen,
   Hand,
   Image as ImageIcon,
+  Loader2,
   LockKeyholeOpen,
   MessageCircle,
   Mic,
@@ -57,7 +59,13 @@ const themeOptions: { value: ThemePref; icon: typeof Sun; labelKey: string }[] =
   { value: 'light', icon: Sun, labelKey: 'themeLight' },
   { value: 'dark', icon: Moon, labelKey: 'themeDark' }
 ]
-const DEEPSEEK_USAGE_URL = 'https://platform.deepseek.com/usage'
+// 金丰和 / 生地楼 LiteLLM 网关
+const SITE_OPTIONS = [
+  { id: 'jinfenghe' as const, label: '金丰和', baseUrl: 'http://192.168.2.29:40000/' },
+  { id: 'shengdilou' as const, label: '生地楼', baseUrl: 'http://47.92.140.194:40000/' }
+]
+const DEFAULT_LITELLM_SITE = 'jinfenghe'
+const LITELLM_PRESET_ID = 'litellm'
 
 type PermissionOption = {
   value: KunToolPermissionMode
@@ -128,36 +136,40 @@ type SetupProviderCard = {
   preset: ModelProviderPreset | null
 }
 
+// 仅保留 LiteLLM（默认）和 DeepSeek。XiaoMi/MiniMax 从首次设置中移除。
 const PROVIDER_CARDS: SetupProviderCard[] = [
+  {
+    presetId: LITELLM_PRESET_ID,
+    name: 'LiteLLM',
+    descKey: 'firstRunProviderLitellmDesc',
+    capability: null,
+    preset: null
+  },
   {
     presetId: DEFAULT_MODEL_PROVIDER_ID,
     name: 'DeepSeek',
     descKey: 'firstRunProviderDeepseekDesc',
     capability: null,
     preset: null
-  },
-  ...INITIAL_SETUP_PROVIDER_PRESETS.map((preset) => ({
-    presetId: preset.id,
-    name: preset.name,
-    descKey: preset.id === 'xiaomi' ? 'firstRunProviderXiaomiDesc' : 'firstRunProviderMinimaxDesc',
-    capability: preset.speech ? ('speech' as const) : preset.image ? ('image' as const) : null,
-    preset
-  }))
+  }
 ]
 
 function keyHintKey(card: SetupProviderCard, mode: InitialSetupSelection['mode']): string {
+  if (card.presetId === LITELLM_PRESET_ID) return 'firstRunBuyApiHint' // 不显示
   if (card.presetId === DEFAULT_MODEL_PROVIDER_ID) return 'firstRunBuyApiHint'
   const suffix = mode === 'token-plan' ? 'TokenPlan' : 'Api'
   return card.presetId === 'xiaomi' ? `firstRunKeyHintXiaomi${suffix}` : `firstRunKeyHintMinimax${suffix}`
 }
 
 function keyPageUrl(card: SetupProviderCard, mode: InitialSetupSelection['mode']): string {
-  if (!card.preset) return DEEPSEEK_USAGE_URL
+  if (card.presetId === LITELLM_PRESET_ID) return '#'
+  if (!card.preset) return 'https://platform.deepseek.com/usage'
   if (mode === 'token-plan' && card.preset.tokenPlan) return card.preset.tokenPlan.apiKeyUrl
   return card.preset.apiKeyUrl
 }
 
 function keyPlaceholder(card: SetupProviderCard, mode: InitialSetupSelection['mode']): string {
+  if (card.presetId === LITELLM_PRESET_ID) return '无需 API Key'
   if (mode === 'token-plan') {
     const prefix = card.preset?.tokenPlan?.keyPrefix
     return prefix ? `${prefix}...` : 'API Key'
@@ -209,13 +221,17 @@ export function InitialSetupDialog(): ReactElement {
   const [form, setForm] = useState<AppSettingsV1 | null>(null)
   const [drafts, setDrafts] = useState<InitialSetupDrafts | null>(null)
   const [selection, setSelection] = useState<InitialSetupSelection>({
-    presetId: DEFAULT_MODEL_PROVIDER_ID,
+    presetId: LITELLM_PRESET_ID,
     mode: 'api',
-    permissionMode: 'read-only'
+    permissionMode: 'bypass'
   })
+  const [selectedSite, setSelectedSite] = useState<string>(DEFAULT_LITELLM_SITE)
   const [showApiKey, setShowApiKey] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 从 API 拉取模型
+  const [fetchingModels, setFetchingModels] = useState(false)
+  const [fetchedModelIds, setFetchedModelIds] = useState<string[] | null>(null)
   const formRef = useRef<AppSettingsV1 | null>(null)
   const isPreview = initialSetupMode === 'preview'
   const closeAllowed = canCloseInitialSetup(initialSetupMode)
@@ -231,9 +247,22 @@ export function InitialSetupDialog(): ReactElement {
       .getSettings({ forceRefresh: true })
       .then((s) => {
         if (cancelled) return
-        setCurrentForm(s)
-        setDrafts(initialSetupDrafts(s))
-        setSelection(initialSetupSelection(s))
+        // 首次进入强制中文，选 LiteLLM + bypass 权限
+        const next = { ...s, locale: 'zh' as const }
+        if (!s.locale || s.locale === 'en') {
+          void applyI18n('zh')
+        }
+        setCurrentForm(next)
+        setDrafts(initialSetupDrafts(next))
+        setSelection({
+          presetId: LITELLM_PRESET_ID,
+          mode: 'api',
+          permissionMode: 'bypass'
+        })
+        // 从现有 baseUrl 匹配对应地点
+        const existingBaseUrl = (next.provider?.baseUrl || '')
+        const matchedSite = SITE_OPTIONS.find((o) => existingBaseUrl === o.baseUrl)
+        setSelectedSite(matchedSite?.id || DEFAULT_LITELLM_SITE)
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e))
@@ -312,9 +341,38 @@ export function InitialSetupDialog(): ReactElement {
     return Boolean(drafts[initialSetupProfileId({ presetId: card.presetId, mode: 'token-plan' })]?.apiKey.trim())
   }
 
+  const handleFetchModels = async () => {
+    const apiKey = selectedDraft.apiKey.trim()
+    const baseUrl = selectedDraft.baseUrl.trim()
+    if (!apiKey || !baseUrl) {
+      setError('请先填写 API Key 和网关地址')
+      return
+    }
+    setFetchingModels(true)
+    setError(null)
+    setFetchedModelIds(null)
+    try {
+      const result = await window.kunGui.probeModelProvider({
+        baseUrl,
+        apiKey,
+        endpointFormat: 'messages'
+      })
+      if (!result.ok) {
+        setError(result.message || '无法获取模型列表')
+        return
+      }
+      setFetchedModelIds([...result.modelIds])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setFetchingModels(false)
+    }
+  }
+
   const handleSave = async () => {
     const current = formRef.current
     if (!current || !drafts) return
+    // 所有 Provider 都要填 API Key
     if (!selectedDraft.apiKey.trim()) {
       setError(t('firstRunApiKeyValidation', { provider: selectedCard.name }))
       return
@@ -584,6 +642,28 @@ export function InitialSetupDialog(): ReactElement {
             </div>
           </div>
 
+          {/* 地点选择（仅 LiteLLM） */}
+          {selection.presetId === LITELLM_PRESET_ID && (
+            <div className="space-y-2.5 sm:space-y-3.5">
+              <label className={labelClass}>办公地点</label>
+              <div className="grid grid-cols-2 gap-2 sm:gap-2.5">
+                {SITE_OPTIONS.map((site) => (
+                  <button
+                    key={site.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedSite(site.id)
+                      updateSelectedDraft({ baseUrl: site.baseUrl })
+                    }}
+                    className={choiceButtonClass(selectedSite === site.id)}
+                  >
+                    <span className="min-w-0 text-center leading-tight">{site.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {regions.length > 0 && (
             <div className="space-y-2.5 sm:space-y-3.5">
               <label className={labelClass}>
@@ -606,68 +686,134 @@ export function InitialSetupDialog(): ReactElement {
             </div>
           )}
 
-          <div className="space-y-2.5 sm:space-y-3.5">
-            <label className={labelClass}>
-              {t('firstRunApiKeyLabel', { provider: selectedCard.name })}
-            </label>
-            <div className="relative">
-              <input
-                type={showApiKey ? 'text' : 'password'}
-                value={selectedDraft.apiKey}
-                onChange={(e) => updateSelectedDraft({ apiKey: e.target.value })}
-                placeholder={keyPlaceholder(selectedCard, selection.mode)}
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-                className={`${fieldClass} pr-12 font-mono placeholder:font-sans`}
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiKey((v) => !v)}
-                className="absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-white/[0.06] dark:hover:text-slate-300"
-              >
-                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-            <div className="grid gap-3 rounded-xl border border-slate-200/80 bg-slate-50/75 px-4 py-3 text-[13px] text-slate-500 dark:border-white/10 dark:bg-white/[0.035] dark:text-slate-400 min-[560px]:grid-cols-[1fr_auto] min-[560px]:items-center">
-              <p className="min-w-0 leading-6">
-                {t(keyHintKey(selectedCard, selection.mode))}
-              </p>
-              <button
-                type="button"
-                onClick={() => handleOpenKeyPage(keyPageUrl(selectedCard, selection.mode))}
-                className="inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[#1388ff]/24 bg-[#1388ff]/[0.06] px-3 py-1.5 text-[12.5px] font-semibold text-[#1377df] transition hover:bg-[#1388ff]/[0.1] dark:border-[#3aa0ff]/22 dark:bg-[#3aa0ff]/[0.12] dark:text-[#88c8ff] dark:hover:bg-[#3aa0ff]/[0.18]"
-              >
-                <span className="min-w-0 text-center leading-tight">{t('firstRunGetKeyAction')}</span>
-                <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.9} />
-              </button>
-            </div>
-            {wireNote && (
-              <div
-                className={
-                  wireNote.tone === 'success'
-                    ? 'rounded-xl border border-emerald-300/60 bg-emerald-50/80 px-4 py-2.5 text-[12.5px] leading-5 text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-950/30 dark:text-emerald-300'
-                    : 'rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-2.5 text-[12.5px] leading-5 text-amber-700 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300'
-                }
-              >
-                {wireNote.text}
+          {/* API Key + Base URL（仅非 LiteLLM 时显示输入框；LiteLLM 只显示 baseUrl 只读） */}
+          {selection.presetId !== LITELLM_PRESET_ID ? (
+            <>
+              <div className="space-y-2.5 sm:space-y-3.5">
+                <label className={labelClass}>
+                  {t('firstRunApiKeyLabel', { provider: selectedCard.name })}
+                </label>
+                <div className="relative">
+                  <input
+                    type={showApiKey ? 'text' : 'password'}
+                    value={selectedDraft.apiKey}
+                    onChange={(e) => updateSelectedDraft({ apiKey: e.target.value })}
+                    placeholder={keyPlaceholder(selectedCard, selection.mode)}
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                    className={`${fieldClass} pr-12 font-mono placeholder:font-sans`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey((v) => !v)}
+                    className="absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-white/[0.06] dark:hover:text-slate-300"
+                  >
+                    {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                <div className="grid gap-3 rounded-xl border border-slate-200/80 bg-slate-50/75 px-4 py-3 text-[13px] text-slate-500 dark:border-white/10 dark:bg-white/[0.035] dark:text-slate-400 min-[560px]:grid-cols-[1fr_auto] min-[560px]:items-center">
+                  <p className="min-w-0 leading-6">
+                    {t(keyHintKey(selectedCard, selection.mode))}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenKeyPage(keyPageUrl(selectedCard, selection.mode))}
+                    className="inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[#1388ff]/24 bg-[#1388ff]/[0.06] px-3 py-1.5 text-[12.5px] font-semibold text-[#1377df] transition hover:bg-[#1388ff]/[0.1] dark:border-[#3aa0ff]/22 dark:bg-[#3aa0ff]/[0.12] dark:text-[#88c8ff] dark:hover:bg-[#3aa0ff]/[0.18]"
+                  >
+                    <span className="min-w-0 text-center leading-tight">{t('firstRunGetKeyAction')}</span>
+                    <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.9} />
+                  </button>
+                </div>
+                {wireNote && (
+                  <div
+                    className={
+                      wireNote.tone === 'success'
+                        ? 'rounded-xl border border-emerald-300/60 bg-emerald-50/80 px-4 py-2.5 text-[12.5px] leading-5 text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-950/30 dark:text-emerald-300'
+                        : 'rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-2.5 text-[12.5px] leading-5 text-amber-700 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300'
+                    }
+                  >
+                    {wireNote.text}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          <div className="space-y-2.5 sm:space-y-3.5">
-            <label className={labelClass}>
-              {t('baseUrl')}
-            </label>
-            <input
-              type="text"
-              value={selectedDraft.baseUrl}
-              onChange={(e) => updateSelectedDraft({ baseUrl: e.target.value })}
-              placeholder="https://"
-              className={fieldClass}
-            />
-          </div>
+              <div className="space-y-2.5 sm:space-y-3.5">
+                <label className={labelClass}>
+                  {t('baseUrl')}
+                </label>
+                <input
+                  type="text"
+                  value={selectedDraft.baseUrl}
+                  onChange={(e) => updateSelectedDraft({ baseUrl: e.target.value })}
+                  placeholder="https://"
+                  className={fieldClass}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="space-y-2.5 sm:space-y-3.5">
+                <label className={labelClass}>
+                  {t('firstRunApiKeyLabel', { provider: selectedCard.name })}
+                </label>
+                <div className="relative">
+                  <input
+                    type={showApiKey ? 'text' : 'password'}
+                    value={selectedDraft.apiKey}
+                    onChange={(e) => updateSelectedDraft({ apiKey: e.target.value })}
+                    placeholder="sk-..."
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                    className={`${fieldClass} pr-12 font-mono placeholder:font-sans`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey((v) => !v)}
+                    className="absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-white/[0.06] dark:hover:text-slate-300"
+                  >
+                    {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                <p className="text-[12px] text-amber-600 dark:text-amber-400">如果没有 key，请联系高翔获取。</p>
+                <button
+                  type="button"
+                  disabled={fetchingModels}
+                  onClick={() => void handleFetchModels()}
+                  className="inline-flex h-9 w-fit items-center gap-2 rounded-lg border border-[#1388ff]/24 bg-[#1388ff]/[0.06] px-3 py-1.5 text-[12.5px] font-semibold text-[#1377df] transition hover:bg-[#1388ff]/[0.1] disabled:opacity-50"
+                >
+                  {fetchingModels ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
+                  ) : (
+                    <Download className="h-3.5 w-3.5" strokeWidth={2} />
+                  )}
+                  从 API 拉取可用模型
+                </button>
+                {fetchedModelIds !== null && (
+                  <div className="rounded-xl border border-emerald-300/60 bg-emerald-50/80 px-4 py-2.5 text-[12.5px] leading-5 text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-950/30 dark:text-emerald-300">
+                    已获取 {fetchedModelIds.length} 个模型：{fetchedModelIds.slice(0, 6).join(', ')}
+                    {fetchedModelIds.length > 6 ? ` 等 ${fetchedModelIds.length - 6} 个` : ''}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2.5 sm:space-y-3.5">
+                <label className={labelClass}>
+                  网关地址
+                </label>
+                <input
+                  type="text"
+                  value={selectedDraft.baseUrl}
+                  readOnly
+                  className={`${fieldClass} cursor-default text-slate-500`}
+                />
+                <p className="text-[12px] text-slate-400">由上方办公地点自动选择。</p>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="shrink-0 space-y-3 border-t border-slate-200/72 bg-white/70 px-5 pb-4 pt-3.5 dark:border-white/10 dark:bg-white/[0.025] sm:space-y-4 sm:px-7 sm:pb-6 sm:pt-4">

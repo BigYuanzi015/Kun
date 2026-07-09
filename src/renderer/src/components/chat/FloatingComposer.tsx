@@ -1857,41 +1857,42 @@ export function FloatingComposer({
 
   const handleComposerDragOver = (event: ReactDragEvent<HTMLDivElement>): void => {
     const dataTransferTypes = Array.from(event.dataTransfer.types ?? [])
-    const canAcceptImages = canPickAttachment && imageTransferHasImages(event.dataTransfer)
-    const canAcceptPdf = canPickAttachment && Array.from(event.dataTransfer.files ?? []).some(isPdfFile)
-    if (!dataTransferTypes.includes('Files') && !canAcceptImages && !canAcceptPdf) return
+    // 只要拖的是文件就允许放置，否则浏览器会把文件当链接打开/下载
+    if (!dataTransferTypes.includes('Files')) return
     event.preventDefault()
     event.dataTransfer.dropEffect = 'copy'
   }
 
   const handleComposerDrop = (event: ReactDragEvent<HTMLDivElement>): void => {
-    const imageFiles = canPickAttachment ? imageFilesFromTransfer(event.dataTransfer) : []
     const rawFiles = Array.from(event.dataTransfer.files ?? [])
+    if (rawFiles.length === 0) return
+    // 始终阻止默认，否则浏览器会打开/下载被拖进来的文件
+    event.preventDefault()
     const isImageLike = (file: File): boolean =>
       isImageMimeType(file.type) || Boolean(imageMimeTypeFromFileName(file.name))
+
+    // 图片/PDF → 作为附件上传（直接把内容给 AI）
+    const imageFiles = canPickAttachment ? imageFilesFromTransfer(event.dataTransfer) : []
     const pdfFiles = canPickAttachment ? rawFiles.filter(isPdfFile) : []
-    const pathFiles = canPickLocalFileReference && onAddFileReference
-      ? rawFiles.filter((file) => !isImageLike(file) && !isPdfFile(file))
-      : []
-    if (imageFiles.length === 0 && pdfFiles.length === 0 && pathFiles.length === 0) return
-    event.preventDefault()
     if ((imageFiles.length > 0 || pdfFiles.length > 0) && onPickAttachments) {
       onPickAttachments([...imageFiles, ...pdfFiles])
     }
-    if (pathFiles.length > 0) {
-      const paths: string[] = []
+
+    // 其他文件 → 生成路径引用（@路径），让 AI 用 read 工具读取
+    if (onAddFileReference) {
+      const pathFiles = rawFiles.filter((file) => !isImageLike(file) && !isPdfFile(file))
       for (const file of pathFiles) {
         try {
           const path = window.kunGui.getPathForFile(file)
-          if (path) paths.push(path)
+          if (path) {
+            onAddFileReference(composerFileReferenceFromPath(path, effectiveWorkspaceRoot))
+          }
         } catch {
           // ignore files we cannot resolve a filesystem path for
         }
       }
-      for (const path of paths) {
-        onAddFileReference?.(composerFileReferenceFromPath(path, effectiveWorkspaceRoot))
-      }
     }
+
     draft.focusComposer()
   }
 

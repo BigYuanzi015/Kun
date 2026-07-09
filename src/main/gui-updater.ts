@@ -279,20 +279,12 @@ function resolveGithubReleaseUrl(): string | null {
 function downloadPageUrl(): string {
   const direct = envWithLegacyFallback('KUN_DOWNLOAD_URL', 'DEEPSEEK_GUI_DOWNLOAD_URL')
   if (direct) return direct
-
-  const pkg = readPackageJson()
-  const homepage = typeof pkg?.homepage === 'string' ? pkg.homepage.trim() : ''
-  if (homepage) return homepage
-
-  return resolveGithubReleaseUrl() ?? updateFeedUrl(configuredChannel)
+  // 默认指向自托管更新目录
+  return `${PRIMARY_R2_PUBLIC_BASE_URL}/${DEFAULT_R2_RELEASE_PREFIX}`
 }
 
 function releaseUrlForVersion(version: string): string {
-  const page = downloadPageUrl()
-  if (/github\.com\/.+\/releases\/?$/i.test(page)) {
-    return `${page.replace(/\/+$/, '')}/tag/v${version.replace(/^v/i, '')}`
-  }
-  return page
+  return downloadPageUrl()
 }
 
 function parseVersionParts(v: string): number[] {

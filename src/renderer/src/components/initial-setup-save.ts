@@ -18,6 +18,8 @@ import {
   type ModelProviderPreset,
   type ModelProviderProfileV1
 } from '@shared/app-settings'
+
+const LITELLM_PRESET_ID = 'litellm'
 import { diffSettingsPatch } from './settings-utils'
 
 export type InitialSetupAccessMode = 'api' | 'token-plan'
@@ -51,8 +53,15 @@ export function initialSetupProfileId(selection: Pick<InitialSetupSelection, 'pr
 export function initialSetupDrafts(settings: AppSettingsV1): InitialSetupDrafts {
   const provider = getModelProviderSettings(settings)
   const byId = new Map(provider.providers.map((profile) => [profile.id, profile]))
+  // LiteLLM 预设 baseUrl，优先使用已保存的值
+  const litellmProfile = byId.get(LITELLM_PRESET_ID)
+  const litellmPreset = MODEL_PROVIDER_PRESETS.find((p) => p.id === LITELLM_PRESET_ID)
   const drafts: InitialSetupDrafts = {
-    [DEFAULT_MODEL_PROVIDER_ID]: { apiKey: provider.apiKey, baseUrl: provider.baseUrl }
+    [DEFAULT_MODEL_PROVIDER_ID]: { apiKey: provider.apiKey, baseUrl: provider.baseUrl },
+    [LITELLM_PRESET_ID]: {
+      apiKey: litellmProfile?.apiKey ?? '',
+      baseUrl: litellmProfile?.baseUrl || litellmPreset?.baseUrl || 'http://192.168.2.29:40000/'
+    }
   }
   for (const preset of INITIAL_SETUP_PROVIDER_PRESETS) {
     const existing = byId.get(preset.id)
@@ -76,13 +85,18 @@ export function initialSetupSelection(settings: AppSettingsV1): InitialSetupSele
   const runtime = getKunRuntimeSettings(settings)
   const activeId = runtime.providerId.trim()
   const permissionMode = kunToolPermissionModeFromSettings(runtime)
+  // 默认选 LiteLLM
+  if (!activeId || activeId === DEFAULT_MODEL_PROVIDER_ID) {
+    return { presetId: LITELLM_PRESET_ID, mode: 'api', permissionMode }
+  }
   for (const preset of INITIAL_SETUP_PROVIDER_PRESETS) {
     if (activeId === preset.id) return { presetId: preset.id, mode: 'api', permissionMode }
     if (preset.tokenPlan && activeId === tokenPlanProviderId(preset.id)) {
       return { presetId: preset.id, mode: 'token-plan', permissionMode }
     }
   }
-  return { presetId: DEFAULT_MODEL_PROVIDER_ID, mode: 'api', permissionMode }
+  if (activeId === LITELLM_PRESET_ID) return { presetId: LITELLM_PRESET_ID, mode: 'api', permissionMode }
+  return { presetId: LITELLM_PRESET_ID, mode: 'api', permissionMode }
 }
 
 export type InitialSetupAutoWirePlan = {
@@ -150,6 +164,16 @@ export function buildInitialSetupSettings(
       apiKey: nextApiKey,
       baseUrl: nextBaseUrl
     })
+  }
+
+  // upsert LiteLLM preset
+  const litellmPreset = MODEL_PROVIDER_PRESETS.find((p) => p.id === LITELLM_PRESET_ID)
+  if (litellmPreset && drafts[LITELLM_PRESET_ID]) {
+    const llmDraft = drafts[LITELLM_PRESET_ID]
+    upsertPresetProfile(profiles, LITELLM_PRESET_ID, llmDraft, (apiKey, baseUrl) => ({
+      ...modelProviderPresetProfile(litellmPreset, apiKey),
+      ...(baseUrl ? { baseUrl } : {})
+    }))
   }
 
   for (const preset of INITIAL_SETUP_PROVIDER_PRESETS) {

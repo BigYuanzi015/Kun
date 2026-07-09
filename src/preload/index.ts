@@ -107,6 +107,10 @@ const api = {
     ipcRenderer.invoke('claude-plugin:install:npm', { installName }),
   installClaudePluginFromGitHub: (repoUrl: string) =>
     ipcRenderer.invoke('claude-plugin:install:github', { repoUrl }),
+  exportPptx: (input) =>
+    ipcRenderer.invoke('pptx:export', input),
+  exportDocx: (input) =>
+    ipcRenderer.invoke('docx:export', input),
   openClaudePluginDir: () =>
     ipcRenderer.invoke('claude-plugin:open-dir'),
   getKunConfigFile: () =>

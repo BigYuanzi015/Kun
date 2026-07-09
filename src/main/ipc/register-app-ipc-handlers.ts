@@ -1656,6 +1656,58 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     return module.installGuiUpdate()
   })
 
+  // PPTX 导出（供 AI skill 调用）
+  ipcMain.handle('pptx:export', async (_, payload: unknown) => {
+    const { exportPptx } = await import('../services/pptx-export-service')
+    const request = parseIpcPayload(
+      'pptx:export',
+      z.object({
+        outputPath: z.string().min(1),
+        title: z.string().optional(),
+        author: z.string().optional(),
+        template: z.enum(['tech', 'gov', 'warm', 'minimal']).optional(),
+        slides: z.array(z.object({
+          title: z.string().optional(),
+          subtitle: z.string().optional(),
+          body: z.array(z.string()).optional(),
+          bulletPoints: z.array(z.string()).optional(),
+          imagePath: z.string().optional(),
+          table: z.object({
+            headers: z.array(z.string()),
+            rows: z.array(z.array(z.string()))
+          }).optional()
+        }))
+      }).strict(),
+      payload
+    )
+    return exportPptx(request)
+  })
+
+  // DOCX 导出（供 AI skill 调用）
+  ipcMain.handle('docx:export', async (_, payload: unknown) => {
+    const { exportDocx } = await import('../services/docx-export-service')
+    const request = parseIpcPayload(
+      'docx:export',
+      z.object({
+        outputPath: z.string().min(1),
+        title: z.string().optional(),
+        author: z.string().optional(),
+        template: z.enum(['report', 'proposal', 'minutes', 'letter']).optional(),
+        sections: z.array(z.object({
+          heading: z.string().optional(),
+          body: z.array(z.string()).optional(),
+          table: z.object({
+            headers: z.array(z.string()),
+            rows: z.array(z.array(z.string()))
+          }).optional(),
+          indent: z.number().int().min(1).max(3).optional()
+        }))
+      }).strict(),
+      payload
+    )
+    return exportDocx(request)
+  })
+
   ipcMain.handle('log:error', async (_, payload: unknown) => {
     const request = parseIpcPayload('log:error', logErrorPayloadSchema, payload)
     logError(request.category, request.message, request.detail)

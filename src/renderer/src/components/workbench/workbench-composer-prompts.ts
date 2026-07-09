@@ -6,8 +6,8 @@ import {
 } from '../../lib/composer-file-references'
 import type { ComposerFileReference } from '../chat/FloatingComposer'
 
-export const COMPOSER_FILE_CONTEXT_MAX_CHARS_PER_FILE = 60_000
-export const COMPOSER_FILE_CONTEXT_MAX_TOTAL_CHARS = 180_000
+export const COMPOSER_FILE_CONTEXT_MAX_CHARS_PER_FILE = 20_000
+export const COMPOSER_FILE_CONTEXT_MAX_TOTAL_CHARS = 60_000
 export const COMPOSER_DIRECTORY_CONTEXT_MAX_FILES = 60
 
 export function clipComposerFileContext(

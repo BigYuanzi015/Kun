@@ -221,7 +221,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     id: 'litellm',
     name: 'LiteLLM',
     baseUrl: 'http://localhost:4000',
-    endpointFormat: 'chat_completions',
+    endpointFormat: 'messages',
     models: [],
     docsUrl: 'https://docs.litellm.ai/docs/',
     apiKeyUrl: 'https://docs.litellm.ai/docs/proxy/quick_start'
