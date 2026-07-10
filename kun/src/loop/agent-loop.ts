@@ -296,6 +296,10 @@ export type AgentLoopOptions = {
   /** Internal-LLM role model routing (smallModel slot + title/summary/codeReview overrides). */
   roles?: RolesConfig
   toolStorm?: ToolStormBreakerOptions & { enabled?: boolean }
+  turnLimits?: {
+    maxSteps?: number
+    maxWallTimeMs?: number
+  }
   toolArgumentRepair?: {
     maxStringBytes?: number
   }
@@ -909,14 +913,33 @@ export class AgentLoop {
     turnId: string,
     signal: AbortSignal
   ): Promise<'completed' | 'failed' | 'aborted'> {
+    const limits = normalizeTurnLimits(this.opts.turnLimits)
+    const startedAt = this.opts.nowMs?.() ?? Date.now()
     for (let step = 0; ; step += 1) {
       if (signal.aborted) return 'aborted'
+      if (step >= limits.maxSteps) {
+        await this.recordTurnLimitExceeded(threadId, turnId, 'turn_step_limit', `turn exceeded ${limits.maxSteps} model steps`)
+        return 'failed'
+      }
+      if ((this.opts.nowMs?.() ?? Date.now()) - startedAt >= limits.maxWallTimeMs) {
+        await this.recordTurnLimitExceeded(threadId, turnId, 'turn_wall_time_limit', `turn exceeded ${limits.maxWallTimeMs}ms wall time`)
+        return 'failed'
+      }
       await this.drainSteering(threadId, turnId, signal)
       const stepResult = await this.modelStep(threadId, turnId, signal, step)
       if (stepResult === 'stop') return 'completed'
       if (stepResult === 'failed') return 'failed'
       if (stepResult === 'aborted') return 'aborted'
     }
+  }
+
+  private async recordTurnLimitExceeded(
+    threadId: string,
+    turnId: string,
+    code: 'turn_step_limit' | 'turn_wall_time_limit',
+    message: string
+  ): Promise<void> {
+    await this.opts.events.record({ kind: 'error', threadId, turnId, message, code, severity: 'warning' })
   }
 
   private async modelStep(
@@ -3009,6 +3032,16 @@ function sanitizeProviderBaseUrl(baseUrl: string): string {
 
 function autoModelRouteKey(threadId: string, turnId: string): string {
   return `${threadId}:${turnId}`
+}
+
+function normalizeTurnLimits(input: AgentLoopOptions['turnLimits']): {
+  maxSteps: number
+  maxWallTimeMs: number
+} {
+  return {
+    maxSteps: Math.max(1, Math.floor(input?.maxSteps ?? 64)),
+    maxWallTimeMs: Math.max(1, Math.floor(input?.maxWallTimeMs ?? 15 * 60_000))
+  }
 }
 
 function awaitAbortableApproval(

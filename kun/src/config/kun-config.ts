@@ -161,6 +161,14 @@ export const RuntimeTuningConfigSchema = z
       })
       .strict()
       .optional(),
+    /** Hard runtime bounds for a native AgentLoop turn. */
+    turnLimits: z
+      .object({
+        maxSteps: PositiveInt.max(1_000).optional(),
+        maxWallTimeMs: PositiveInt.max(86_400_000).optional()
+      })
+      .strict()
+      .optional(),
     toolArgumentRepair: z
       .object({
         maxStringBytes: PositiveInt.optional()

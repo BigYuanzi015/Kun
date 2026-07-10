@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { InMemoryEventBus } from '../adapters/in-memory-event-bus.js'
 import { InMemorySessionStore } from '../adapters/in-memory-session-store.js'
 import { InMemoryThreadStore } from '../adapters/in-memory-thread-store.js'
-import { LocalToolHost } from '../adapters/tool/local-tool-host.js'
+import { LocalToolHost, echoTool } from '../adapters/tool/local-tool-host.js'
 import { createImmutablePrefix } from '../cache/immutable-prefix.js'
 import { emptyUsageSnapshot } from '../contracts/usage.js'
 import { createThreadRecord } from '../domain/thread.js'
@@ -88,6 +88,23 @@ class AbortAwareModel implements ModelClient {
   }
 }
 
+class RepeatingToolModel implements ModelClient {
+  readonly provider = 'test'
+  readonly model = 'repeating-tool-model'
+  private calls = 0
+
+  async *stream(): AsyncIterable<ModelStreamChunk> {
+    this.calls += 1
+    yield {
+      kind: 'tool_call_complete',
+      callId: `call_${this.calls}`,
+      toolName: 'echo',
+      arguments: { text: 'again' }
+    }
+    yield { kind: 'completed', stopReason: 'tool_calls' }
+  }
+}
+
 describe('AgentLoop interruption', () => {
   it('aborts an in-flight model stream when the turn service interrupts the turn', async () => {
     const sessionStore = new InMemorySessionStore()
@@ -156,6 +173,46 @@ describe('AgentLoop interruption', () => {
     expect(model.abortObserved).toBe(true)
     expect((await threadStore.get(threadId))?.status).toBe('idle')
     expect((await threadStore.get(threadId))?.turns[0]?.status).toBe('aborted')
+  })
+
+  it('fails a tool loop that exceeds the configured hard step limit', async () => {
+    const sessionStore = new InMemorySessionStore()
+    const threadStore = new InMemoryThreadStore()
+    const eventBus = new InMemoryEventBus()
+    const inflight = new InflightTracker()
+    const steering = new SteeringQueue()
+    const ids = new SequentialIdGenerator()
+    const nowIso = () => '2026-07-08T00:00:00.000Z'
+    const events = new RuntimeEventRecorder({ eventBus, sessionStore, allocateSeq: (id) => eventBus.allocateSeq(id), nowIso })
+    const model = new RepeatingToolModel()
+    const turns = new TurnService({
+      threadStore, sessionStore, events, inflight, steering, compactor: new ContextCompactor(), ids, nowIso
+    })
+    const loop = new AgentLoop({
+      threadStore,
+      sessionStore,
+      approvalGate: new AllowApprovalGate(),
+      userInputGate: new NoopUserInputGate(),
+      model,
+      toolHost: new LocalToolHost({ tools: [echoTool] }),
+      usage: new UsageService(),
+      events,
+      turns,
+      inflight,
+      steering,
+      compactor: new ContextCompactor(),
+      prefix: createImmutablePrefix({ systemPrompt: 'test system prompt' }),
+      ids,
+      nowIso,
+      turnLimits: { maxSteps: 2, maxWallTimeMs: 60_000 }
+    })
+    const threadId = 'thr_step_limit'
+    await threadStore.upsert(createThreadRecord({ id: threadId, title: 'Step limit', workspace: '/tmp', model: model.model }))
+    const started = await turns.startTurn({ threadId, request: { prompt: 'loop', model: model.model } })
+
+    await expect(loop.runTurn(threadId, started.turnId)).resolves.toBe('failed')
+    const eventsAfter = await sessionStore.loadEventsSince(threadId, 0)
+    expect(eventsAfter).toContainEqual(expect.objectContaining({ kind: 'error', code: 'turn_step_limit' }))
   })
 })
 

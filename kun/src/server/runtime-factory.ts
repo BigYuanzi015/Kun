@@ -591,6 +591,7 @@ export async function createKunServeRuntime(
 	    contextCompaction: activeOptions.contextCompaction,
 	    ...(activeOptions.roles ? { roles: activeOptions.roles } : {}),
 	    ...(activeOptions.runtime?.toolStorm ? { toolStorm: activeOptions.runtime.toolStorm } : {}),
+	    ...(activeOptions.runtime?.turnLimits ? { turnLimits: activeOptions.runtime.turnLimits } : {}),
 	    ...(activeOptions.runtime?.toolArgumentRepair ? { toolArgumentRepair: activeOptions.runtime.toolArgumentRepair } : {}),
 	    ...(resolvedHooks.length ? { hooks: resolvedHooks } : {}),
 	    ...(attachmentStore ? { attachmentStore } : {}),
@@ -871,6 +872,7 @@ export async function createKunServeRuntime(
 	    loopOptions.roles = activeOptions.roles
 	    loopOptions.instructionRuntime = instructionRuntime
 	    loopOptions.toolStorm = activeOptions.runtime?.toolStorm
+	    loopOptions.turnLimits = activeOptions.runtime?.turnLimits
 	    loopOptions.toolArgumentRepair = activeOptions.runtime?.toolArgumentRepair
 	    loopOptions.hooks = resolvedHooks
 	    loopOptions.attachmentStore = attachmentStore
