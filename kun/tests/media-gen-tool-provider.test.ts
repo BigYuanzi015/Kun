@@ -169,6 +169,39 @@ describe('Media gen tool provider', () => {
     expect(updates[0]).toMatchObject({ output: { status: 'submitted', provider: 'fake-video' } })
   })
 
+  it('treats generated media as a file change and blocks it in read-only mode', async () => {
+    const calls: unknown[] = []
+    const speechClient: SpeechGenClient = {
+      id: 'fake-speech',
+      async generate(request) {
+        calls.push(request)
+        return { data: Buffer.from('speech-bytes'), mimeType: 'audio/mpeg', extension: 'mp3' }
+      }
+    }
+    const config = KunCapabilitiesConfig.parse({
+      speechGen: {
+        enabled: true,
+        baseUrl: 'https://media.example.test/v1',
+        apiKey: 'sk-speech',
+        model: 'speech-test'
+      }
+    })
+    const host = new LocalToolHost({
+      registry: new CapabilityRegistry(
+        buildSpeechGenToolProviders(config.speechGen, { speechClient, nowIso: fixedNow }).providers
+      )
+    })
+
+    const result = await host.execute({
+      callId: 'call_read_only_speech',
+      toolName: 'generate_speech',
+      arguments: { text: 'must not run' }
+    }, { ...buildContext(), sandboxMode: 'read-only' })
+
+    expect(result.item).toMatchObject({ kind: 'tool_result', isError: true })
+    expect(calls).toEqual([])
+  })
+
   it('posts MiniMax speech and music requests to the documented endpoints and decodes hex audio', async () => {
     const requests: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = []
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {

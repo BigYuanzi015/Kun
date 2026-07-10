@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -485,6 +485,52 @@ describe('Image gen tool provider', () => {
     const id = output.attachments[0].id
     await expect(store.resolveContent(id, { threadId: 'thr_1' })).resolves.toMatchObject({ mimeType: 'image/png' })
     await expect(store.resolveContent(id, { threadId: 'thr_other' })).rejects.toThrow(/not authorized/)
+  })
+
+  it('rejects generated-image writes through an escaping workspace symlink', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'kun-imagegen-outside-'))
+    try {
+      await symlink(outside, join(workspace, '.deepseekgui-images'), process.platform === 'win32' ? 'junction' : 'dir')
+      const client = fakeClient()
+      const host = hostFor(client)
+
+      const result = await host.execute({
+        callId: 'call_escape',
+        toolName: 'generate_image',
+        arguments: { prompt: 'must stay in workspace' }
+      }, { ...buildContext(), sandboxMode: 'workspace-write' })
+
+      expect(result.item).toMatchObject({ kind: 'tool_result', isError: true })
+      expect(JSON.stringify(result.item)).toContain('workspace_path_escape')
+      expect(client.generateCalls).toHaveLength(1)
+      await expect(readdir(outside)).resolves.toEqual([])
+    } finally {
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('does not read a reference image through an escaping workspace symlink', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'kun-imagegen-reference-outside-'))
+    try {
+      await mkdir(join(workspace, 'refs'))
+      await writeFile(join(outside, 'secret.png'), png(8, 8))
+      await symlink(join(outside, 'secret.png'), join(workspace, 'refs', 'linked.png'), 'file')
+      const client = fakeClient()
+      const host = hostFor(client)
+
+      const result = await host.execute({
+        callId: 'call_reference_escape',
+        toolName: 'generate_image',
+        arguments: { prompt: 'use reference', reference_image_paths: ['refs/linked.png'] }
+      }, { ...buildContext(), sandboxMode: 'workspace-write' })
+
+      expect(result.item).toMatchObject({ kind: 'tool_result', isError: true })
+      expect(JSON.stringify(result.item)).toContain('invalid_reference_path')
+      expect(client.generateCalls).toHaveLength(0)
+      expect(client.editCalls).toHaveLength(0)
+    } finally {
+      await rm(outside, { recursive: true, force: true })
+    }
   })
 
   it('passes configured image quality through tool execution', async () => {

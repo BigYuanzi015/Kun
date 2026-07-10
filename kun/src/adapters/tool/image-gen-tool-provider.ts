@@ -1,10 +1,12 @@
 import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname } from 'node:path'
 import type { KunCapabilitiesConfig } from '../../contracts/capabilities.js'
 import type { AttachmentStore } from '../../attachments/attachment-store.js'
 import { detectImage } from '../../attachments/attachment-store.js'
+import type { ToolHostContext } from '../../ports/tool-host.js'
 import type { CapabilityToolProvider } from './capability-registry.js'
+import { resolveWorkspacePath } from './builtin-tool-utils.js'
 import { LocalToolHost } from './local-tool-host.js'
 
 const GENERATED_IMAGE_DIR = '.deepseekgui-images'
@@ -194,6 +196,7 @@ export function buildImageGenToolProviders(
 
   const tool = LocalToolHost.defineTool({
     name: 'generate_image',
+    toolKind: 'file_change',
     description: [
       'Generate an image from a text prompt using the configured image provider.',
       supportsEdit
@@ -235,7 +238,7 @@ export function buildImageGenToolProviders(
 
       const references = await collectReferenceImages(
         args.reference_image_paths,
-        context.workspace,
+        context,
         config.maxReferenceImages
       )
       if ('error' in references) return references.error
@@ -285,9 +288,20 @@ export function buildImageGenToolProviders(
       // Forward slashes regardless of platform: the path is echoed back to the
       // model and rendered in chat, where POSIX-style relative paths are expected.
       const relativePath = `${GENERATED_IMAGE_DIR}/${fileName}`
-      const absolutePath = join(context.workspace, GENERATED_IMAGE_DIR, fileName)
-      await mkdir(join(context.workspace, GENERATED_IMAGE_DIR), { recursive: true })
-      await writeFile(absolutePath, image.data)
+      let absolutePath: string
+      try {
+        const target = await resolveWorkspacePath(relativePath, context, { enforceWorkspaceBoundary: true })
+        await mkdir(dirname(target.absolutePath), { recursive: true })
+        // Re-check after directory creation: an existing generated-dir symlink
+        // is the common escape path, and a racing replacement must not turn an
+        // otherwise lexical in-workspace path into an outside write.
+        absolutePath = (await resolveWorkspacePath(relativePath, context, {
+          enforceWorkspaceBoundary: true
+        })).absolutePath
+        await writeFile(absolutePath, image.data)
+      } catch (error) {
+        return toolError('workspace_path_escape', errorMessage(error), telemetry(startedAt, client.id))
+      }
 
       const warnings: string[] = []
       const attachments: { id: string; name: string; mimeType: string; width?: number; height?: number }[] = []
@@ -348,7 +362,7 @@ type ReferenceError = { error: { output: unknown; isError: true } }
 
 async function collectReferenceImages(
   value: unknown,
-  workspace: string,
+  context: ToolHostContext,
   maxCount: number
 ): Promise<ReferenceImages | ReferenceError> {
   if (value === undefined || value === null) return { images: [] }
@@ -361,9 +375,10 @@ async function collectReferenceImages(
   }
   const images: ReferenceImages['images'] = []
   for (const rawPath of paths) {
-    const resolved = resolve(workspace, rawPath)
-    const rel = relative(workspace, resolved)
-    if (rel.startsWith('..') || isAbsolute(rel)) {
+    let resolved: string
+    try {
+      resolved = (await resolveWorkspacePath(rawPath, context, { enforceWorkspaceBoundary: true })).absolutePath
+    } catch {
       return { error: toolError('invalid_reference_path', `reference image must be inside the workspace: ${rawPath}`) }
     }
     let data: Buffer

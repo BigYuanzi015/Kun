@@ -59,7 +59,11 @@ export function workspaceRoot(workspace: string): string {
   return isAbsolute(workspace) ? resolve(workspace) : resolve(process.cwd(), workspace)
 }
 
-export async function resolveWorkspacePath(inputPath: string, context: ToolHostContext): Promise<{
+export async function resolveWorkspacePath(
+  inputPath: string,
+  context: ToolHostContext,
+  options: { enforceWorkspaceBoundary?: boolean } = {}
+): Promise<{
   workspaceRoot: string
   absolutePath: string
   relativePath: string
@@ -67,6 +71,7 @@ export async function resolveWorkspacePath(inputPath: string, context: ToolHostC
   const root = workspaceRoot(context.workspace)
   const lexicalAbsolutePath = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath)
   if (
+    !options.enforceWorkspaceBoundary &&
     isBackgroundShellOutputPath(lexicalAbsolutePath, {
       runtimeDataDir: context.runtimeDataDir,
       threadId: context.threadId
@@ -84,7 +89,7 @@ export async function resolveWorkspacePath(inputPath: string, context: ToolHostC
   // danger-full-access, and lets read/ls/find/grep/lsp reach system paths
   // (e.g. C:\Windows on Windows, /etc on POSIX) instead of failing with
   // "path escapes the workspace root".
-  if (effectiveSandboxMode(context) === 'danger-full-access') {
+  if (!options.enforceWorkspaceBoundary && effectiveSandboxMode(context) === 'danger-full-access') {
     return {
       workspaceRoot: root,
       absolutePath: lexicalAbsolutePath,

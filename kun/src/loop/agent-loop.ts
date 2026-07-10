@@ -1,4 +1,4 @@
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import type { ModelClient, ModelRequest, ModelToolSpec } from '../ports/model-client.js'
@@ -100,7 +100,7 @@ import { repairDispatchToolArguments } from './tool-call-repair.js'
 import { CREATE_PLAN_TOOL_NAME } from '../adapters/tool/create-plan-tool.js'
 import { GET_GOAL_TOOL_NAME, UPDATE_GOAL_TOOL_NAME } from '../adapters/tool/goal-tools.js'
 import { TODO_LIST_TOOL_NAME, TODO_WRITE_TOOL_NAME } from '../adapters/tool/todo-tools.js'
-import { shellRuntimeInstruction } from '../adapters/tool/builtin-tool-utils.js'
+import { resolveWorkspacePath, shellRuntimeInstruction } from '../adapters/tool/builtin-tool-utils.js'
 import { VERIFY_CHANGES_TOOL_NAME } from '../adapters/tool/builtin-verify-tool.js'
 import { buildToolPreferenceInstruction } from '../prompt/kun-system-prompt.js'
 import {
@@ -1589,9 +1589,13 @@ export class AgentLoop {
           const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14)
           const fileName = `img-${stamp}-${randomBytes(2).toString('hex')}.png`
           const relativePath = `${imgDir}/${fileName}`
-          const workspace = thread?.workspace ?? ''
-          const absolutePath = join(workspace, imgDir, fileName)
-          await mkdir(join(workspace, imgDir), { recursive: true })
+          const target = await resolveWorkspacePath(relativePath, toolContext, {
+            enforceWorkspaceBoundary: true
+          })
+          await mkdir(dirname(target.absolutePath), { recursive: true })
+          const absolutePath = (await resolveWorkspacePath(relativePath, toolContext, {
+            enforceWorkspaceBoundary: true
+          })).absolutePath
           await writeFile(absolutePath, Buffer.from(chunk.imageBase64, 'base64'))
           const imageMarkdown = `\n![generated image](${relativePath})\n`
           textItemId ||= this.opts.ids.next('item_text')
