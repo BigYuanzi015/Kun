@@ -1,10 +1,8 @@
 import type { ModelClient, ModelRequest, ModelStreamChunk, ModelToolSpec } from '../../ports/model-client.js'
 import type { TurnItem } from '../../contracts/items.js'
-import { emptyUsageSnapshot, type UsageSnapshot } from '../../contracts/usage.js'
+import type { UsageSnapshot } from '../../contracts/usage.js'
 import type { ModelCapabilityMetadata } from '../../contracts/capabilities.js'
 import type { LlmDebugRound, LlmDebugSink } from '../../services/llm-debug-recorder.js'
-import { estimateDeepseekCost } from './deepseek-pricing.js'
-import { estimateMiniMaxCost } from './minimax-pricing.js'
 import { isToolResultBridgeItem, repairModelHistoryItems } from '../../domain/model-history-repair.js'
 import { extractToolResultImages, toolResultTextWithoutImages } from '../../loop/tool-result-image.js'
 import { repairToolArguments } from './tool-argument-repair.js'
@@ -32,6 +30,7 @@ import {
   type ModelStreamLimits,
   type PendingToolCall
 } from './model-stream-resource-budget.js'
+import { normalizeCompatUsage } from './compat-usage-normalizer.js'
 
 export {
   DEFAULT_MODEL_STREAM_LIMITS,
@@ -1728,72 +1727,11 @@ export class CompatModelClient implements ModelClient {
   }
 
   private mapUsage(usage: Record<string, unknown>, model = this.config.model): UsageSnapshot {
-    const completionTokens = Number(usage.completion_tokens ?? usage.eval_count ?? usage.output_tokens ?? 0) || 0
-    const promptDetails = usage.prompt_tokens_details as
-      | { cached_tokens?: number }
-      | undefined
-    const inputDetails = usage.input_tokens_details as
-      | { cached_tokens?: number }
-      | undefined
-    const nativeHit = Number(usage.prompt_cache_hit_tokens ?? 0) || 0
-    const nativeMiss = Number(usage.prompt_cache_miss_tokens ?? 0) || 0
-    const hasNativeCache = nativeHit > 0 || nativeMiss > 0
-    const cachedTokens = Number(promptDetails?.cached_tokens ?? inputDetails?.cached_tokens ?? 0) || 0
-    const cacheRead = Number(usage.cache_read_input_tokens ?? 0) || 0
-    const cacheCreation = Number(usage.cache_creation_input_tokens ?? 0) || 0
-    // Anthropic-protocol usage (MiniMax et al.) reports input_tokens
-    // EXCLUDING cache reads/writes; OpenAI-style prompt_tokens includes
-    // everything and marks the cached subset in prompt_tokens_details or
-    // Responses API input_tokens_details.
-    const anthropicUsage = usage.prompt_tokens === undefined &&
-      usage.prompt_eval_count === undefined &&
-      usage.input_tokens !== undefined &&
-      inputDetails?.cached_tokens === undefined
-    const reportedPromptTokens = Number(usage.prompt_tokens ?? usage.prompt_eval_count ?? usage.input_tokens ?? 0) || 0
-    const promptTokens = anthropicUsage
-      ? reportedPromptTokens + cacheRead + cacheCreation
-      : reportedPromptTokens
-    const cacheHit = hasNativeCache ? nativeHit : (cachedTokens > 0 ? cachedTokens : cacheRead)
-    const cacheMiss = hasNativeCache ? nativeMiss : Math.max(promptTokens - cacheHit, 0)
-    const cacheTotal = cacheHit + cacheMiss
-    const cacheHitRate = cacheTotal === 0 ? null : cacheHit / cacheTotal
-    const totalTokens = anthropicUsage
-      ? promptTokens + completionTokens
-      : Number(usage.total_tokens ?? promptTokens + completionTokens) || 0
-    const pricingCacheRead = cacheRead || cacheHit
-    const pricingCacheWrite = cacheCreation
-    const pricingInputTokens = anthropicUsage
-      ? reportedPromptTokens
-      : Math.max(promptTokens - pricingCacheRead - pricingCacheWrite, 0)
-    const estimatedCost = estimateDeepseekCost({
+    return normalizeCompatUsage({
+      usage,
       model,
-      providerHost: this.config.baseUrl,
-      cacheHitTokens: cacheHit,
-      cacheMissTokens: cacheMiss,
-      outputTokens: completionTokens
-    }) ?? estimateMiniMaxCost({
-      model,
-      providerHost: this.config.baseUrl,
-      inputTokens: pricingInputTokens,
-      cacheReadTokens: pricingCacheRead,
-      cacheWriteTokens: pricingCacheWrite,
-      outputTokens: completionTokens
+      providerBaseUrl: this.config.baseUrl
     })
-    const reportedCostUsd = Number(usage.cost_usd ?? usage.costUsd)
-    const reportedCostCny = Number(usage.cost_cny ?? usage.costCny)
-    return {
-      ...emptyUsageSnapshot(),
-      promptTokens,
-      completionTokens,
-      totalTokens,
-      cachedTokens: cacheHit || cachedTokens || cacheRead || 0,
-      cacheHitTokens: cacheHit,
-      cacheMissTokens: cacheMiss,
-      cacheHitRate,
-      turns: 1,
-      costUsd: Number.isFinite(reportedCostUsd) ? reportedCostUsd : estimatedCost?.costUsd,
-      costCny: Number.isFinite(reportedCostCny) ? reportedCostCny : estimatedCost?.costCny
-    }
   }
 
   private parseToolArguments(raw: string): Record<string, unknown> {
