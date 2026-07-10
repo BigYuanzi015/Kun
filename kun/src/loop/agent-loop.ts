@@ -107,6 +107,7 @@ import { healLoadedHistoryItems } from './history-healing.js'
 import { ModelStreamCollector } from './model-stream-collector.js'
 import { LoopTelemetry } from './loop-telemetry.js'
 import { InteractiveToolBridge } from './interactive-tool-bridge.js'
+import { createToolDiscoveryContext } from './tool-discovery-context-factory.js'
 import { createToolExecutionContext } from './tool-context-factory.js'
 import { ToolExecutionService } from './tool-execution-service.js'
 import { ToolCallDispatcher } from './tool-call-dispatcher.js'
@@ -1259,7 +1260,7 @@ export class AgentLoop {
     // advertised so GUI/IM transitions keep a stable provider tool
     // catalog; execution returns a tool error if the model calls them.
     const userInputDisabled = turn?.disableUserInput === true
-    const toolContext: ToolHostContext = {
+    const toolContext = createToolDiscoveryContext({
       threadId,
       turnId,
       workspace: thread?.workspace ?? '',
@@ -1269,30 +1270,21 @@ export class AgentLoop {
       ...(turn?.guiDesignMode ? { guiDesignMode: true } : {}),
       ...(turn?.guiDesignArtifact ? { guiDesignArtifact: turn.guiDesignArtifact } : {}),
       ...(turn?.imContext ? { imContext: true } : {}),
-      model: modelCapabilities,
+      modelCapabilities,
       activeSkillIds: skillResolution.activeSkillIds,
-      memoryPolicy: { enabled: Boolean(this.opts.memoryStore) },
-      delegationPolicy: { enabled: false },
       ...(allowedToolNames ? { allowedToolNames } : {}),
+      approvalPolicy,
+      sandboxMode,
+      ...(userInputDisabled ? { userInputDisabled: true } : {}),
+      signal
+    }, {
+      memoryEnabled: Boolean(this.opts.memoryStore),
       ...(this.opts.blockedProviderIds ? { blockedProviderIds: this.opts.blockedProviderIds } : {}),
       ...(this.opts.blockedToolNames ? { blockedToolNames: this.opts.blockedToolNames } : {}),
       ...(this.opts.blockedSkillIds ? { blockedSkillIds: this.opts.blockedSkillIds } : {}),
-      approvalPolicy,
-      sandboxMode,
       ...(this.opts.runtimeDataDir ? { runtimeDataDir: this.opts.runtimeDataDir } : {}),
-      abortSignal: signal,
-      awaitApproval: async () => 'allow',
-      ...(userInputDisabled
-        ? {}
-        : {
-            awaitUserInput: (input) => this.interactiveToolBridge.awaitUserInput({
-              threadId,
-              turnId,
-              input,
-              signal
-            })
-          })
-    }
+      interactiveToolBridge: this.interactiveToolBridge
+    })
     const tools = await this.opts.toolHost.listTools(toolContext)
     if (dedicatedSvgTurn) {
       const toolNames = new Set(tools.map((tool) => tool.name))

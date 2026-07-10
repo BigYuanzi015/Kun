@@ -36,9 +36,12 @@ export type PreparedTurnContext = {
   tools: readonly ModelToolSpec[]
 }
 
-/** Internal boundary between the model round and ordered tool execution. */
-export type ToolDispatchInput = {
-  calls: ToolCallLike[]
+/**
+ * Stable inputs shared by tool discovery and tool execution. Discovery keeps
+ * approval inert; the execution factory is the only boundary that may await a
+ * real approval or persist interactive state.
+ */
+export type ToolTurnContextInput = {
   threadId: string
   turnId: string
   workspace: string
@@ -53,8 +56,13 @@ export type ToolDispatchInput = {
   allowedToolNames?: readonly string[]
   userInputDisabled?: boolean
   imContext?: boolean
-  toolProviderKinds: ReadonlyMap<string, ToolProviderKind | undefined>
   approvalPolicy: ToolHostContext['approvalPolicy']
   sandboxMode: NonNullable<ToolHostContext['sandboxMode']>
   signal: AbortSignal
+}
+
+/** Internal boundary between the model round and ordered tool execution. */
+export type ToolDispatchInput = ToolTurnContextInput & {
+  calls: ToolCallLike[]
+  toolProviderKinds: ReadonlyMap<string, ToolProviderKind | undefined>
 }

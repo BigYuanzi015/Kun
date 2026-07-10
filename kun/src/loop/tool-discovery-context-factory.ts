@@ -1,0 +1,63 @@
+import type { ToolHostContext } from '../ports/tool-host.js'
+import type { ToolTurnContextInput } from './turn-execution-types.js'
+import type { InteractiveToolBridge } from './interactive-tool-bridge.js'
+
+export type ToolDiscoveryContextFactoryDeps = {
+  memoryEnabled: boolean
+  blockedProviderIds?: readonly string[]
+  blockedToolNames?: readonly string[]
+  blockedSkillIds?: readonly string[]
+  runtimeDataDir?: string
+  interactiveToolBridge: Pick<InteractiveToolBridge, 'awaitUserInput'>
+}
+
+/**
+ * Build the context used only to advertise a turn's available tool schema.
+ *
+ * Discovery must never register an approval gate: listTools may inspect the
+ * callback but must not make an approval observable. The execution context is
+ * intentionally built by a separate factory, where approval side effects are
+ * explicit and persisted.
+ */
+export function createToolDiscoveryContext(
+  input: ToolTurnContextInput,
+  deps: ToolDiscoveryContextFactoryDeps
+): ToolHostContext {
+  return {
+    threadId: input.threadId,
+    turnId: input.turnId,
+    workspace: input.workspace,
+    threadMode: input.threadMode,
+    ...(input.activePlanContext ? { guiPlan: input.activePlanContext } : {}),
+    ...(input.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
+    ...(input.guiDesignMode ? { guiDesignMode: true } : {}),
+    ...(input.guiDesignArtifact ? { guiDesignArtifact: input.guiDesignArtifact } : {}),
+    ...(input.imContext ? { imContext: true } : {}),
+    model: input.modelCapabilities,
+    activeSkillIds: input.activeSkillIds,
+    memoryPolicy: { enabled: deps.memoryEnabled },
+    delegationPolicy: { enabled: false },
+    ...(input.allowedToolNames ? { allowedToolNames: input.allowedToolNames } : {}),
+    ...(deps.blockedProviderIds ? { blockedProviderIds: deps.blockedProviderIds } : {}),
+    ...(deps.blockedToolNames ? { blockedToolNames: deps.blockedToolNames } : {}),
+    ...(deps.blockedSkillIds ? { blockedSkillIds: deps.blockedSkillIds } : {}),
+    approvalPolicy: input.approvalPolicy,
+    sandboxMode: input.sandboxMode,
+    ...(deps.runtimeDataDir ? { runtimeDataDir: deps.runtimeDataDir } : {}),
+    abortSignal: input.signal,
+    // A tool schema lookup is not tool execution. Retain the existing inert
+    // approval callback so a provider cannot create a real approval request
+    // merely by enumerating its schemas.
+    awaitApproval: async () => 'allow',
+    ...(input.userInputDisabled
+      ? {}
+      : {
+          awaitUserInput: (request) => deps.interactiveToolBridge.awaitUserInput({
+            threadId: input.threadId,
+            turnId: input.turnId,
+            input: request,
+            signal: input.signal
+          })
+        })
+  }
+}
