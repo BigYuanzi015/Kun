@@ -1,7 +1,7 @@
 import { dirname } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
-import type { ModelClient, ModelRequest, ModelToolSpec } from '../ports/model-client.js'
+import type { ModelClient, ModelToolSpec } from '../ports/model-client.js'
 import type { AgentSdkRuntime } from '../runtime/agent-sdk/agent-sdk-runtime.js'
 import type {
   ToolHost,
@@ -69,18 +69,12 @@ import type { AttachmentStore } from '../attachments/attachment-store.js'
 import type { MemoryStore } from '../memory/memory-store.js'
 import type { ArtifactStore } from '../artifacts/artifact-store.js'
 import type { ResolvedHook } from '../hooks/hook-engine.js'
+import type { TokenEconomyConfig } from './token-economy.js'
 import {
-  applyTokenEconomyToRequest,
-  normalizeTokenEconomyConfig,
-  type TokenEconomyConfig
-} from './token-economy.js'
-import { applyRequestHistoryHygiene } from './request-history-hygiene.js'
-import {
-  capToolResultImages,
   rehydrateGeneratedImagesForForward,
   MAX_FORWARDED_GENERATED_IMAGES
 } from './tool-result-image.js'
-import { estimateModelRequestInputTokens } from './model-request-estimator.js'
+import { composeModelRequest } from './model-request-composer.js'
 import { ModelRoutingService } from './model-routing-service.js'
 import { HistoryCompactionService } from './history-compaction-service.js'
 import { ToolStormBreaker, type ToolStormBreakerOptions } from './tool-storm-breaker.js'
@@ -164,10 +158,6 @@ export {
   todoContinuationInstruction
 } from './continuation-instructions.js'
 
-// Number of most-recent tool-result screenshots/images kept inline in a
-// request. Older ones collapse to a text note (Anthropic-style "keep last
-// N images"), bounding context growth for long computer-use sessions.
-const MAX_FORWARDED_TOOL_IMAGES = 3
 /**
  * Tools that, on their own, do not count as "progress" toward a goal when
  * deciding whether to keep auto-resuming after a failed goal turn. A turn
@@ -1302,52 +1292,33 @@ export class AgentLoop {
       memoryCount: memories.length,
       contextInstructionCount: contextInstructions.length
     })
-    const tokenEconomy = normalizeTokenEconomyConfig(this.opts.tokenEconomy)
     const modeInstruction = [
       ...(planTurnActive ? [PLAN_MODE_INSTRUCTION] : []),
-      ...(turn?.guiDesignArtifact?.kind === 'svg'
+      ...(turn.guiDesignArtifact?.kind === 'svg'
         ? [SVG_ARTIFACT_MODE_INSTRUCTION]
-        : turn?.guiDesignMode
+        : turn.guiDesignMode
           ? [DESIGN_MODE_INSTRUCTION]
           : [])
     ].join('\n\n')
-    const baseRequest: ModelRequest = {
+    const composedRequest = composeModelRequest({
       threadId,
       turnId,
       model,
       ...(providerId ? { providerId } : {}),
-      // Thread-level systemPrompt (primary-agent persona snapshot) is
-      // appended to the runtime base — same augment strategy as child agents
-      // (child-agent-executor) — so the agent keeps kun's tool/safety
-      // conventions and skill catalog instead of losing them to the persona.
-      // Empty/whitespace falls back to the immutable prefix verbatim so
-      // unbound threads keep the prompt-cache fingerprint.
-      systemPrompt: thread?.systemPrompt?.trim()
-        ? `${this.opts.prefix.systemPrompt}\n\n${thread.systemPrompt.trim()}`
-        : this.opts.prefix.systemPrompt,
+      ...(modelRoute.reasoningEffort ? { reasoningEffort: modelRoute.reasoningEffort } : {}),
+      immutablePrefix: this.opts.prefix,
+      ...(thread.systemPrompt !== undefined ? { threadSystemPrompt: thread.systemPrompt } : {}),
       ...(modeInstruction ? { modeInstruction } : {}),
-      ...(contextInstructions.length ? { contextInstructions } : {}),
-      prefix: this.opts.prefix.fewShots,
-      history: capToolResultImages(forwardHistory, MAX_FORWARDED_TOOL_IMAGES),
-      ...(attachments.imageAttachments.length ? { attachments: [...attachments.imageAttachments] } : {}),
-      ...(attachments.textFallbacks.length ? { attachmentTextFallbacks: [...attachments.textFallbacks] } : {}),
-      ...(attachments.documents.length ? { attachmentDocuments: [...attachments.documents] } : {}),
+      contextInstructions,
+      history: forwardHistory,
+      attachments,
       tools: effectiveToolSpecs,
       ...(requiredToolName ? { requiredToolName } : {}),
-      ...(modelRoute.reasoningEffort ? { reasoningEffort: modelRoute.reasoningEffort } : {}),
-      abortSignal: signal
-    }
-    const rawInputTokens = tokenEconomy.enabled
-      ? estimateModelRequestInputTokens(baseRequest)
-      : 0
-    const economyRequest = applyTokenEconomyToRequest(baseRequest, tokenEconomy)
-    const request: ModelRequest = {
-      ...economyRequest,
-      history: applyRequestHistoryHygiene(economyRequest.history, tokenEconomy.historyHygiene, {
-        currentTurnId: turnId
-      })
-    }
-    const inputTokens = estimateModelRequestInputTokens(request)
+      ...(this.opts.tokenEconomy ? { tokenEconomy: this.opts.tokenEconomy } : {}),
+      signal
+    })
+    const { request, rawInputTokens, sentInputTokens, tokenEconomy } = composedRequest
+    const inputTokens = sentInputTokens
     const outputTokens = modelCapabilities.maxOutputTokens ?? 0
     // A configured model context window is authoritative. ContextCompactor's
     // test/embedding thresholds can intentionally be much smaller than a real
@@ -1373,7 +1344,7 @@ export class AgentLoop {
         turnId,
         model,
         rawInputTokens,
-        sentInputTokens: estimateModelRequestInputTokens(request)
+        sentInputTokens
       })
     }
     const clientDiagnostics = modelClientDiagnostics(this.opts.model, request.providerId)
