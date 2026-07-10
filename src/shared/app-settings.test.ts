@@ -154,14 +154,14 @@ describe('kun defaults', () => {
     expect(defaultKunRuntimeSettings().model).toBe(DEFAULT_KUN_MODEL)
   })
 
-  it('defaults approval policy to auto', () => {
+  it('defaults approval policy to request confirmation for non-read tools', () => {
     expect(defaultKunRuntimeSettings().approvalPolicy).toBe(DEFAULT_APPROVAL_POLICY)
-    expect(defaultKunRuntimeSettings().approvalPolicy).toBe('auto')
+    expect(defaultKunRuntimeSettings().approvalPolicy).toBe('on-request')
   })
 
-  it('defaults sandbox mode to full access', () => {
+  it('defaults sandbox mode to workspace write access', () => {
     expect(defaultKunRuntimeSettings().sandboxMode).toBe(DEFAULT_SANDBOX_MODE)
-    expect(defaultKunRuntimeSettings().sandboxMode).toBe('danger-full-access')
+    expect(defaultKunRuntimeSettings().sandboxMode).toBe('workspace-write')
   })
 
   it('maps unified tool permission modes to approval and sandbox settings', () => {
@@ -189,7 +189,7 @@ describe('kun defaults', () => {
       approvalPolicy: 'auto',
       sandboxMode: 'danger-full-access'
     })
-    expect(kunToolPermissionModeFromSettings(defaultKunRuntimeSettings())).toBe('bypass')
+    expect(kunToolPermissionModeFromSettings(defaultKunRuntimeSettings())).toBe('workspace-write')
     expect(kunToolPermissionModeFromSettings({
       approvalPolicy: 'always',
       sandboxMode: 'danger-full-access'

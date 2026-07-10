@@ -211,7 +211,7 @@ export function InitialSetupDialog(): ReactElement {
   const [selection, setSelection] = useState<InitialSetupSelection>({
     presetId: DEFAULT_MODEL_PROVIDER_ID,
     mode: 'api',
-    permissionMode: 'read-only'
+    permissionMode: 'workspace-write'
   })
   const [showApiKey, setShowApiKey] = useState(false)
   const [saving, setSaving] = useState(false)

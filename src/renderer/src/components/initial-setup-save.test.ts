@@ -37,7 +37,7 @@ function settingsWithActiveXiaomiWithoutKey(): AppSettingsV1 {
 describe('initialSetupSelection', () => {
   it('preselects the active provider card when it is a known preset', () => {
     const selection = initialSetupSelection(settingsWithActiveXiaomiWithoutKey())
-    expect(selection).toEqual({ presetId: 'xiaomi', mode: 'api', permissionMode: 'bypass' })
+    expect(selection).toEqual({ presetId: 'xiaomi', mode: 'api', permissionMode: 'workspace-write' })
   })
 
   it('preselects the token plan mode for token plan profiles', () => {
@@ -45,16 +45,16 @@ describe('initialSetupSelection', () => {
     expect(initialSetupSelection(current)).toEqual({
       presetId: 'minimax',
       mode: 'token-plan',
-      permissionMode: 'bypass'
+      permissionMode: 'workspace-write'
     })
   })
 
   it('falls back to deepseek for unknown or empty active providers', () => {
-    expect(initialSetupSelection(settings())).toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'bypass' })
+    expect(initialSetupSelection(settings())).toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'workspace-write' })
     expect(initialSetupSelection(settings({ agents: { kun: { providerId: 'custom-provider-2' } } })))
-      .toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'bypass' })
+      .toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'workspace-write' })
     expect(initialSetupSelection(settings({ agents: { kun: { providerId: 'litellm' } } })))
-      .toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'bypass' })
+      .toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'workspace-write' })
   })
 
   it('preselects the saved permission mode', () => {
@@ -101,7 +101,7 @@ describe('initialSetupDrafts', () => {
     for (const id of excludedIds) {
       expect(drafts[id]).toBeUndefined()
       expect(initialSetupSelection(settings({ agents: { kun: { providerId: id } } })))
-        .toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'bypass' })
+        .toEqual({ presetId: 'deepseek', mode: 'api', permissionMode: 'workspace-write' })
     }
   })
 })
