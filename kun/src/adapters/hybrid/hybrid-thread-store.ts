@@ -18,6 +18,7 @@ import type { ApprovalPolicy, SandboxMode } from '../../contracts/policy.js'
 import type { ThreadStore, ThreadStoreListOptions } from '../../ports/thread-store.js'
 import type { SessionLatestUsageSnapshot, SessionUsageRecord } from '../../ports/session-store.js'
 import { toThreadSummary } from '../../domain/thread.js'
+import { assertSafeThreadId, isSafeThreadId } from '../../contracts/thread-id.js'
 import { readJsonl } from '../file/file-thread-store.js'
 import {
   emptyUsageSnapshot,
@@ -155,6 +156,7 @@ export class HybridThreadStore implements ThreadStore {
   }
 
   async get(threadId: string): Promise<ThreadRecord | null> {
+    if (!isSafeThreadId(threadId)) return null
     await this.ready()
     if (this.db) {
       const row = this.findRow(threadId)
@@ -171,6 +173,7 @@ export class HybridThreadStore implements ThreadStore {
   }
 
   async upsert(thread: ThreadRecord): Promise<ThreadRecord> {
+    assertSafeThreadId(thread.id)
     await this.ready()
     await this.appendMetadata(thread)
     if (this.db) {
@@ -180,6 +183,7 @@ export class HybridThreadStore implements ThreadStore {
   }
 
   async delete(threadId: string): Promise<boolean> {
+    if (!isSafeThreadId(threadId)) return false
     await this.ready()
     const dir = this.threadDir(threadId)
     const existed = await pathExists(dir)
@@ -805,13 +809,14 @@ export class HybridThreadStore implements ThreadStore {
   private async threadIdsFromFilesystem(): Promise<string[]> {
     try {
       const entries = await readdir(this.dataDir, { withFileTypes: true })
-      return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+      return entries.filter((entry) => entry.isDirectory() && isSafeThreadId(entry.name)).map((entry) => entry.name)
     } catch {
       return []
     }
   }
 
   private async rowHasReadableJsonl(row: ThreadRow): Promise<boolean> {
+    if (!isSafeThreadId(row.id)) return false
     if (row.metadata_path !== this.metadataPath(row.id)) return false
     if (row.messages_path !== this.messagesPath(row.id)) return false
     if (row.events_path !== this.eventsPath(row.id)) return false
@@ -820,7 +825,12 @@ export class HybridThreadStore implements ThreadStore {
   }
 
   private threadDir(threadId: string): string {
-    return join(this.dataDir, threadId)
+    assertSafeThreadId(threadId)
+    const path = resolve(this.dataDir, threadId)
+    if (!path.startsWith(`${this.dataDir}/`)) {
+      throw new Error(`thread path escapes data directory: ${threadId}`)
+    }
+    return path
   }
 
   private metadataPath(threadId: string): string {
