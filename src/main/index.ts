@@ -114,6 +114,7 @@ import {
 } from './weixin-bridge-runtime'
 import { webhookUrl } from './claw-runtime-helpers'
 import { createTelegramRuntime, type TelegramRuntime, verifyTelegramBotToken } from './telegram-runtime'
+import { shutdownLocalWhisperService } from './services/local-whisper-service'
 import { KunRuntimeHealthMonitor } from './runtime/kun-runtime-health-monitor'
 import {
   buildManagedRuntimeHotApplyBody,
@@ -316,6 +317,7 @@ const runtimeShutdown = new ManagedRuntimeShutdownCoordinator(async () => {
     telegramRuntime?.stop()
   ])
   await stopWeixinBridgeRuntime()
+  await shutdownLocalWhisperService()
   await kunRuntimeAdapter.stopAndWait()
 })
 
