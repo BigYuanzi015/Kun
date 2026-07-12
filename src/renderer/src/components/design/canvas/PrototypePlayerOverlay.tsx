@@ -383,7 +383,7 @@ function PrototypePlayerOverlayInner({
                   </div>
                 )}
                 {preview.state.error && preview.state.webviewUrl ? (
-                  <div className="absolute inset-x-3 top-3 rounded-[8px] border border-red-200 bg-white/92 px-3 py-2 text-[12px] text-red-600 shadow-sm backdrop-blur">
+                  <div className="absolute inset-x-3 top-3 rounded-[8px] border border-red-200 bg-white/92 px-3 py-2 text-[12px] text-red-700 shadow-sm backdrop-blur dark:border-red-400/35 dark:bg-red-950/85 dark:text-red-200">
                     {preview.state.error}
                   </div>
                 ) : null}

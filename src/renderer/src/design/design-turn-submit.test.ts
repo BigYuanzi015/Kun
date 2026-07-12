@@ -38,6 +38,7 @@ const attachment: AttachmentReference = {
 
 function makeDesignState(patch: Partial<DesignWorkspaceState> = {}): DesignWorkspaceState {
   const state = {
+    workspaceRoot: '/workspace',
     artifacts: [boardArtifact],
     activeArtifactId: null,
     assistantModel: ' deepseek-chat ',
@@ -72,7 +73,7 @@ describe('submitDesignTurn', () => {
     const designState = makeDesignState()
     const canvasDocument = createEmptyDocument()
     const target = resolvedTarget()
-    const resolveTarget = vi.fn((_options: ResolveDesignTurnTargetOptions) => target)
+    const resolveTarget = vi.fn(async (_options: ResolveDesignTurnTargetOptions) => target)
     const prepareTurnFiles = vi.fn(async (
       _options: PrepareDesignTurnFilesOptions
     ): Promise<PrepareDesignTurnFilesResult> => ({ ok: true, notesWritten: false }))
@@ -137,6 +138,7 @@ describe('submitDesignTurn', () => {
       providerId: 'deepseek',
       reasoningEffort: 'medium',
       guiDesignCanvas: true,
+      guiDesignMode: true,
       attachmentIds: [attachment.id],
       attachments: [attachment]
     })
@@ -144,6 +146,7 @@ describe('submitDesignTurn', () => {
 
   it('sets the design file error and skips send when setup fails', async () => {
     const designState = makeDesignState()
+    const rollbackPreparedVersion = vi.fn(async () => undefined)
     const prepareTurnFiles = vi.fn(async (): Promise<PrepareDesignTurnFilesResult> => ({
       ok: false,
       phase: 'preview',
@@ -162,13 +165,92 @@ describe('submitDesignTurn', () => {
       getCanvasShapeState: () => ({ document: createEmptyDocument() }) as never,
       getCanvasSelectionState: () => ({ selectedIds: new Set<string>() }) as never,
       getCanvasViewportState: () => ({ vbox: { x: 0, y: 0, width: 1200, height: 800 } }) as never,
-      resolveTarget: vi.fn(() => resolvedTarget({ target: 'html' })),
+      resolveTarget: vi.fn(async () => resolvedTarget({ target: 'html', rollbackPreparedVersion })),
       prepareTurnFiles
     })
 
     expect(result).toEqual({ status: 'file-error', message: 'Design preview setup failed' })
     expect(designState.setFileError).toHaveBeenCalledWith('Design preview setup failed')
+    expect(rollbackPreparedVersion).toHaveBeenCalledOnce()
     expect(sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('surfaces resolve failures instead of leaking an unhandled rejection', async () => {
+    const designState = makeDesignState()
+    const sendMessage = vi.fn(async () => true)
+
+    const result = await submitDesignTurn({
+      promptText: 'Refine SVG',
+      displayText: 'Refine SVG',
+      workspaceRoot: '/workspace',
+      source: 'user',
+      sendMessage,
+      resolveProviderId: () => '',
+      getDesignState: () => designState,
+      getCanvasShapeState: () => ({ document: createEmptyDocument() }) as never,
+      getCanvasSelectionState: () => ({ selectedIds: new Set<string>() }) as never,
+      getCanvasViewportState: () => ({ vbox: { x: 0, y: 0, width: 1200, height: 800 } }) as never,
+      resolveTarget: vi.fn(async () => { throw new Error('version allocation failed') })
+    })
+
+    expect(result).toEqual({ status: 'file-error', message: 'version allocation failed' })
+    expect(designState.setFileError).toHaveBeenCalledWith('version allocation failed')
+    expect(sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('cancels before send if the active document changes after target resolution', async () => {
+    const designState = makeDesignState()
+    const rollbackPreparedVersion = vi.fn(async () => undefined)
+    const sendMessage = vi.fn(async () => true)
+    const buildPromptPayload = vi.fn(async (): Promise<DesignTurnPromptPayload> => {
+      designState.activeDocumentId = 'other-doc'
+      return { prompt: 'STALE PROMPT', promptState: designState }
+    })
+
+    const result = await submitDesignTurn({
+      promptText: 'Refine SVG',
+      displayText: 'Refine SVG',
+      workspaceRoot: '/workspace',
+      source: 'user',
+      sendMessage,
+      resolveProviderId: () => '',
+      getDesignState: () => designState,
+      getCanvasShapeState: () => ({ document: createEmptyDocument() }) as never,
+      getCanvasSelectionState: () => ({ selectedIds: new Set<string>() }) as never,
+      getCanvasViewportState: () => ({ vbox: { x: 0, y: 0, width: 1200, height: 800 } }) as never,
+      resolveTarget: vi.fn(async () => resolvedTarget({ rollbackPreparedVersion })),
+      prepareTurnFiles: vi.fn(async () => ({ ok: true as const, notesWritten: false })),
+      buildPromptPayload
+    })
+
+    expect(result).toMatchObject({ status: 'file-error', message: expect.stringContaining('active workspace') })
+    expect(rollbackPreparedVersion).toHaveBeenCalledOnce()
+    expect(sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('rolls back the prepared version when runtime dispatch returns false', async () => {
+    const designState = makeDesignState()
+    const rollbackPreparedVersion = vi.fn(async () => undefined)
+    const sendMessage = vi.fn(async () => false)
+
+    const result = await submitDesignTurn({
+      promptText: 'Refine SVG',
+      displayText: 'Refine SVG',
+      workspaceRoot: '/workspace',
+      source: 'user',
+      sendMessage,
+      resolveProviderId: () => '',
+      getDesignState: () => designState,
+      getCanvasShapeState: () => ({ document: createEmptyDocument() }) as never,
+      getCanvasSelectionState: () => ({ selectedIds: new Set<string>() }) as never,
+      getCanvasViewportState: () => ({ vbox: { x: 0, y: 0, width: 1200, height: 800 } }) as never,
+      resolveTarget: vi.fn(async () => resolvedTarget({ rollbackPreparedVersion })),
+      prepareTurnFiles: vi.fn(async () => ({ ok: true as const, notesWritten: false })),
+      buildPromptPayload: vi.fn(async () => ({ prompt: 'SVG PROMPT', promptState: designState }))
+    })
+
+    expect(result).toEqual({ status: 'file-error', message: 'Design turn could not be sent.' })
+    expect(rollbackPreparedVersion).toHaveBeenCalledOnce()
   })
 
   it('returns missing-board when no canvas board can be found or created', async () => {

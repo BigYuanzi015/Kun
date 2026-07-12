@@ -27,6 +27,7 @@ export async function generateSessionSummary(input: {
   model: string
   /** Optional per-provider routing id. */
   providerId?: string
+  accountId?: string
   systemPrompt?: string
   /** Full conversation transcript items, oldest first. */
   items: readonly TurnItem[]
@@ -65,6 +66,7 @@ export async function generateSessionSummary(input: {
       turnId,
       model: input.model,
       ...(input.providerId ? { providerId: input.providerId } : {}),
+      ...(input.accountId ? { accountId: input.accountId } : {}),
       ...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
       contextInstructions: [SESSION_SUMMARY_SYSTEM_PROMPT],
       prefix: [],

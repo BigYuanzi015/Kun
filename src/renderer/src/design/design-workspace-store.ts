@@ -6,16 +6,14 @@ import {
   deleteArtifactDir,
   persistArtifactMeta
 } from './design-artifact-persistence'
-import {
-  deleteDocumentDir,
-  ensureDocumentDir,
-  flushDocumentsIndex,
-  persistDocumentsIndex
-} from './design-document-persistence'
+import { deleteDocumentDir, ensureDocumentDir } from './design-document-persistence'
 import { defaultPreviewNodeSizeForDesignTarget, hashDesignSystem, normalizeDesignTarget } from './design-context'
+import { parseProjectDesignMdWithOfficialLint } from './design-md/design-md-adapter'
+import { PROJECT_DESIGN_MD_PATH } from './design-md/design-md-paths'
 import {
   createDesignDocumentId,
-  defaultDesignArtifactNode
+  defaultDesignArtifactNode,
+  isFileDesignArtifactKind
 } from './design-types'
 import type { DesignDocument } from './design-types'
 import type { DesignWorkspaceState } from './design-workspace-store-types'
@@ -41,25 +39,33 @@ import {
   readPersistedDesignTarget,
   readPersistedMultiPageMode,
   readPersistedViewport,
-  rehydrateDesignWorkspaceArtifacts,
-  removedArtifactIds,
-  removedDocumentIds,
-  userCreatedDocumentIds
+  rehydrateDesignWorkspaceArtifacts
 } from './design-workspace-store/helpers'
 import { duplicateHtmlArtifact, prepareDesignHtmlTurn } from './design-workspace-store/html-turn'
+import { duplicateSvgArtifact, prepareDesignSvgTurn } from './design-workspace-store/svg-turn'
+import {
+  markDesignArtifactRemoved,
+  markDesignDocumentRemoved,
+  markDesignDocumentUserCreated
+} from './design-workspace-registry'
+import {
+  afterFlushingDesignWorkspace,
+  flushAndReleaseDesignWorkspace,
+  normalizeDesignWorkspaceRoot,
+  registerDesignPersistenceFailureHandler,
+  resetDesignWorkspaceTransientStores
+} from './design-workspace-lifecycle'
+import { persistDesignWorkspaceIndex } from './design-workspace-index-persistence'
 
 export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) => {
-  const persistIndex = (): void => {
-    const s = get()
-    persistDocumentsIndex(s.workspaceRoot, s.documents, s.activeDocumentId)
-  }
-
-  // Structural deletes must hit disk immediately — a debounced write can be lost
-  // to a reload before it flushes, resurrecting the just-deleted 设计稿/画布.
-  const persistIndexNow = (): void => {
-    const s = get()
-    void flushDocumentsIndex(s.workspaceRoot, s.documents, s.activeDocumentId)
-  }
+  let workspaceGeneration = 0
+  let settingsLoadGeneration = 0
+  registerDesignPersistenceFailureHandler({
+    getWorkspaceRoot: () => get().workspaceRoot,
+    setFileError: (fileError) => set({ fileError })
+  })
+  const persistIndex = (): void => persistDesignWorkspaceIndex(get())
+  const persistIndexNow = (): void => persistDesignWorkspaceIndex(get(), true)
 
   return {
     workspaceRoot: '',
@@ -94,7 +100,27 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     pagesRun: null,
     parallelPageStates: {},
 
-    setWorkspaceRoot: (workspaceRoot) => set({ workspaceRoot }),
+    setWorkspaceRoot: (workspaceRoot) => {
+      const normalized = normalizeDesignWorkspaceRoot(workspaceRoot)
+      const previous = get().workspaceRoot
+      if (normalizeDesignWorkspaceRoot(previous) === normalized) return
+      workspaceGeneration += 1
+      flushAndReleaseDesignWorkspace(previous)
+      resetDesignWorkspaceTransientStores()
+      set({
+        workspaceRoot: normalized,
+        documents: [],
+        activeDocumentId: null,
+        artifacts: [],
+        activeArtifactId: null,
+        fileError: null,
+        designSystemHash: '',
+        implementOpen: false,
+        implementTitle: '',
+        pagesRun: null,
+        parallelPageStates: {}
+      })
+    },
 
     setCanvasView: (view) => {
       writeBrowserStorageItem(CANVAS_VIEW_KEY, view)
@@ -125,7 +151,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     createDocument: (title, options) => {
       const id = createDesignDocumentId()
       const createdAt = new Date().toISOString()
-      if (!options?.transient) userCreatedDocumentIds.add(id)
+      if (!options?.transient) markDesignDocumentUserCreated(get().workspaceRoot, id)
       set((state) => {
         const order = state.documents.reduce((max, d) => Math.max(max, d.order), -1) + 1
         const doc: DesignDocument = {
@@ -157,16 +183,14 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     },
 
     removeDocument: (documentId) => {
-      removedDocumentIds.add(documentId)
       const workspaceRoot = get().workspaceRoot
+      markDesignDocumentRemoved(workspaceRoot, documentId)
       const doc = get().documents.find((d) => d.id === documentId)
       if (doc) {
         for (const artifact of doc.artifacts) {
-          removedArtifactIds.add(artifact.id)
-          deleteArtifactDir(workspaceRoot, artifact.relativePath)
+          markDesignArtifactRemoved(workspaceRoot, artifact.id)
         }
       }
-      deleteDocumentDir(workspaceRoot, documentId)
       set((state) => {
         const documents = state.documents.filter((d) => d.id !== documentId)
         const activeDocumentId =
@@ -174,6 +198,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
         return { documents, activeDocumentId, ...projectActiveDoc(documents, activeDocumentId), fileError: null }
       })
       persistIndexNow()
+      afterFlushingDesignWorkspace(workspaceRoot, () => { void deleteDocumentDir(workspaceRoot, documentId) })
     },
 
     switchActiveDocument: (documentId) => {
@@ -207,7 +232,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
             const existingIndex = artifacts.findIndex((item) => item.id === artifact.id)
             const existing = existingIndex >= 0 ? artifacts[existingIndex] : undefined
             const withDefaults =
-              artifact.kind === 'html'
+              isFileDesignArtifactKind(artifact.kind)
                 ? { ...artifact, designMdPath: artifact.designMdPath ?? artifactDesignMdPathOf(artifact.relativePath) }
                 : artifact
             const defaultNode =
@@ -244,7 +269,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
                   relativePath: version.relativePath,
                   updatedAt: version.createdAt,
                   versions: [version, ...item.versions],
-                  ...(item.kind === 'html'
+                  ...(isFileDesignArtifactKind(item.kind)
                     ? {
                         designMdPath: item.designMdPath ?? artifactDesignMdPathOf(version.relativePath),
                         previewStatus: 'pending' as const
@@ -282,9 +307,9 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     },
 
     removeArtifact: (artifactId) => {
-      removedArtifactIds.add(artifactId)
+      const workspaceRoot = get().workspaceRoot
+      markDesignArtifactRemoved(workspaceRoot, artifactId)
       const target = get().artifacts.find((item) => item.id === artifactId)
-      if (target) deleteArtifactDir(get().workspaceRoot, target.relativePath)
       set((state) => {
         const idx = state.documents.findIndex((d) => d.id === state.activeDocumentId)
         if (idx === -1) return {}
@@ -297,6 +322,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
         return { documents, artifacts, activeArtifactId }
       })
       persistIndexNow()
+      if (target) afterFlushingDesignWorkspace(workspaceRoot, () => deleteArtifactDir(workspaceRoot, target.relativePath))
     },
 
     renameArtifact: (artifactId, title) => {
@@ -337,11 +363,21 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     },
 
     setArtifactPreviewStatus: (artifactId, status) => {
+      const currentArtifact = get().artifacts.find((item) => item.id === artifactId)
+      if (
+        !currentArtifact ||
+        !isFileDesignArtifactKind(currentArtifact.kind) ||
+        currentArtifact.previewStatus === status
+      ) return
       let changedAny = false
       set((state) =>
         applyToActiveDoc(state, (artifacts) =>
           artifacts.map((item) => {
-            if (item.id !== artifactId || item.kind !== 'html' || item.previewStatus === status) {
+            if (
+              item.id !== artifactId ||
+              !isFileDesignArtifactKind(item.kind) ||
+              item.previewStatus === status
+            ) {
               return item
             }
             changedAny = true
@@ -392,13 +428,15 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
           artifacts.map((item, index) => {
             if (item.id !== artifactId) return item
             const current = item.node ?? defaultDesignArtifactNode(index)
+            const minWidth = item.kind === 'svg' ? 64 : 240
+            const minHeight = item.kind === 'svg' ? 64 : 180
             return {
               ...item,
               node: {
                 ...current,
                 ...patch,
-                width: Math.max(240, patch.width ?? current.width),
-                height: Math.max(180, patch.height ?? current.height)
+                width: Math.max(minWidth, patch.width ?? current.width),
+                height: Math.max(minHeight, patch.height ?? current.height)
               }
             }
           })
@@ -409,7 +447,12 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
       persistIndex()
     },
 
-    duplicateArtifact: (artifactId) => duplicateHtmlArtifact(artifactId, get),
+    duplicateArtifact: (artifactId) => {
+      const artifact = get().artifacts.find((item) => item.id === artifactId)
+      return artifact?.kind === 'svg'
+        ? duplicateSvgArtifact(artifactId, get)
+        : duplicateHtmlArtifact(artifactId, get)
+    },
 
     selectArtifactVersion: (artifactId, versionId) => {
       set((state) =>
@@ -422,7 +465,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
               ...item,
               relativePath: version.relativePath,
               updatedAt: version.createdAt,
-              ...(item.kind === 'html' ? { previewStatus: 'pending' as const } : {})
+              ...(isFileDesignArtifactKind(item.kind) ? { previewStatus: 'pending' as const } : {})
             }
           })
         )
@@ -482,6 +525,9 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     prepareHtmlTurn: (brief, options = {}) =>
       prepareDesignHtmlTurn({ brief, options, get, set, persistIndex }),
 
+    prepareSvgTurn: (brief, options = {}) =>
+      prepareDesignSvgTurn({ brief, options, get, set, persistIndex }),
+
     setAiRailCollapsed: (collapsed) => {
       writeBrowserStorageItem(AI_RAIL_COLLAPSED_KEY, collapsed ? '1' : '0')
       writeBrowserStorageItem(CANVAS_ASSISTANT_OPEN_KEY, collapsed ? '0' : '1')
@@ -521,15 +567,21 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     },
 
     loadDesignSettings: async () => {
+      settingsLoadGeneration += 1
+      const loadGeneration = settingsLoadGeneration
       set({ settingsLoaded: false })
       try {
         try {
           const settings = await rendererRuntimeClient.getSettings()
+          if (loadGeneration !== settingsLoadGeneration) return
           const design = settings.design
           const hasStoredViewport = readBrowserStorageItem(VIEWPORT_KEY) !== null
           const hasStoredView = readBrowserStorageItem(CANVAS_VIEW_KEY) !== null
+          const resolvedWorkspaceRoot = get().workspaceRoot || design.defaultWorkspaceRoot || builtinDesignWorkspaceRoot() || ''
+          if (normalizeDesignWorkspaceRoot(get().workspaceRoot) !== normalizeDesignWorkspaceRoot(resolvedWorkspaceRoot)) {
+            get().setWorkspaceRoot(resolvedWorkspaceRoot)
+          }
           set((state) => ({
-            workspaceRoot: state.workspaceRoot || design.defaultWorkspaceRoot || builtinDesignWorkspaceRoot() || '',
             assistantModel: state.assistantModel || design.model,
             assistantProviderId: state.assistantProviderId || design.providerId,
             canvasBackground: design.canvasBackground,
@@ -565,16 +617,38 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
         } catch {
           // Keep local/default state and still let rehydration/fallback below settle the workspace.
         }
+        if (loadGeneration !== settingsLoadGeneration) return
+        const workspaceRoot = get().workspaceRoot
         await get().rehydrateArtifacts()
+        if (
+          loadGeneration !== settingsLoadGeneration ||
+          normalizeDesignWorkspaceRoot(get().workspaceRoot) !== normalizeDesignWorkspaceRoot(workspaceRoot)
+        ) return
         await get().refreshDesignSystemHash()
+        if (
+          loadGeneration !== settingsLoadGeneration ||
+          normalizeDesignWorkspaceRoot(get().workspaceRoot) !== normalizeDesignWorkspaceRoot(workspaceRoot)
+        ) return
         // Always land on an active 设计稿 so the canvas has somewhere to render.
         if (get().documents.length === 0) get().createDocument()
       } finally {
-        set({ settingsLoaded: true })
+        if (loadGeneration === settingsLoadGeneration) set({ settingsLoaded: true })
       }
     },
 
-    rehydrateArtifacts: () => rehydrateDesignWorkspaceArtifacts({ get, set, persistIndex }),
+    rehydrateArtifacts: () => {
+      const generation = workspaceGeneration
+      const workspaceRoot = get().workspaceRoot
+      return rehydrateDesignWorkspaceArtifacts({
+        get,
+        set,
+        persistIndex,
+        isCurrent: (candidateRoot) =>
+          generation === workspaceGeneration &&
+          normalizeDesignWorkspaceRoot(candidateRoot) === normalizeDesignWorkspaceRoot(workspaceRoot) &&
+          normalizeDesignWorkspaceRoot(get().workspaceRoot) === normalizeDesignWorkspaceRoot(workspaceRoot)
+      })
+    },
 
     refreshDesignSystemHash: async () => {
       const { workspaceRoot } = get()
@@ -583,12 +657,20 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
         return
       }
       const res = await window.kunGui
-        .readWorkspaceFile({ path: '.kun-design/DESIGN_SYSTEM.md', workspaceRoot })
+        .readWorkspaceFile({ path: PROJECT_DESIGN_MD_PATH, workspaceRoot })
         .catch(() => null)
-      set({ designSystemHash: res && res.ok ? hashDesignSystem(res.content) : '' })
+      const parsed = res?.ok
+        ? await parseProjectDesignMdWithOfficialLint(res.content, { truncated: res.truncated })
+        : null
+      if (normalizeDesignWorkspaceRoot(get().workspaceRoot) !== normalizeDesignWorkspaceRoot(workspaceRoot)) return
+      set({ designSystemHash: parsed?.ok && res?.ok ? hashDesignSystem(res.content) : '' })
     },
 
-    resetWorkspace: () =>
+    resetWorkspace: () => {
+      workspaceGeneration += 1
+      const workspaceRoot = get().workspaceRoot
+      flushAndReleaseDesignWorkspace(workspaceRoot)
+      resetDesignWorkspaceTransientStores()
       set({
         documents: [],
         activeDocumentId: null,
@@ -600,5 +682,6 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
         pagesRun: null,
         parallelPageStates: {}
       })
+    }
   }
 })

@@ -1,5 +1,11 @@
-/** Artifact kind. `'canvas'` = Figma-style SVG design canvas. */
-export type DesignArtifactKind = 'html' | 'canvas'
+/** Artifact kind. `'canvas'` is the ShapeOps JSON board; `'svg'` is a real SVG document. */
+export type DesignArtifactKind = 'html' | 'canvas' | 'svg'
+
+export function isFileDesignArtifactKind(
+  kind: DesignArtifactKind
+): kind is 'html' | 'svg' {
+  return kind === 'html' || kind === 'svg'
+}
 
 /** Canvas surface for HTML artifacts. `'live'` shows the running dev server. */
 export type DesignCanvasView = 'preview' | 'code' | 'live'
@@ -25,7 +31,7 @@ export type DesignArtifactVersion = {
 }
 
 export function designArtifactVersionNumber(version: Pick<DesignArtifactVersion, 'id' | 'relativePath'>): number | null {
-  const pathMatch = /\/v(\d+)\.html$/i.exec(version.relativePath)
+  const pathMatch = /\/v(\d+)\.(?:html?|svg)$/i.exec(version.relativePath)
   if (pathMatch) return Number(pathMatch[1])
   const idMatch = /-v(\d+)$/i.exec(version.id)
   return idMatch ? Number(idMatch[1]) : null
@@ -87,7 +93,7 @@ export type DesignArtifact = {
   createdAt: string
   updatedAt: string
   versions: DesignArtifactVersion[]
-  /** Per-artifact design notes that travel with the HTML screen. */
+  /** Per-artifact design notes that travel with HTML and SVG documents. */
   designMdPath?: string
   /** Renderer-side preview lifecycle state; persisted for restart recovery. */
   previewStatus?: 'pending' | 'ready' | 'error'
@@ -101,7 +107,7 @@ export type DesignArtifact = {
   implementedAt?: string
   /** Code thread that implemented it (provenance). */
   implementedThreadId?: string
-  /** Hash of the DESIGN_SYSTEM.md published at implement time (code-drift baseline). */
+  /** Hash of design-system.json at implement time (code-drift baseline). */
   implementedDesignSystemHash?: string
   /**
    * Foundation role in a Stitch-style run: the shared visual style guide or the
@@ -145,7 +151,7 @@ export function inferDesignArtifactFoundationRole(
 
 /**
  * A 设计稿 (design document) — the top-level container, one per directory under
- * `.kun-design/<id>/`. Holds multiple 画布 (canvas artifacts: HTML or SVG) and
+ * `.kun-design/<id>/`. Holds HTML, SVG, and ShapeOps canvas artifacts and
  * owns its own project-canvas surface + AI conversation. The store keeps the
  * flat `artifacts`/`activeArtifactId` as a projection of the active document.
  */

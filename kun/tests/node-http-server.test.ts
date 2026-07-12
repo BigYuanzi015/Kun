@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { startNodeHttpServer } from '../src/server/node-http-server.js'
+import { readJsonBody } from '../src/server/read-json-body.js'
 import { Router } from '../src/server/router.js'
 
 describe('Node HTTP server', () => {
@@ -27,5 +28,72 @@ describe('Node HTTP server', () => {
     } finally {
       await server.close()
     }
+  })
+
+  it('returns a 413 response after rejecting an oversized declared request body', async () => {
+    const router = new Router()
+    router.add('POST', '/body', async (request) => {
+      const body = await readJsonBody(request, 32)
+      return body.ok ? new Response('{}') : body.response
+    })
+    const server = await startNodeHttpServer({ router, host: '127.0.0.1', port: 0 })
+
+    try {
+      const response = await fetch(`http://${server.host}:${server.port}/body`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'x'.repeat(128) })
+      })
+
+      expect(response.status).toBe(413)
+      await expect(response.json()).resolves.toMatchObject({ code: 'validation_error' })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('aborts the Fetch request when an SSE client disconnects', async () => {
+    const router = new Router()
+    let resolveAbort: (() => void) | undefined
+    const aborted = new Promise<void>((resolve) => {
+      resolveAbort = resolve
+    })
+    router.add('GET', '/events', (request) => {
+      request.signal.addEventListener('abort', () => resolveAbort?.(), { once: true })
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: connected\n\n'))
+        }
+      }), { headers: { 'content-type': 'text/event-stream' } })
+    })
+    const server = await startNodeHttpServer({ router, host: '127.0.0.1', port: 0 })
+    const controller = new AbortController()
+
+    try {
+      const response = await fetch(`http://${server.host}:${server.port}/events`, { signal: controller.signal })
+      await response.body!.getReader().read()
+      controller.abort()
+      await aborted
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('force-closes a live SSE connection during shutdown', async () => {
+    const router = new Router()
+    router.add('GET', '/events', () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: connected\n\n'))
+      }
+    }), { headers: { 'content-type': 'text/event-stream' } }))
+    const server = await startNodeHttpServer({ router, host: '127.0.0.1', port: 0 })
+
+    const response = await fetch(`http://${server.host}:${server.port}/events`)
+    await response.body!.getReader().read()
+
+    await expect(Promise.race([
+      server.close(),
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error('server close timed out')), 1_000))
+    ])).resolves.toBeUndefined()
   })
 })

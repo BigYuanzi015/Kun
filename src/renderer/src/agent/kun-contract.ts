@@ -434,6 +434,8 @@ export type CoreTurnJson = {
   injectedInstructionSources?: Array<{ scope: 'global' | 'workspace'; path: string; bytes: number; truncated?: boolean }>
   instructionInjectionBytes?: number
   workspaceCheckpointId?: string
+  guiDesignCanvas?: boolean
+  guiDesignMode?: boolean
   error?: string
 }
 
@@ -448,6 +450,8 @@ export type CoreTurnItemJson = {
   kind: string
   text?: string
   displayText?: string
+  guiDesignCanvas?: boolean
+  guiDesignMode?: boolean
   messageSource?: 'background_shell' | 'background_subagent'
   toolName?: string
   callId?: string
@@ -463,6 +467,16 @@ export type CoreTurnItemJson = {
     id: string
     question: string
     options: Array<{ label: string; description: string }>
+    selectionMode?: 'single' | 'multiple'
+    minSelections?: number
+    maxSelections?: number
+  }>
+  answers?: Array<{
+    id: string
+    label: string
+    value?: string
+    labels?: string[]
+    values?: string[]
   }>
   summary?: string
   replacedTokens?: number
@@ -648,6 +662,16 @@ export type CoreRuntimeEventJson = {
     id: string
     question: string
     options: Array<{ label: string; description: string }>
+    selectionMode?: 'single' | 'multiple'
+    minSelections?: number
+    maxSelections?: number
+  }>
+  answers?: Array<{
+    id: string
+    label: string
+    value?: string
+    labels?: string[]
+    values?: string[]
   }>
   replacedTokens?: number
   auto?: boolean

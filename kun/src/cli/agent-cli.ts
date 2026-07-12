@@ -35,12 +35,15 @@ Commands:
   run [options] <prompt>     Run one agent turn without the GUI
   chat [options]             Start a line-oriented terminal chat
   exec [options] <tool>      List or invoke tools directly
+  extension <command>        Create, validate, pack, install, and manage extensions
 
 Common options:
   --config <path>            JSON config file
   --data-dir <path>          Root directory for Kun data
   --workspace <path>         Workspace root for run/chat/exec
   --model <model>            Model id
+  --provider-id <id>         Route through a configured or extension model provider
+  --account-id <id>          Bind an opaque core-managed provider account
   --approval-policy <p>      on-request | untrusted | never | auto | suggest
   --json                     Emit machine-readable JSON where supported
   --jsonl                    Stream one machine-readable event per line for kun run
@@ -64,6 +67,8 @@ const VALUE_FLAGS = new Set([
   'base-url',
   'baseUrl',
   'model',
+  'provider-id',
+  'account-id',
   'approval-policy',
   'sandbox-mode',
   'workspace',
@@ -128,6 +133,8 @@ async function runOneShot(argv: readonly string[], io: CliIo): Promise<number> {
       title: stringFlag(argv, ['title']) ?? prompt.slice(0, 80),
       workspace: parsed.workspace,
       model: parsed.options.model,
+      ...(parsed.providerId ? { providerId: parsed.providerId } : {}),
+      ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
       mode: 'agent',
       approvalPolicy: parsed.options.approvalPolicy,
       sandboxMode: parsed.options.sandboxMode
@@ -183,6 +190,8 @@ async function runChat(argv: readonly string[], io: CliIo): Promise<number> {
       title: stringFlag(argv, ['title']) ?? 'CLI chat',
       workspace: parsed.workspace,
       model: parsed.options.model,
+      ...(parsed.providerId ? { providerId: parsed.providerId } : {}),
+      ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
       mode: 'agent',
       approvalPolicy: parsed.options.approvalPolicy,
       sandboxMode: parsed.options.sandboxMode
@@ -309,7 +318,14 @@ async function runExec(argv: readonly string[], io: CliIo): Promise<number> {
 }
 
 type SharedOptionsResult =
-  | { ok: true; options: ServeOptions; workspace: string; json: boolean }
+  | {
+      ok: true
+      options: ServeOptions
+      workspace: string
+      providerId?: string
+      accountId?: string
+      json: boolean
+    }
   | { ok: false; exitCode: number; message: string; issues?: unknown }
 
 function parseSharedOptions(argv: readonly string[], io: CliIo): SharedOptionsResult {
@@ -319,6 +335,12 @@ function parseSharedOptions(argv: readonly string[], io: CliIo): SharedOptionsRe
     ok: true,
     options: parsed.options,
     workspace: stringFlag(argv, ['workspace']) ?? io.env?.KUN_WORKSPACE ?? io.cwd?.() ?? process.cwd(),
+    ...(stringFlag(argv, ['provider-id'])?.trim()
+      ? { providerId: stringFlag(argv, ['provider-id'])!.trim() }
+      : {}),
+    ...(stringFlag(argv, ['account-id'])?.trim()
+      ? { accountId: stringFlag(argv, ['account-id'])!.trim() }
+      : {}),
     json: hasFlag(argv, 'json')
   }
 }

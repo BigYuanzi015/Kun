@@ -5,6 +5,7 @@ import { buildDesignArtifactMarkdown } from '../design-artifact-markdown'
 import type { DesignArtifact } from '../design-types'
 import type { GeneratedScreenSpec } from './screen-generation-support'
 import { buildGeneratedScreenDraftHtml } from './generate-screen-draft-content'
+import { writeDesignWorkspaceFile } from '../design-persistence-coordinator'
 
 type DraftWriteApi = {
   writeWorkspaceFile?: (payload: WorkspaceFileWritePayload) => Promise<WorkspaceFileWriteResult>
@@ -34,7 +35,9 @@ type QueueScreenDraftWriteOptions = {
 }
 
 function currentDraftWriteApi(api?: DraftWriteApi): DraftWriteApi | undefined {
-  return api ?? (typeof window !== 'undefined' ? window.kunGui : undefined)
+  if (api) return api
+  if (typeof window === 'undefined' || !window.kunGui) return undefined
+  return { writeWorkspaceFile: (payload) => writeDesignWorkspaceFile(payload) }
 }
 
 function writeWorkspaceTextFile(

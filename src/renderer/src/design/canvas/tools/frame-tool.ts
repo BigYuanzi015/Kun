@@ -1,12 +1,12 @@
 import { useCanvasSelectionStore } from '../canvas-selection-store'
 import { useCanvasShapeStore } from '../canvas-shape-store'
 import { useCanvasViewportStore } from '../canvas-viewport-store'
-import { createDefaultShape } from '../canvas-types'
+import { createDefaultShape, type CanvasShapePreset } from '../canvas-types'
 import type { CanvasPointerEvent, CanvasToolHandler } from './tool-types'
 import { computeSnappedCreateShapeBounds } from './create-shape-bounds'
 import { addShapeForCreation, commitCreatedShapeUndo, type CreatedShapeUndo } from './creation-undo'
 
-export function createFrameTool(): CanvasToolHandler {
+export function createFrameTool(preset?: CanvasShapePreset): CanvasToolHandler {
   let drawing = false
   let startX = 0
   let startY = 0
@@ -21,7 +21,7 @@ export function createFrameTool(): CanvasToolHandler {
       startX = e.canvasX
       startY = e.canvasY
 
-      const shape = createDefaultShape('frame', e.canvasX, e.canvasY)
+      const shape = createDefaultShape('frame', e.canvasX, e.canvasY, preset)
       shape.width = 0
       shape.height = 0
       previewId = shape.id

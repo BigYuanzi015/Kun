@@ -46,7 +46,16 @@ export function buildSkillToolProviders(
         execute: async (args, context) => {
           const skillId = typeof args.skill_id === 'string' ? args.skill_id : ''
           if (!skillId.trim()) return { output: { error: 'skill_id is required' }, isError: true }
-          const result = await skillRuntime.loadSkillById(skillId, context.workspace, context.blockedSkillIds)
+          const turn = typeof context.threadId === 'string' && context.threadId.trim() &&
+            typeof context.turnId === 'string' && context.turnId.trim()
+            ? { threadId: context.threadId, turnId: context.turnId }
+            : undefined
+          const result = await skillRuntime.loadSkillById(
+            skillId,
+            context.workspace,
+            context.blockedSkillIds,
+            turn
+          )
           if ('error' in result) return { output: result, isError: true }
           return { output: result }
         }

@@ -92,4 +92,31 @@ describe('design artifact markdown', () => {
     expect(markdown).toContain('- v2: `.kun-design/screen/v2.html` - Make this a login screen')
     expect(markdown).toContain('- v1: `.kun-design/screen/v1.html` - Create a hello world page')
   })
+
+  it('writes SVG-specific source, motion, accessibility, and handoff guidance', () => {
+    const relativePath = '.kun-design/doc/orbit/v1.svg'
+    const artifact: DesignArtifact = {
+      id: 'orbit',
+      kind: 'svg',
+      title: 'Orbit loader',
+      relativePath,
+      designMdPath: '.kun-design/doc/orbit/DESIGN.md',
+      createdAt: '2026-06-21T00:00:00.000Z',
+      updatedAt: '2026-06-21T00:00:00.000Z',
+      versions: [{ id: 'orbit-v1', relativePath, createdAt: '2026-06-21T00:00:00.000Z', summary: 'Create a loader' }]
+    }
+
+    const markdown = buildDesignArtifactMarkdown({
+      artifact,
+      designMdPath: artifact.designMdPath!,
+      currentTurn: 'Make the orbit feel calmer'
+    })
+
+    expect(markdown).toContain('Source SVG path: `.kun-design/doc/orbit/v1.svg`')
+    expect(markdown).toContain('responsive viewBox')
+    expect(markdown).toContain('declarative animation')
+    expect(markdown).toContain('Keep the SVG file standalone, script-free, and implementation-ready.')
+    expect(markdown).not.toContain('Source HTML path')
+    expect(markdown).not.toContain('Keep the HTML file standalone')
+  })
 })

@@ -5,8 +5,11 @@ export const DESIGN_CANVAS_TOOL_NAMES = new Set([
   'design_create_screen',
   'design_update_shapes',
   'design_arrange',
+  'design_export_canvas',
   'design_system_template',
-  'design_validate'
+  'design_system',
+  'design_validate',
+  'design_svg_create'
 ])
 
 export function isDesignCanvasToolName(name: unknown): boolean {
@@ -145,6 +148,40 @@ export function extractCanvasOpBlocksFromValue(value: unknown): unknown[][] {
   }
   const ops = normalizeDesignCanvasToolCall(value)
   return ops.length > 0 ? [ops] : []
+}
+
+export type SvgArtifactCreateSpec = {
+  artifactId?: string
+  name: string
+  brief: string
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+}
+
+export function extractSvgArtifactCreateSpecsFromValue(value: unknown): SvgArtifactCreateSpec[] {
+  if (!isRecord(value) || !Array.isArray(value.ops)) return []
+  return value.ops.flatMap((entry) => {
+    if (!isRecord(entry) || entry.op !== 'add-svg-artifact') return []
+    const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+    const brief = typeof entry.brief === 'string' ? entry.brief.trim() : ''
+    const artifactId = typeof entry.artifactId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(entry.artifactId.trim())
+      ? entry.artifactId.trim()
+      : undefined
+    if (!name || !brief) return []
+    const number = (candidate: unknown): number | undefined =>
+      typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : undefined
+    return [{
+      ...(artifactId ? { artifactId } : {}),
+      name,
+      brief,
+      ...(number(entry.x) !== undefined ? { x: number(entry.x) } : {}),
+      ...(number(entry.y) !== undefined ? { y: number(entry.y) } : {}),
+      ...(number(entry.width) !== undefined ? { width: number(entry.width) } : {}),
+      ...(number(entry.height) !== undefined ? { height: number(entry.height) } : {})
+    }]
+  })
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

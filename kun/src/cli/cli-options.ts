@@ -12,6 +12,7 @@ import {
   DEFAULT_TOOL_OUTPUT_LIMITS_CONFIG,
   ModelRequestRetryConfigSchema,
   ModelConfigSchema,
+  ObservabilityConfigSchema,
   QualityConfigSchema,
   RolesConfigSchema,
   RuntimeTuningConfigSchema,
@@ -30,6 +31,7 @@ import {
   normalizeModelEndpointFormat
 } from '../contracts/model-endpoint-format.js'
 import { HooksConfigSchema } from '../hooks/hook-config.js'
+import { isLoopbackHost } from '../server/loopback-host.js'
 
 export const DEFAULT_SERVE_PORT = 18899
 export const DEFAULT_SERVE_MODEL = DEFAULT_KUN_MODEL
@@ -49,6 +51,7 @@ export const ServeOptionsSchema = z.object({
   dataDir: z.string().min(1),
   runtimeToken: z.string().default(''),
   apiKey: z.string().default(''),
+  credentialSourceId: z.string().min(1).max(256).optional(),
   baseUrl: z.string().default('https://api.deepseek.com/beta'),
   modelProxyUrl: z.string().default(''),
   endpointFormat: z.preprocess(normalizeModelEndpointFormat, z.enum(MODEL_ENDPOINT_FORMATS)).default(DEFAULT_MODEL_ENDPOINT_FORMAT),
@@ -61,6 +64,7 @@ export const ServeOptionsSchema = z.object({
   toolOutputLimits: ToolOutputLimitsConfigSchema.default(DEFAULT_TOOL_OUTPUT_LIMITS_CONFIG),
   insecure: z.boolean().default(false),
   storage: StorageConfigSchema.default(DEFAULT_STORAGE_CONFIG),
+  observability: ObservabilityConfigSchema.optional(),
   headers: z.record(z.string(), z.string()).optional(),
   providers: z.record(z.string().min(1), ServeProviderConfigSchema).optional(),
   models: ModelConfigSchema.optional(),
@@ -70,6 +74,14 @@ export const ServeOptionsSchema = z.object({
   capabilities: KunCapabilitiesConfig.default(DEFAULT_KUN_CAPABILITIES_CONFIG),
   hooks: HooksConfigSchema.optional(),
   quality: QualityConfigSchema.optional()
+}).superRefine((value, ctx) => {
+  if (value.insecure && !isLoopbackHost(value.host)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['insecure'],
+      message: '--insecure is allowed only with a loopback host'
+    })
+  }
 })
 export type ServeOptions = z.infer<typeof ServeOptionsSchema>
 

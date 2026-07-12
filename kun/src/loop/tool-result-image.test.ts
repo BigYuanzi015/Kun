@@ -141,4 +141,17 @@ describe('capToolResultImages', () => {
     const history: TurnItem[] = [toolResult('a', screenshot('IMG_A'))]
     expect(capToolResultImages(history, 3)).toBe(history)
   })
+
+  it('removes the top-level base64 field instead of forwarding a placeholder as an image', () => {
+    const history: TurnItem[] = [
+      toolResult('a', { kind: 'image', mime_type: 'image/png', data_base64: 'IMG_A' }),
+      toolResult('b', { kind: 'image', mime_type: 'image/png', data_base64: 'IMG_B' })
+    ]
+
+    const capped = capToolResultImages(history, 1)
+
+    expect(isModelVisibleImageOutput((capped[0] as { output: unknown }).output)).toBe(false)
+    expect((capped[0] as { output: Record<string, unknown> }).output).not.toHaveProperty('data_base64')
+    expect(isModelVisibleImageOutput((capped[1] as { output: unknown }).output)).toBe(true)
+  })
 })

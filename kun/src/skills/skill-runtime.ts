@@ -1,34 +1,44 @@
-import { type Dirent } from 'node:fs'
-import { readdir, readFile, stat } from 'node:fs/promises'
-import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { constants, type Dirent } from 'node:fs'
+import { open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises'
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { z } from 'zod'
 import type { SkillsCapabilityConfig } from '../contracts/capabilities.js'
 
 const DEFAULT_ACTIVE_LIMIT = 3
 const DEFAULT_INSTRUCTION_BUDGET_BYTES = 24_000
 const DEFAULT_CATALOG_BUDGET_BYTES = 8_000
+const MAX_SKILL_PACKAGES_PER_ROOT = 64
+const MAX_MANUAL_SKILL_TURN_ACTIVATIONS = 512
+const MAX_SKILL_MANIFEST_BYTES = 64 * 1024
+const MAX_SKILL_ENTRY_BYTES = 256 * 1024
 const WORKSPACE_SKILL_RELATIVE_DIRS = [
   '.agents/skills',
   '.claude/skills',
   '.codex/skills',
+  '.kun/skills',
   'skills'
 ] as const
 
 const SkillTriggerManifest = z.object({
-  commands: z.array(z.string().min(1)).default([]),
-  promptPatterns: z.array(z.string().min(1)).default([]),
-  fileTypes: z.array(z.string().min(1)).default([])
+  commands: z.array(z.string().min(1).max(256)).max(16).default([]),
+  // Prompt patterns intentionally use literal case-insensitive substring
+  // matching. JavaScript regular expressions from workspace manifests can
+  // catastrophically backtrack on every turn and block the runtime event loop.
+  promptPatterns: z.array(z.string().min(1).max(256).refine(isSafePromptPattern, {
+    message: 'promptPatterns must be literal text, not a regular expression'
+  })).max(16).default([]),
+  fileTypes: z.array(z.string().min(1).max(64)).max(16).default([])
 }).default({ commands: [], promptPatterns: [], fileTypes: [] })
 
 export const SkillManifest = z.object({
-  id: z.string().min(1).optional(),
-  name: z.string().min(1),
-  description: z.string().optional(),
-  version: z.string().default('0.0.0'),
-  entry: z.string().min(1).default('SKILL.md'),
+  id: z.string().min(1).max(128).optional(),
+  name: z.string().min(1).max(256),
+  description: z.string().max(4_000).optional(),
+  version: z.string().max(128).default('0.0.0'),
+  entry: z.string().min(1).max(1_024).default('SKILL.md'),
   triggers: SkillTriggerManifest,
-  allowedTools: z.array(z.string().min(1)).default([]),
-  assets: z.array(z.string().min(1)).default([]),
+  allowedTools: z.array(z.string().min(1).max(128)).max(64).default([]),
+  assets: z.array(z.string().min(1).max(1_024)).max(32).default([]),
   priority: z.number().int().default(0)
 }).strict()
 export type SkillManifest = z.infer<typeof SkillManifest>
@@ -97,6 +107,8 @@ export type SkillRuntimeOptions = {
   catalogBudgetBytes?: number
 }
 
+const MAX_WORKSPACE_SKILL_CACHES = 128
+
 export class SkillRuntime {
   private skills: LoadedSkill[]
   private validationErrors: Array<{ root: string; message: string }>
@@ -107,6 +119,12 @@ export class SkillRuntime {
   }>()
   private lastActivations: SkillActivation[] = []
   private lastInjection: SkillRuntimeDiagnostics['lastInjection']
+  /**
+   * Explicit `load_skill` activations live only for one thread/turn. The map is
+   * process-local and bounded so an abnormal turn that never reaches cleanup
+   * cannot grow runtime state without limit.
+   */
+  private readonly manualSkillIdsByTurn = new Map<string, Set<string>>()
 
   private constructor(
     private config: SkillsCapabilityConfig,
@@ -144,6 +162,7 @@ export class SkillRuntime {
     this.skills = next.skills
     this.validationErrors = next.validationErrors
     this.workspaceSkillCache.clear()
+    this.manualSkillIdsByTurn.clear()
     this.lastActivations = []
     this.lastInjection = undefined
   }
@@ -155,12 +174,15 @@ export class SkillRuntime {
     this.skills = loaded.skills
     this.validationErrors = loaded.validationErrors
     this.workspaceSkillCache.clear()
+    this.manualSkillIdsByTurn.clear()
   }
 
   async resolveTurn(input: {
     prompt: string
     workspace: string
     filePaths?: readonly string[]
+    threadId?: string
+    turnId?: string
     /** Per-call skill-id deny-list (e.g. a subagent profile's blockedSkills). Hidden from catalog + auto-activation. */
     blockedSkillIds?: readonly string[]
   }): Promise<SkillTurnResolution> {
@@ -168,6 +190,20 @@ export class SkillRuntime {
     const skills = filterBlockedSkills(await this.skillsForWorkspace(input.workspace), input.blockedSkillIds)
     const catalogInstruction = renderCatalogInstruction(skills, this.options.catalogBudgetBytes)
     const matches = this.matchSkills(input, skills)
+    const matchedIds = new Set(matches.map((match) => match.skill.id))
+    for (const skillId of this.manualSkillIds(input.threadId, input.turnId)) {
+      if (matchedIds.has(skillId)) continue
+      const skill = skills.find((candidate) => candidate.id === skillId)
+      if (!skill) continue
+      matches.push({
+        skill,
+        skillId: skill.id,
+        reason: 'load_skill',
+        score: 1_100 + skill.priority
+      })
+      matchedIds.add(skillId)
+    }
+    matches.sort((a, b) => b.score - a.score || a.skill.id.localeCompare(b.skill.id))
     const active = matches.slice(0, this.options.activeLimit)
     const injection = buildInjection(active, this.options.instructionBudgetBytes)
     const catalogBytes = catalogInstruction ? Buffer.byteLength(catalogInstruction, 'utf8') : 0
@@ -209,7 +245,12 @@ export class SkillRuntime {
    * Returns an error payload (never throws) so the tool can surface it to the
    * model as a normal tool result.
    */
-  async loadSkillById(skillId: string, workspace = '', blockedIds?: readonly string[]): Promise<{
+  async loadSkillById(
+    skillId: string,
+    workspace = '',
+    blockedIds?: readonly string[],
+    turn?: { threadId: string; turnId: string }
+  ): Promise<{
     skillId: string
     name: string
     instruction: string
@@ -236,6 +277,9 @@ export class SkillRuntime {
       instruction = `${header}\n\n${truncateToBytes(skill.entry, room)}`
       truncated = true
     }
+    if (turn?.threadId.trim() && turn.turnId.trim()) {
+      this.rememberManualActivation(turn.threadId, turn.turnId, skill.id)
+    }
     return {
       skillId: skill.id,
       name: skill.name,
@@ -243,6 +287,10 @@ export class SkillRuntime {
       allowedTools: [...skill.allowedTools],
       truncated
     }
+  }
+
+  clearTurnActivation(threadId: string, turnId: string): void {
+    this.manualSkillIdsByTurn.delete(skillTurnKey(threadId, turnId))
   }
 
   diagnostics(): SkillRuntimeDiagnostics {
@@ -278,6 +326,17 @@ export class SkillRuntime {
     return (await this.skillsForWorkspace(workspace)).length
   }
 
+  async availableSkillIdsForWorkspace(
+    workspace: string,
+    blockedSkillIds?: readonly string[]
+  ): Promise<string[]> {
+    if (!this.config.enabled) return []
+    return filterBlockedSkills(
+      await this.skillsForWorkspace(workspace),
+      blockedSkillIds
+    ).map((skill) => skill.id)
+  }
+
   private matchSkills(input: {
     prompt: string
     workspace: string
@@ -309,6 +368,23 @@ export class SkillRuntime {
       }
     }
     return matches.sort((a, b) => b.score - a.score || a.skill.id.localeCompare(b.skill.id))
+  }
+
+  private manualSkillIds(threadId: string | undefined, turnId: string | undefined): readonly string[] {
+    if (!threadId?.trim() || !turnId?.trim()) return []
+    return [...(this.manualSkillIdsByTurn.get(skillTurnKey(threadId, turnId)) ?? [])]
+  }
+
+  private rememberManualActivation(threadId: string, turnId: string, skillId: string): void {
+    const key = skillTurnKey(threadId, turnId)
+    const active = new Set(this.manualSkillIdsByTurn.get(key) ?? [])
+    active.add(skillId)
+    this.manualSkillIdsByTurn.delete(key)
+    this.manualSkillIdsByTurn.set(key, active)
+    if (this.manualSkillIdsByTurn.size > MAX_MANUAL_SKILL_TURN_ACTIVATIONS) {
+      const oldest = this.manualSkillIdsByTurn.keys().next().value
+      if (oldest !== undefined) this.manualSkillIdsByTurn.delete(oldest)
+    }
   }
 
   private async skillsForWorkspace(workspace: string): Promise<LoadedSkill[]> {
@@ -344,12 +420,19 @@ export class SkillRuntime {
     const rootsKey = roots.join('\0')
     const cached = this.workspaceSkillCache.get(workspaceRoot)
     if (cached?.rootsKey === rootsKey) {
+      this.workspaceSkillCache.delete(workspaceRoot)
+      this.workspaceSkillCache.set(workspaceRoot, cached)
       return { skills: cached.skills, validationErrors: cached.validationErrors }
     }
     const loaded = roots.length > 0
-      ? await discoverSkills({ ...this.config, roots })
+      ? await discoverSkills({ ...this.config, roots }, { workspaceRoot })
       : { skills: [], validationErrors: [] }
+    this.workspaceSkillCache.delete(workspaceRoot)
     this.workspaceSkillCache.set(workspaceRoot, { rootsKey, ...loaded })
+    if (this.workspaceSkillCache.size > MAX_WORKSPACE_SKILL_CACHES) {
+      const oldest = this.workspaceSkillCache.keys().next().value
+      if (oldest !== undefined) this.workspaceSkillCache.delete(oldest)
+    }
     return loaded
   }
 }
@@ -393,10 +476,14 @@ function normalizeRoot(path: string | undefined): string {
   return trimmed ? resolve(trimmed) : ''
 }
 
+function skillTurnKey(threadId: string, turnId: string): string {
+  return `${threadId}\u0000${turnId}`
+}
+
 function isSameOrInside(parent: string, target: string): boolean {
   if (!parent || !target) return false
   const rel = relative(parent, target)
-  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel))
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
 function skillVisibleForWorkspace(
@@ -418,14 +505,23 @@ function looksLikeWorkspaceSkillRoot(root: string): boolean {
   const parts = root.split(/[\\/]+/)
   if (parts.length < 2) return false
   const tail2 = parts.slice(-2).join('/')
-  return tail2 === '.agents/skills' || tail2 === '.claude/skills' || tail2 === '.codex/skills'
+  return tail2 === '.agents/skills' ||
+    tail2 === '.claude/skills' ||
+    tail2 === '.codex/skills' ||
+    tail2 === '.kun/skills'
 }
 
 async function existingWorkspaceSkillRoots(workspaceRoot: string): Promise<string[]> {
+  const resolvedWorkspace = await realpath(workspaceRoot).catch(() => '')
+  if (!resolvedWorkspace) return []
   const roots: string[] = []
   for (const relativeDir of WORKSPACE_SKILL_RELATIVE_DIRS) {
     const root = resolve(workspaceRoot, ...relativeDir.split('/'))
-    if (await exists(root)) roots.push(root)
+    const resolvedRoot = await realpath(root).catch(() => '')
+    // Workspace discovery is untrusted repository content. A symlinked
+    // .claude/.kun skill root must not import a package from elsewhere on the
+    // user's disk simply because it sits under a familiar lexical path.
+    if (resolvedRoot && isSameOrInside(resolvedWorkspace, resolvedRoot)) roots.push(root)
   }
   return roots
 }
@@ -445,7 +541,10 @@ function filterBlockedSkills(skills: LoadedSkill[], blockedIds: readonly string[
   return skills.filter((skill) => !blocked.has(skill.id))
 }
 
-async function discoverSkills(config: SkillsCapabilityConfig): Promise<{
+async function discoverSkills(
+  config: SkillsCapabilityConfig,
+  options: { workspaceRoot?: string } = {}
+): Promise<{
   skills: LoadedSkill[]
   validationErrors: Array<{ root: string; message: string }>
 }> {
@@ -460,7 +559,7 @@ async function discoverSkills(config: SkillsCapabilityConfig): Promise<{
   // Scan project roots (priority over global — loaded first)
   for (const rawRoot of config.roots) {
     const root = resolve(rawRoot)
-    const candidates = await packageCandidates(root).catch((error) => {
+    const candidates = await packageCandidates(root, options.workspaceRoot).catch((error) => {
       validationErrors.push({ root, message: errorMessage(error) })
       return []
     })
@@ -499,15 +598,24 @@ async function discoverSkills(config: SkillsCapabilityConfig): Promise<{
   return { skills: [...unique.values()].sort((a, b) => a.id.localeCompare(b.id)), validationErrors }
 }
 
-async function packageCandidates(root: string): Promise<string[]> {
+async function packageCandidates(root: string, workspaceRoot?: string): Promise<string[]> {
+  const resolvedRoot = await realpath(root)
+  const resolvedWorkspace = workspaceRoot ? await realpath(workspaceRoot) : ''
+  if (resolvedWorkspace && !isSameOrInside(resolvedWorkspace, resolvedRoot)) return []
   const candidates = new Set<string>()
   if (await exists(join(root, 'skill.json')) || await exists(join(root, 'SKILL.md'))) {
     candidates.add(root)
   }
   const entries = await readdir(root, { withFileTypes: true })
-  for (const entry of entries) {
+  for (const entry of entries
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .slice(0, MAX_SKILL_PACKAGES_PER_ROOT)) {
     const dir = join(root, entry.name)
     if (!(await entryIsDirectory(entry, dir))) continue
+    if (resolvedWorkspace) {
+      const resolvedDir = await realpath(dir).catch(() => '')
+      if (!resolvedDir || !isSameOrInside(resolvedWorkspace, resolvedDir)) continue
+    }
     if (await exists(join(dir, 'skill.json')) || await exists(join(dir, 'SKILL.md'))) {
       candidates.add(dir)
     }
@@ -536,9 +644,12 @@ async function entryIsDirectory(entry: Dirent, path: string): Promise<boolean> {
 async function loadSkillPackage(root: string, allowLegacy: boolean, source: 'project' | 'global'): Promise<LoadedSkill | null> {
   const manifestPath = join(root, 'skill.json')
   if (await exists(manifestPath)) {
-    const manifest = SkillManifest.parse(JSON.parse(await readFile(manifestPath, 'utf8')))
-    const entryPath = resolve(root, manifest.entry)
-    const entry = await readFile(entryPath, 'utf8')
+    const packageRoot = await realpath(root)
+    const safeManifestPath = await resolveSkillPackageFile(packageRoot, 'skill.json')
+    const manifest = SkillManifest.parse(JSON.parse(await readSkillText(safeManifestPath, MAX_SKILL_MANIFEST_BYTES, 'skill manifest')))
+    const entryPath = await resolveSkillPackageFile(packageRoot, manifest.entry)
+    const entry = await readSkillText(entryPath, MAX_SKILL_ENTRY_BYTES, 'skill entry')
+    const assets = await Promise.all(manifest.assets.map((asset) => resolveSkillPackageFile(packageRoot, asset)))
     return {
       id: slug(manifest.id ?? manifest.name),
       name: manifest.name,
@@ -549,7 +660,7 @@ async function loadSkillPackage(root: string, allowLegacy: boolean, source: 'pro
       entry,
       triggers: manifest.triggers,
       allowedTools: manifest.allowedTools,
-      assets: manifest.assets.map((asset) => resolve(root, asset)),
+      assets,
       priority: manifest.priority,
       legacy: false,
       source,
@@ -558,7 +669,9 @@ async function loadSkillPackage(root: string, allowLegacy: boolean, source: 'pro
   if (!allowLegacy) return null
   const legacyPath = join(root, 'SKILL.md')
   if (!await exists(legacyPath)) return null
-  const entry = await readFile(legacyPath, 'utf8')
+  const packageRoot = await realpath(root)
+  const safeLegacyPath = await resolveSkillPackageFile(packageRoot, 'SKILL.md')
+  const entry = await readSkillText(safeLegacyPath, MAX_SKILL_ENTRY_BYTES, 'legacy skill entry')
   const frontmatter = readFrontmatter(entry)
   const folderName = basename(root)
   const name = frontmatter.name || folderName
@@ -568,7 +681,7 @@ async function loadSkillPackage(root: string, allowLegacy: boolean, source: 'pro
     description: frontmatter.description,
     version: 'legacy',
     root,
-    entryPath: legacyPath,
+    entryPath: safeLegacyPath,
     entry,
     triggers: { commands: [], promptPatterns: [], fileTypes: [] },
     allowedTools: [],
@@ -576,6 +689,40 @@ async function loadSkillPackage(root: string, allowLegacy: boolean, source: 'pro
     priority: 0,
     legacy: true,
     source,
+  }
+}
+
+async function resolveSkillPackageFile(packageRoot: string, value: string): Promise<string> {
+  if (isAbsolute(value)) throw new Error(`skill package path must be relative: ${value}`)
+  const lexical = resolve(packageRoot, value)
+  if (!isSameOrInside(packageRoot, lexical)) {
+    throw new Error(`skill package path escapes its root: ${value}`)
+  }
+  const resolved = await realpath(lexical)
+  if (!isSameOrInside(packageRoot, resolved)) {
+    throw new Error(`skill package path resolves outside its root: ${value}`)
+  }
+  return resolved
+}
+
+async function readSkillText(path: string, maxBytes: number, label: string): Promise<string> {
+  let handle: FileHandle | undefined
+  try {
+    handle = await open(path, constants.O_RDONLY)
+    const fileStat = await handle.stat()
+    if (!fileStat.isFile()) throw new Error(`${label} is not a regular file`)
+    if (fileStat.size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} byte limit`)
+    const buffer = Buffer.allocUnsafe(maxBytes + 1)
+    let offset = 0
+    while (offset < buffer.byteLength) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.byteLength - offset, offset)
+      if (bytesRead === 0) break
+      offset += bytesRead
+    }
+    if (offset > maxBytes) throw new Error(`${label} exceeds ${maxBytes} byte limit`)
+    return buffer.subarray(0, offset).toString('utf8')
+  } finally {
+    if (handle) await handle.close().catch(() => undefined)
   }
 }
 
@@ -657,11 +804,13 @@ function explicitSkillMention(skill: LoadedSkill, prompt: string): string | unde
 }
 
 function safePatternMatches(pattern: string, prompt: string): boolean {
-  try {
-    return new RegExp(pattern, 'i').test(prompt)
-  } catch {
-    return false
-  }
+  return prompt.toLocaleLowerCase().includes(pattern.toLocaleLowerCase())
+}
+
+function isSafePromptPattern(pattern: string): boolean {
+  // Keep matching linear and predictable. File types and explicit commands
+  // cover the structured cases that previously tempted manifests to use regex.
+  return !/[\\^$.*+?()[\]{}|]/.test(pattern)
 }
 
 function fileTypesFrom(paths: readonly string[], prompt: string): Set<string> {

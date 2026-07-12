@@ -8,8 +8,9 @@
  * The id is still included so the AI can target shapes precisely in ShapeOps.
  */
 import {
+  embeddedArtifactOf,
   fillColor,
-  isHtmlFrame,
+  isArtifactFrame,
   isImplicitImageSlot,
   shapeGeometry
 } from './canvas-types'
@@ -42,6 +43,8 @@ export type CanvasSnapshotShape = {
   rotation?: number
   parentName: string | null
   textContent?: string
+  embeddedArtifact?: { id: string; kind: 'html' | 'svg' }
+  /** @deprecated Legacy HTML-only artifact reference. */
   htmlArtifactId?: string
   /** True when this shape is in the user's current selection (what "this"/"here" refers to). */
   selected?: boolean
@@ -197,7 +200,7 @@ export type CanvasSnapshot = {
   codeBindings?: CanvasCodeBindingSnapshot
   /**
    * Whiteboard placement guide for screen creation: the current viewport, whole
-   * board bounds, occupied HTML frames and safe suggested slots for new screens.
+   * board bounds, occupied artifact frames and safe suggested slots for new screens.
    */
   placement?: CanvasPlacementGuide
   /** When `maxShapes` truncated the result, how many shapes were dropped. */
@@ -240,6 +243,8 @@ export type CanvasPlacementRect = {
 export type CanvasPlacementFrame = CanvasPlacementRect & {
   id: string
   name: string
+  artifactId?: string
+  artifactKind?: 'html' | 'svg'
   htmlArtifactId?: string
 }
 
@@ -339,6 +344,7 @@ export function snapshotCanvas(
         ...(s.rotation ? { rotation: round(s.rotation) } : {}),
         parentName,
         ...(s.textContent ? { textContent: s.textContent.slice(0, 120) } : {}),
+        ...(s.embeddedArtifact ? { embeddedArtifact: { ...s.embeddedArtifact } } : {}),
         ...(s.htmlArtifactId ? { htmlArtifactId: s.htmlArtifactId } : {}),
         ...(s.runningApp
           ? {
@@ -465,13 +471,17 @@ function buildPlacementGuide(
   defaultScreenSize: { width: number; height: number }
 ): CanvasPlacementGuide {
   const occupiedFrames = Object.values(doc.objects)
-    .filter((shape): shape is CanvasShape => Boolean(shape) && shape.visible !== false && isHtmlFrame(shape))
-    .map((shape) => ({
-      id: shape.id,
-      name: shape.name,
-      ...(shape.htmlArtifactId ? { htmlArtifactId: shape.htmlArtifactId } : {}),
-      ...compactRect(shapeGeometry(shape).selrect)
-    }))
+    .filter((shape): shape is CanvasShape => Boolean(shape) && shape.visible !== false && isArtifactFrame(shape))
+    .map((shape) => {
+      const reference = embeddedArtifactOf(shape)
+      return {
+        id: shape.id,
+        name: shape.name,
+        ...(reference ? { artifactId: reference.id, artifactKind: reference.kind } : {}),
+        ...(reference?.kind === 'html' ? { htmlArtifactId: reference.id } : {}),
+        ...compactRect(shapeGeometry(shape).selrect)
+      }
+    })
     .sort((a, b) => a.y - b.y || a.x - b.x || a.name.localeCompare(b.name))
   const occupiedRects = occupiedFrames.map(expandPlacementRect)
   const recommendedSlots: CanvasPlacementSlot[] = []

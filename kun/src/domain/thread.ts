@@ -4,7 +4,11 @@ import type {
   ThreadGoal,
   ThreadTodoList,
   ThreadRelation,
-  ThreadStatus
+  ThreadStatus,
+  ExtensionAgentProfileSnapshot,
+  ExtensionRunBudget,
+  ExtensionThreadVisibility,
+  ExtensionToolCatalogEpoch
 } from '../contracts/threads.js'
 import {
   DEFAULT_APPROVAL_POLICY,
@@ -27,6 +31,13 @@ export function createThreadRecord(input: {
   workspace: string
   model: string
   providerId?: string
+  ownerExtensionId?: string
+  ownerExtensionVersion?: string
+  accountId?: string
+  extensionVisibility?: ExtensionThreadVisibility
+  extensionProfile?: ExtensionAgentProfileSnapshot
+  extensionBudget?: ExtensionRunBudget
+  toolCatalogEpoch?: ExtensionToolCatalogEpoch
   agentId?: string
   systemPrompt?: string
   mode?: ThreadMode
@@ -55,6 +66,13 @@ export function createThreadRecord(input: {
     workspace: input.workspace,
     model: input.model,
     ...(input.providerId ? { providerId: input.providerId } : {}),
+    ...(input.ownerExtensionId ? { ownerExtensionId: input.ownerExtensionId } : {}),
+    ...(input.ownerExtensionVersion ? { ownerExtensionVersion: input.ownerExtensionVersion } : {}),
+    ...(input.accountId ? { accountId: input.accountId } : {}),
+    ...(input.extensionVisibility ? { extensionVisibility: input.extensionVisibility } : {}),
+    ...(input.extensionProfile ? { extensionProfile: input.extensionProfile } : {}),
+    ...(input.extensionBudget ? { extensionBudget: input.extensionBudget } : {}),
+    ...(input.toolCatalogEpoch ? { toolCatalogEpoch: input.toolCatalogEpoch } : {}),
     ...(input.agentId ? { agentId: input.agentId } : {}),
     ...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
     mode: input.mode ?? 'agent',
@@ -88,6 +106,8 @@ export function toThreadSummary(
 ): Pick<
   ThreadEntity,
   'id' | 'title' | 'titleAuto' | 'summary' | 'workspace' | 'model' | 'providerId' | 'agentId' | 'systemPrompt' | 'mode' | 'status' | 'approvalPolicy' | 'sandboxMode' | 'pinned' | 'createdAt' | 'updatedAt'
+  | 'ownerExtensionId' | 'ownerExtensionVersion' | 'accountId' | 'extensionVisibility'
+  | 'extensionProfile' | 'extensionBudget' | 'toolCatalogEpoch'
   | 'costBudgetUsd' | 'costBudgetWarningSent'
   | 'relation' | 'parentThreadId'
   | 'forkedFromThreadId' | 'forkedFromTitle' | 'forkedAt' | 'forkedFromMessageCount' | 'forkedFromTurnCount'
@@ -101,6 +121,13 @@ export function toThreadSummary(
     workspace: thread.workspace,
     model: thread.model,
     ...(thread.providerId ? { providerId: thread.providerId } : {}),
+    ...(thread.ownerExtensionId ? { ownerExtensionId: thread.ownerExtensionId } : {}),
+    ...(thread.ownerExtensionVersion ? { ownerExtensionVersion: thread.ownerExtensionVersion } : {}),
+    ...(thread.accountId ? { accountId: thread.accountId } : {}),
+    ...(thread.extensionVisibility ? { extensionVisibility: thread.extensionVisibility } : {}),
+    ...(thread.extensionProfile ? { extensionProfile: thread.extensionProfile } : {}),
+    ...(thread.extensionBudget ? { extensionBudget: thread.extensionBudget } : {}),
+    ...(thread.toolCatalogEpoch ? { toolCatalogEpoch: thread.toolCatalogEpoch } : {}),
     ...(thread.agentId ? { agentId: thread.agentId } : {}),
     ...(thread.systemPrompt ? { systemPrompt: thread.systemPrompt } : {}),
     mode: thread.mode,

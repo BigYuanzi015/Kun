@@ -1,4 +1,5 @@
 import { buildStitchDesignMarkdown, STITCH_DESIGN_MD_PATH } from '../design-md-compat'
+import { PROJECT_DESIGN_MD_PATH } from '../design-md/design-md-paths'
 import { buildDesignExportPackage } from './export-package'
 import {
   invalidToolResult,
@@ -33,7 +34,7 @@ export function executeDesignExportInvocation(invocation: DesignToolInvocation):
   const state = readDesignToolState()
   const title = maybeString(record?.title) ?? state.document?.title ?? 'Kun design project'
   const updatedAt = new Date().toISOString()
-  const designSystemMdPath = '.kun-design/DESIGN_SYSTEM.md'
+  const designSystemPath = PROJECT_DESIGN_MD_PATH
   const projectBriefPath = maybeString(record?.projectBriefPath)
   const markdown = buildStitchDesignMarkdown({
     title,
@@ -42,14 +43,14 @@ export function executeDesignExportInvocation(invocation: DesignToolInvocation):
     designSystem: state.designSystem,
     artifacts: state.artifacts,
     updatedAt,
-    designSystemMdPath,
+    designSystemMdPath: designSystemPath,
     projectBriefPath
   })
   const pkg = buildDesignExportPackage(state, {
     title,
     brief: maybeString(record?.brief),
     updatedAt,
-    designSystemMdPath,
+    designSystemPath,
     ...(projectBriefPath ? { projectBriefPath } : {})
   })
   const output =

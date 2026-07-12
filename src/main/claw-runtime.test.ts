@@ -253,7 +253,11 @@ describe('ClawRuntime', () => {
       ) => Promise<string | null>
     }).handleIncomingImCommand(settings, { text: '/list-skills' })
 
-    expect(runtimeRequest).toHaveBeenCalledWith(settings, '/v1/skills', { method: 'GET' })
+    expect(runtimeRequest).toHaveBeenCalledWith(
+      settings,
+      '/v1/skills',
+      expect.objectContaining({ method: 'GET', signal: expect.any(AbortSignal) })
+    )
     expect(reply).toContain('documents')
     expect(reply).toContain('Documents')
   })
@@ -299,7 +303,11 @@ describe('ClawRuntime', () => {
       ) => Promise<string | null>
     }).handleIncomingImCommand(settings, { text: '/list-mcp' })
 
-    expect(runtimeRequest).toHaveBeenCalledWith(settings, '/v1/runtime/tools', { method: 'GET' })
+    expect(runtimeRequest).toHaveBeenCalledWith(
+      settings,
+      '/v1/runtime/tools',
+      expect.objectContaining({ method: 'GET', signal: expect.any(AbortSignal) })
+    )
     expect(reply).toContain('github')
     expect(reply).toContain('12 tools')
     expect(reply).toContain('docs')
@@ -345,7 +353,11 @@ describe('ClawRuntime', () => {
       conversation: settings.claw.channels[0].conversations[0]
     })
 
-    expect(runtimeRequest).toHaveBeenCalledWith(settings, '/v1/threads/thr_workspace', { method: 'GET' })
+    expect(runtimeRequest).toHaveBeenCalledWith(
+      settings,
+      '/v1/threads/thr_workspace',
+      expect.objectContaining({ method: 'GET', signal: expect.any(AbortSignal) })
+    )
     expect(reply).toContain('/tmp/workspace/conversations/oc_chat_a')
   })
 
@@ -472,7 +484,7 @@ describe('ClawRuntime', () => {
     expect(runtimeRequest).toHaveBeenCalledWith(
       settings,
       '/v1/usage?group_by=thread&thread_id=thr_usage',
-      { method: 'GET' }
+      expect.objectContaining({ method: 'GET', signal: expect.any(AbortSignal) })
     )
     expect(reply).toContain('minimax')
     expect(reply).toContain('MiniMax-M3')
@@ -724,10 +736,11 @@ describe('ClawRuntime', () => {
     expect(runtimeRequest).toHaveBeenCalledWith(
       settings,
       '/v1/threads/thr_goal/goal',
-      {
+      expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ objective: 'Finish document B' })
-      }
+        body: JSON.stringify({ objective: 'Finish document B' }),
+        signal: expect.any(AbortSignal)
+      })
     )
   })
 
@@ -788,10 +801,11 @@ describe('ClawRuntime', () => {
     expect(runtimeRequest).toHaveBeenCalledWith(
       settings,
       '/v1/threads/thr_stop/turns/turn_running/interrupt',
-      {
+      expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ discard: false })
-      }
+        body: JSON.stringify({ discard: false }),
+        signal: expect.any(AbortSignal)
+      })
     )
   })
 
@@ -900,7 +914,11 @@ describe('ClawRuntime', () => {
       conversation: settings.claw.channels[0].conversations[0]
     })
 
-    expect(runtimeRequest).toHaveBeenCalledWith(settings, '/v1/threads?limit=3', { method: 'GET' })
+    expect(runtimeRequest).toHaveBeenCalledWith(
+      settings,
+      '/v1/threads?limit=3',
+      expect.objectContaining({ method: 'GET', signal: expect.any(AbortSignal) })
+    )
     expect(reply).toContain('Desktop chat')
     expect(reply).toContain('Document B')
     expect(reply).toContain('Document A')
@@ -1030,7 +1048,11 @@ describe('ClawRuntime', () => {
       conversation: settings.claw.channels[0].conversations[0]
     })
 
-    expect(runtimeRequest).toHaveBeenCalledWith(settings, '/v1/threads?limit=5', { method: 'GET' })
+    expect(runtimeRequest).toHaveBeenCalledWith(
+      settings,
+      '/v1/threads?limit=5',
+      expect.objectContaining({ method: 'GET', signal: expect.any(AbortSignal) })
+    )
     expect(reply).toContain('thr_four')
     expect(current().claw.channels[0].threadId).toBe('thr_four')
     expect(current().claw.channels[0].conversations[0].localThreadId).toBe('thr_four')
@@ -1791,60 +1813,6 @@ describe('ClawRuntime', () => {
     )
   })
 
-  it('falls back to a plain Feishu chat message when replying to an inbound message fails', async () => {
-    const settings = buildSettings()
-    const logError = vi.fn()
-    const send = vi.fn()
-      .mockRejectedValueOnce(new Error('reply permission denied'))
-      .mockResolvedValueOnce({ messageId: 'om_fallback' })
-    const runtime = createClawRuntime({
-      store: { load: vi.fn(async () => settings), patch: vi.fn(async () => settings) } as never,
-      runtimeRequest: vi.fn() as never,
-      logError
-    })
-
-    const result = await (runtime as unknown as {
-      sendFeishuMessage: (
-        bridge: { send: typeof send },
-        to: string,
-        input: { markdown: string },
-        options: { replyTo?: string; replyInThread?: boolean },
-        context: Record<string, unknown>
-      ) => Promise<{ messageId: string }>
-    }).sendFeishuMessage(
-      { send },
-      'oc_chat_a',
-      { markdown: 'agent reply' },
-      { replyTo: 'om_inbound', replyInThread: true },
-      { purpose: 'agent-reply', channelId: 'channel_1' }
-    )
-
-    expect(result).toEqual({ messageId: 'om_fallback' })
-    expect(send).toHaveBeenNthCalledWith(
-      1,
-      'oc_chat_a',
-      { markdown: 'agent reply' },
-      { replyTo: 'om_inbound', replyInThread: true }
-    )
-    expect(send).toHaveBeenNthCalledWith(
-      2,
-      'oc_chat_a',
-      { markdown: 'agent reply' },
-      { replyTo: undefined, replyInThread: undefined }
-    )
-    expect(logError).toHaveBeenCalledWith(
-      'claw-feishu',
-      'Failed to send Feishu / Lark reply; falling back to plain chat message.',
-      expect.objectContaining({
-        channelId: 'channel_1',
-        message: 'reply permission denied',
-        purpose: 'agent-reply',
-        replyTo: 'om_inbound',
-        to: 'oc_chat_a'
-      })
-    )
-  })
-
   it('handles Feishu /new locally by clearing the mapped IM thread', async () => {
     const settings = buildSettings()
     settings.claw.im.enabled = true
@@ -2532,8 +2500,8 @@ describe('ClawRuntime', () => {
     expect(turnCall).toBeDefined()
     expect(JSON.parse(String(turnCall?.[2]?.body ?? '{}'))).toMatchObject({
       disableUserInput: true,
-      approvalPolicy: 'auto',
-      sandboxMode: 'danger-full-access'
+      approvalPolicy: settings.agents.kun.approvalPolicy,
+      sandboxMode: settings.agents.kun.sandboxMode
     })
   })
 
@@ -3101,6 +3069,48 @@ describe('ClawRuntime', () => {
 
     await internals.syncWeixinConnectWelcomes(current())
     expect(sendWeixinBridgeMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for an eager WeChat welcome and prevents settings writes after stop', async () => {
+    const settings = buildSettings()
+    settings.claw.im.enabled = true
+    settings.claw.im.port = 0
+    settings.claw.channels = [buildChannel({
+      provider: 'weixin',
+      id: 'channel_weixin_stop',
+      welcomeSentAt: '',
+      platformCredential: {
+        kind: 'weixin',
+        accountId: 'acc_stop',
+        sessionKey: 'sess_stop',
+        createdAt: '2026-07-11T00:00:00.000Z'
+      }
+    })]
+    let resolveOwner!: (owner: string) => void
+    const resolveWeixinAccountUserId = vi.fn(() => new Promise<string>((resolve) => {
+      resolveOwner = resolve
+    }))
+    const patch = vi.fn(async () => settings)
+    const sendWeixinBridgeMessage = vi.fn(async () => ({ ok: true as const, messageId: 'late_message' }))
+    const runtime = createClawRuntime({
+      store: { load: vi.fn(async () => settings), patch } as never,
+      runtimeRequest: vi.fn() as never,
+      logError: vi.fn(),
+      sendWeixinBridgeMessage,
+      resolveWeixinAccountUserId
+    })
+
+    runtime.sync(settings)
+    await vi.waitFor(() => expect(resolveWeixinAccountUserId).toHaveBeenCalledTimes(1))
+    let stopped = false
+    const stopping = runtime.stop().then(() => { stopped = true })
+    await Promise.resolve()
+    expect(stopped).toBe(false)
+
+    resolveOwner('owner_stop')
+    await stopping
+    expect(sendWeixinBridgeMessage).not.toHaveBeenCalled()
+    expect(patch).not.toHaveBeenCalled()
   })
 
   it('waits for the current WeChat turn to complete before returning the final reply', async () => {
@@ -3898,6 +3908,7 @@ describe('ClawRuntime', () => {
         baseUrl: 'https://images.example.test/v1',
         apiKey: 'sk-image',
         model: 'test-image-model',
+        defaultResolution: '1K',
         defaultSize: '1024x1024',
         quality: 'auto',
         timeoutMs: 180000
@@ -4258,6 +4269,7 @@ describe('ClawRuntime', () => {
         baseUrl: 'https://images.example.test/v1',
         apiKey: 'sk-image',
         model: 'test-image-model',
+        defaultResolution: '1K',
         defaultSize: '1024x1024',
         quality: 'auto',
         timeoutMs: 180000
@@ -4642,6 +4654,7 @@ describe('ClawRuntime', () => {
         baseUrl: 'https://images.example.test/v1',
         apiKey: 'sk-image',
         model: 'test-image-model',
+        defaultResolution: '1K',
         defaultSize: '1024x1024',
         quality: 'auto',
         timeoutMs: 180000
@@ -5106,49 +5119,6 @@ describe('ClawRuntime', () => {
     expect(textFormCall).toBeUndefined()
   })
 
-  it('falls back to markdown form when retrying without replyTo', async () => {
-    const settings = buildSettings()
-    const logError = vi.fn()
-    const send = vi.fn()
-      .mockRejectedValueOnce(new Error('reply permission denied'))
-      .mockResolvedValueOnce({ messageId: 'om_fallback' })
-    const runtime = createClawRuntime({
-      store: { load: vi.fn(async () => settings), patch: vi.fn(async () => settings) } as never,
-      runtimeRequest: vi.fn() as never,
-      logError
-    })
-
-    const result = await (runtime as unknown as {
-      sendFeishuMessage: (
-        bridge: { send: typeof send },
-        to: string,
-        input: { markdown: string },
-        options: { replyTo?: string; replyInThread?: boolean },
-        context: Record<string, unknown>
-      ) => Promise<{ messageId: string }>
-    }).sendFeishuMessage(
-      { send },
-      'oc_chat_a',
-      { markdown: '**hello**' },
-      { replyTo: 'om_inbound', replyInThread: true },
-      { purpose: 'agent-reply', channelId: 'channel_1' }
-    )
-
-    expect(result).toEqual({ messageId: 'om_fallback' })
-    expect(send).toHaveBeenNthCalledWith(
-      1,
-      'oc_chat_a',
-      { markdown: '**hello**' },
-      { replyTo: 'om_inbound', replyInThread: true }
-    )
-    expect(send).toHaveBeenNthCalledWith(
-      2,
-      'oc_chat_a',
-      { markdown: '**hello**' },
-      { replyTo: undefined, replyInThread: undefined }
-    )
-  })
-
   it('continues agent flow when pending reaction add fails', async () => {
     const settings = buildSettings()
     settings.claw.im.enabled = true
@@ -5315,6 +5285,7 @@ describe('ClawRuntime handleFeishuMessage streaming', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch
+    vi.useRealTimers()
   })
 
   // Build a fake SSE Response whose body stays open and lets the test
@@ -5430,6 +5401,40 @@ describe('ClawRuntime handleFeishuMessage streaming', () => {
     }
     return vi.fn(request) as unknown as RuntimeRequestFn
   }
+
+  it('cancels pending assistant-result polling when the Claw runtime stops', async () => {
+    const settings = buildSettings()
+    const runtimeRequest = vi.fn(async () => {
+      throw new Error('polling should have been canceled before the request')
+    })
+    const runtime = createClawRuntime({
+      store: {
+        load: vi.fn(async () => settings),
+        patch: vi.fn(async () => settings)
+      } as never,
+      runtimeRequest: runtimeRequest as never,
+      logError: () => undefined
+    })
+
+    const pending = (runtime as unknown as {
+      waitForAssistantResult: (
+        settings: AppSettingsV1,
+        threadId: string,
+        turnId: string,
+        timeoutMs: number
+      ) => Promise<{ status: string; error?: string }>
+    }).waitForAssistantResult(settings, 'thr_1', 'turn_1', 60_000)
+
+    await runtime.stop()
+
+    await expect(pending).resolves.toEqual({
+      status: 'aborted',
+      text: '',
+      files: [],
+      error: 'Claw runtime stopped.'
+    })
+    expect(runtimeRequest).not.toHaveBeenCalled()
+  })
 
   it('routes through runStreamingReply when channel.feishuStream=true', async () => {
     // Open the SSE event stream; the test will push events as the
@@ -5574,6 +5579,72 @@ describe('ClawRuntime handleFeishuMessage streaming', () => {
       { markdown: 'Sorry, I could not finish streaming the response.' },
       { replyTo: 'om_inbound_fb', replyInThread: false }
     ])
+  })
+
+  it('aborts a stalled streaming reply at the configured response timeout', async () => {
+    vi.useFakeTimers()
+    stubFetchForThreadEvents()
+    const settings = buildSettings()
+    settings.claw.im.responseTimeoutMs = 25
+    const store = {
+      load: vi.fn(async () => settings),
+      patch: vi.fn(async () => settings)
+    }
+    const bridge = buildStreamingBridge()
+    bridge.stream.mockImplementation(
+      async (
+        _to: string,
+        input: {
+          markdown: (controller: {
+            append: (chunk: string) => Promise<void>
+            setContent: (content: string) => Promise<void>
+            messageId: string
+          }) => Promise<void>
+        }
+      ) => {
+        await input.markdown({
+          messageId: 'om_stream_stalled',
+          append: vi.fn(async () => undefined),
+          setContent: vi.fn(async () => undefined)
+        })
+        return { messageId: 'om_stream_stalled' }
+      }
+    )
+    const runtime = createClawRuntime({
+      store: store as never,
+      runtimeRequest: makeTurnRequest(),
+      logError: () => undefined
+    })
+
+    const resultPromise = (runtime as unknown as {
+      runStreamingReply: (input: {
+        bridge: unknown
+        chatId: string
+        threadId: string
+        turnId: string
+        replyOptions: { replyTo?: string; replyInThread?: boolean }
+        responseTimeoutMs: number
+        context: Record<string, unknown>
+      }) => Promise<{ ok: boolean; fellBack: boolean; message: string }>
+    }).runStreamingReply({
+      bridge,
+      chatId: 'oc_chat_a',
+      threadId: 'thr_1',
+      turnId: 'turn_1',
+      replyOptions: { replyTo: 'om_inbound_timeout', replyInThread: false },
+      responseTimeoutMs: settings.claw.im.responseTimeoutMs,
+      context: { channelId: 'channel_1' }
+    })
+
+    await vi.advanceTimersByTimeAsync(settings.claw.im.responseTimeoutMs)
+    const result = await resultPromise
+
+    expect(result).toMatchObject({ ok: true, fellBack: true, message: 'fell_back' })
+    expect(bridge.send).toHaveBeenCalledWith(
+      'oc_chat_a',
+      { markdown: 'Sorry, I could not finish streaming the response.' },
+      { replyTo: 'om_inbound_timeout', replyInThread: false }
+    )
   })
 
   it('falls back to setContent(partial) when controller.append throws mid-stream', async () => {

@@ -7,6 +7,10 @@ import { readJsonBody } from '../read-json-body.js'
 import { ERRORS } from './runtime-error.js'
 import type { ApprovalGate } from '../../ports/approval-gate.js'
 import type { RuntimeEventRecorder } from '../../services/runtime-event-recorder.js'
+import {
+  KUN_APPROVAL_CONSENT_HEADER,
+  type ApprovalConsentVerifier
+} from '../approval-consent.js'
 
 /**
  * POST /v1/approvals/{approvalId}. Resolves a pending approval
@@ -17,12 +21,20 @@ export async function decideApproval(input: {
   request: Request
   gate: ApprovalGate
   events: RuntimeEventRecorder
+  consent?: ApprovalConsentVerifier
 }): Promise<JsonResponse | Response> {
   const body = await readJsonBody(input.request)
   if (!body.ok) return body.response
   const parsed = ApprovalDecisionRequest.safeParse(body.value)
   if (!parsed.success) {
     return ERRORS.validation('invalid approval body', parsed.error.issues)
+  }
+  if (input.consent && !input.consent.verifyAndConsume({
+    token: input.request.headers.get(KUN_APPROVAL_CONSENT_HEADER),
+    approvalId: input.approvalId,
+    decision: parsed.data.decision
+  })) {
+    return ERRORS.forbidden('protected approval consent required')
   }
   const approval = input.gate.get(input.approvalId)
   if (!approval) {

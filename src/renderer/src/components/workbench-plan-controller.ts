@@ -23,6 +23,7 @@ import {
 } from '../plan/plan-path'
 import { extractPlanMetadataFromBlock } from '../plan/plan-tool'
 import type { RightPanelMode } from './chat/WorkbenchTopBar'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../extensions/contribution-ids'
 import type { GuiPlanMessageContext, SendMessageOverrides } from '../store/chat-store-types'
 import { normalizeWorkspaceRoot } from '../lib/workspace-path'
 
@@ -158,7 +159,7 @@ export function useWorkbenchPlanController({
 
   const openGuiPlanPanel = useCallback((): void => {
     setRightSidebarWidth((width) => Math.max(width, CODE_PANEL_PREFERRED))
-    setRightPanelMode('plan')
+    setRightPanelMode(BUILTIN_RIGHT_PANEL_IDS.plan)
   }, [setRightPanelMode, setRightSidebarWidth])
 
   const savePlanContentToDisk = async (

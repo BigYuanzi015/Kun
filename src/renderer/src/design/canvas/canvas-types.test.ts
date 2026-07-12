@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { pointInPolygon, shapeGeometry } from './canvas-types'
+import { isImplicitImageSlot, pointInPolygon, shapeGeometry } from './canvas-types'
 import type { CanvasShape } from './canvas-types'
 
 function mockShape(patch: Partial<CanvasShape> = {}): CanvasShape {
@@ -91,5 +91,29 @@ describe('pointInPolygon', () => {
     expect(pointInPolygon(5, 5, diamond)).toBe(true)
     expect(pointInPolygon(0, 0, diamond)).toBe(false) // outside the diamond
     expect(pointInPolygon(9, 9, diamond)).toBe(false) // corner area outside
+  })
+})
+
+describe('isImplicitImageSlot', () => {
+  it('does not treat HTML, SVG, or running-app frames as empty image slots', () => {
+    const emptyFrame = mockShape({ type: 'frame' })
+    const htmlFrame = mockShape({
+      type: 'frame',
+      htmlArtifactId: 'home',
+      embeddedArtifact: { id: 'home', kind: 'html' }
+    })
+    const svgFrame = mockShape({
+      type: 'frame',
+      embeddedArtifact: { id: 'motion', kind: 'svg' }
+    })
+    const runningAppFrame = mockShape({
+      type: 'frame',
+      runningApp: { url: 'http://localhost:5173' }
+    })
+
+    expect(isImplicitImageSlot(emptyFrame)).toBe(true)
+    expect(isImplicitImageSlot(htmlFrame)).toBe(false)
+    expect(isImplicitImageSlot(svgFrame)).toBe(false)
+    expect(isImplicitImageSlot(runningAppFrame)).toBe(false)
   })
 })

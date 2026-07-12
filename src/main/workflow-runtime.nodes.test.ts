@@ -44,12 +44,25 @@ import {
   type WorkflowRuntime
 } from './workflow-runtime'
 
+const imageGenerateMock = vi.hoisted(() => vi.fn(async () => ({
+  data: Buffer.from('PNG-BYTES'),
+  mimeType: 'image/png'
+})))
+
 // The generate-image node lazily imports the kun image client. Replace it with a
 // stub so the test never hits a real provider (and never pulls native deps in).
 vi.mock('../../kun/src/adapters/tool/image-gen-tool-provider.js', () => ({
   createImageGenClient: () => ({
-    generate: async () => ({ data: Buffer.from('PNG-BYTES'), mimeType: 'image/png' })
-  })
+    generate: imageGenerateMock
+  }),
+  mapImageSize: (
+    _aspectRatio: string | undefined,
+    _imageSize: string | undefined,
+    _defaultSize: string | undefined,
+    defaultResolution: 'auto' | '1K' | '2K' = '1K'
+  ) => defaultResolution === 'auto'
+    ? 'auto'
+    : defaultResolution === '2K' ? '2048x2048' : '1024x1024'
 }))
 
 const NOW = '2026-06-19T00:00:00.000Z'
@@ -469,6 +482,7 @@ describe('ai-agent', () => {
 describe('generate-image', () => {
   it('generates an image and writes it to the output folder', async () => {
     cover('generate-image')
+    imageGenerateMock.mockClear()
     const dir = mkdtempSync(join(tmpdir(), 'wf-img-'))
     try {
       const result = await testNode(
@@ -486,7 +500,8 @@ describe('generate-image', () => {
                   providerId: '',
                   baseUrl: 'https://img.test/v1',
                   apiKey: 'sk-img',
-                  model: 'img-model'
+                  model: 'img-model',
+                  defaultResolution: '2K'
                 }
               }
             }
@@ -498,6 +513,7 @@ describe('generate-image', () => {
       expect(out.mimeType).toBe('image/png')
       expect(out.imagePath.endsWith('.png')).toBe(true)
       expect(existsSync(out.imagePath)).toBe(true)
+      expect(imageGenerateMock).toHaveBeenCalledWith(expect.objectContaining({ size: '2048x2048' }))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

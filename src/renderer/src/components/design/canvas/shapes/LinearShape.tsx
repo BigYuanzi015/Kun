@@ -1,15 +1,10 @@
 import { memo, type ReactNode } from 'react'
-import type { Arrowhead, CanvasShape, Point, StrokeDash } from '../../../../design/canvas/canvas-types'
+import type { Arrowhead, CanvasShape, Point } from '../../../../design/canvas/canvas-types'
+import { strokeDasharray } from './shape-paint'
 
 const DEFAULT_COLOR = '#1e1e1e'
 const DEFAULT_WIDTH = 2
 const SPREAD = Math.PI / 7
-
-function dashArray(dash: StrokeDash | undefined, width: number): string | undefined {
-  if (dash === 'dashed') return `${width * 3.5} ${width * 2.5}`
-  if (dash === 'dotted') return `${width} ${width * 2}`
-  return undefined
-}
 
 /**
  * Smooth a polyline through ≥3 points into a Catmull-Rom curve, expressed as
@@ -52,7 +47,7 @@ function arrowhead(
   const r = back(tip, angle + SPREAD, size)
   switch (style) {
     case 'arrow':
-      return <path d={`M ${l.x} ${l.y} L ${tip.x} ${tip.y} L ${r.x} ${r.y}`} fill="none" stroke={color} strokeWidth={width} />
+      return <path d={`M ${l.x} ${l.y} L ${tip.x} ${tip.y} L ${r.x} ${r.y}`} fill="none" stroke={color} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" />
     case 'triangle':
       return <path d={`M ${tip.x} ${tip.y} L ${l.x} ${l.y} L ${r.x} ${r.y} Z`} fill={color} stroke={color} strokeWidth={width * 0.5} />
     case 'circle':
@@ -121,7 +116,7 @@ function LinearShapeInner({ shape }: { shape: CanvasShape }) {
         strokeWidth={width}
         strokeLinecap="round"
         strokeLinejoin="round"
-        strokeDasharray={dashArray(stroke?.dash, width)}
+        strokeDasharray={strokeDasharray(stroke?.dash, width)}
       />
       {arrowhead(p0, startAngle, startStyle, size, color, width)}
       {arrowhead(pN, endAngle, endStyle, size, color, width)}

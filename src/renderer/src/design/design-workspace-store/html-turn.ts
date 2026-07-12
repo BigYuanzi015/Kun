@@ -13,6 +13,10 @@ import {
 import type { DesignArtifact } from '../design-types'
 import type { DesignWorkspaceState } from '../design-workspace-store-types'
 import { applyToActiveDoc } from './helpers'
+import {
+  deleteDesignWorkspaceEntry,
+  writeDesignWorkspaceFile
+} from '../design-persistence-coordinator'
 
 type SetDesignWorkspaceState = (
   partial:
@@ -162,39 +166,58 @@ export async function duplicateHtmlArtifact(
   const state = get()
   const source = state.artifacts.find((item) => item.id === artifactId)
   const workspaceRoot = state.workspaceRoot
+  const documentId = state.activeDocumentId
   if (
     !source ||
     source.kind !== 'html' ||
     !workspaceRoot ||
-    typeof window.kunGui?.readWorkspaceFile !== 'function' ||
-    typeof window.kunGui?.writeWorkspaceFile !== 'function'
+    !documentId ||
+    typeof window.kunGui?.readWorkspaceFile !== 'function'
   ) {
     return
+  }
+  const contextMatches = (): boolean => {
+    const current = get()
+    return current.workspaceRoot === workspaceRoot && current.activeDocumentId === documentId
   }
 
   const read = await window.kunGui
     .readWorkspaceFile({ path: source.relativePath, workspaceRoot })
     .catch(() => null)
-  if (!read || !read.ok) return
+  if (!read || !read.ok || !contextMatches()) return
 
-  const docId = get().ensureActiveDocument()
+  const docId = documentId
   const createdAt = new Date().toISOString()
   const copyId = createDesignArtifactId()
   const relativePath = `${artifactDirPath(docId, copyId)}/v1.html`
   const designMdPath = artifactDesignMdPath(docId, copyId)
-  const write = await window.kunGui
-    .writeWorkspaceFile({ path: relativePath, workspaceRoot, content: read.content })
-    .catch(() => null)
-  if (!write || !write.ok) return
+  const write = await writeDesignWorkspaceFile({ path: relativePath, workspaceRoot, content: read.content })
+  if (!write.ok) return
+  let notesWritten = false
+  const rollbackCopy = async (): Promise<void> => {
+    await deleteDesignWorkspaceEntry({ path: relativePath, workspaceRoot })
+    if (notesWritten) await deleteDesignWorkspaceEntry({ path: designMdPath, workspaceRoot })
+  }
+  if (!contextMatches()) {
+    await rollbackCopy()
+    return
+  }
 
   const sourceDesignMdPath = source.designMdPath ?? artifactDesignMdPathOf(source.relativePath)
   const designNotes = await window.kunGui
     .readWorkspaceFile({ path: sourceDesignMdPath, workspaceRoot })
     .catch(() => null)
   if (designNotes?.ok) {
-    await window.kunGui
-      .writeWorkspaceFile({ path: designMdPath, workspaceRoot, content: designNotes.content })
-      .catch(() => null)
+    const notesWrite = await writeDesignWorkspaceFile({
+      path: designMdPath,
+      workspaceRoot,
+      content: designNotes.content
+    })
+    notesWritten = notesWrite.ok
+  }
+  if (!contextMatches()) {
+    await rollbackCopy()
+    return
   }
 
   const sourceNode =

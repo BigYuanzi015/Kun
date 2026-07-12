@@ -230,6 +230,43 @@ describe('chat-store-thread-actions queued messages', () => {
       'draw an architecture map',
       expect.objectContaining({ guiDesignCanvas: true })
     )
+    expect(state.blocks.find((block) => block.kind === 'user')).toMatchObject({
+      meta: { guiDesignCanvas: true }
+    })
+  })
+
+  it('forwards the selected reasoning effort with the next turn', async () => {
+    const provider = {
+      connect: vi.fn(async () => undefined),
+      sendUserMessage: vi.fn(async () => ({
+        threadId: 'thr_existing',
+        turnId: 'turn_1',
+        userMessageItemId: 'user_1'
+      })),
+      subscribeThreadEvents: vi.fn(async () => undefined)
+    }
+    registryMock.getProvider.mockReturnValue(provider)
+    vi.stubGlobal('window', {
+      kunGui: {
+        getSettings: vi.fn(async () => ({
+          agents: { kun: { providerId: 'deepseek', model: 'deepseek-v4-pro' } },
+          codePromptPrefix: ''
+        })),
+        logError: vi.fn(async () => undefined)
+      }
+    })
+    const { actions, state } = buildHarness()
+    state.busy = false
+
+    await expect(actions.sendMessage('think carefully', 'agent', {
+      reasoningEffort: 'high'
+    })).resolves.toBe(true)
+
+    expect(provider.sendUserMessage).toHaveBeenCalledWith(
+      'thr_existing',
+      'think carefully',
+      expect.objectContaining({ reasoningEffort: 'high' })
+    )
   })
 
   it('sends an override provider from the write route without switching the global runtime provider', async () => {
@@ -316,17 +353,33 @@ describe('chat-store-thread-actions queued messages', () => {
     state.busy = false
     state.composerModel = 'MiniMax-M3'
     state.composerProviderId = 'minimax-token-plan'
+    state.composerModelGroups = [{
+      providerId: 'minimax-token-plan',
+      label: 'Extension MiniMax',
+      modelIds: ['MiniMax-M3'],
+      accountId: 'account-extension-1',
+      extensionProvider: {
+        extensionId: 'acme.models',
+        extensionVersion: '1.0.0',
+        localProviderId: 'minimax'
+      }
+    }]
 
     await expect(actions.sendMessage('hello', 'agent')).resolves.toBe(true)
 
     expect(provider.createThread).toHaveBeenCalledWith(expect.objectContaining({
       model: 'MiniMax-M3',
-      providerId: 'minimax-token-plan'
+      providerId: 'minimax-token-plan',
+      accountId: 'account-extension-1'
     }))
     expect(provider.sendUserMessage).toHaveBeenCalledWith(
       'thr_new',
       'hello',
-      expect.objectContaining({ model: 'MiniMax-M3', providerId: 'minimax-token-plan' })
+      expect.objectContaining({
+        model: 'MiniMax-M3',
+        providerId: 'minimax-token-plan',
+        accountId: 'account-extension-1'
+      })
     )
   })
 })

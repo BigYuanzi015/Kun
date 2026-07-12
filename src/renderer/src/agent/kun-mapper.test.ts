@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { chatBlockFromItem, dispatchKunRuntimeEvent, mergeChatBlocks } from './kun-mapper'
+import {
+  chatBlockFromItem,
+  dispatchKunRuntimeEvent,
+  mergeChatBlocks,
+  runtimeProjectionActionsFromEvent
+} from './kun-mapper'
 import type { CoreRuntimeEventJson, CoreTurnItemJson } from './kun-contract'
 import type { ThreadErrorOptions, ThreadEventSink } from './types'
 
@@ -19,6 +24,59 @@ function makeSink(): ThreadEventSink {
     onError: () => undefined
   }
 }
+
+describe('runtime projection action normalization', () => {
+  it('normalizes the same goal event to a stable action transcript', () => {
+    const event: CoreRuntimeEventJson = {
+      kind: 'goal_updated',
+      seq: 9,
+      timestamp: '2026-07-11T00:00:00.000Z',
+      threadId: 'thread_1',
+      goal: {
+        threadId: 'thread_1',
+        objective: 'Finish projection extraction',
+        status: 'active',
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: '2026-07-11T00:00:00.000Z',
+        updatedAt: '2026-07-11T00:00:00.000Z'
+      }
+    }
+
+    const first = runtimeProjectionActionsFromEvent(event)
+    const replay = runtimeProjectionActionsFromEvent(structuredClone(event))
+
+    expect(replay).toEqual(first)
+    expect(first).toEqual([{
+      type: 'goal_changed',
+      payload: {
+        threadId: 'thread_1',
+        goal: {
+          threadId: 'thread_1',
+          objective: 'Finish projection extraction',
+          status: 'active',
+          tokenBudget: null,
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: '2026-07-11T00:00:00.000Z',
+          updatedAt: '2026-07-11T00:00:00.000Z'
+        },
+        createdAt: '2026-07-11T00:00:00.000Z'
+      }
+    }])
+  })
+
+  it('uses a deterministic fallback identity for legacy user-input events', () => {
+    const actions = runtimeProjectionActionsFromEvent({
+      kind: 'user_input_resolved',
+      status: 'cancelled'
+    })
+    expect(actions).toEqual([{
+      type: 'user_input_status_changed',
+      payload: { itemId: 'input_unknown', status: 'cancelled' }
+    }])
+  })
+})
 
 describe('assistant stream mapping', () => {
   it('does not append completed assistant snapshots after streaming deltas', async () => {
@@ -670,6 +728,61 @@ describe('user input mapping', () => {
     })
   })
 
+  it('maps multi-select questions and submitted answers from user-input items', () => {
+    const item: CoreTurnItemJson = {
+      id: 'item_input_multi',
+      turnId: 'turn_1',
+      threadId: 'thr_1',
+      role: 'tool',
+      status: 'submitted',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      kind: 'user_input',
+      inputId: 'input_multi',
+      prompt: 'Pick requirements',
+      questions: [
+        {
+          header: 'Requirements',
+          id: 'reqs',
+          question: 'Pick requirements',
+          selectionMode: 'multiple',
+          minSelections: 2,
+          maxSelections: 3,
+          options: [
+            { label: 'Keep ratio', description: '' },
+            { label: 'App icon', description: '' }
+          ]
+        }
+      ],
+      answers: [
+        {
+          id: 'reqs',
+          label: 'Keep ratio, App icon',
+          value: 'Keep ratio, App icon',
+          labels: ['Keep ratio', 'App icon'],
+          values: ['Keep ratio', 'App icon']
+        }
+      ]
+    }
+    expect(chatBlockFromItem(item)).toMatchObject({
+      kind: 'user_input',
+      status: 'submitted',
+      questions: [
+        {
+          id: 'reqs',
+          selectionMode: 'multiple',
+          minSelections: 2,
+          maxSelections: 3
+        }
+      ],
+      answers: [
+        {
+          id: 'reqs',
+          values: ['Keep ratio', 'App icon']
+        }
+      ]
+    })
+  })
+
   it('surfaces structured user-input requests from runtime events', async () => {
     let request: unknown = null
     const sink: ThreadEventSink = {
@@ -706,6 +819,46 @@ describe('user input mapping', () => {
           id: 'mode',
           question: 'Choose',
           options: [{ label: 'Fast', description: 'Use the faster path' }]
+        }
+      ]
+    })
+  })
+
+  it('surfaces submitted user-input answers from runtime events', async () => {
+    let status: unknown = null
+    const sink: ThreadEventSink = {
+      ...makeSink(),
+      onUserInputStatus: (payload) => {
+        status = payload
+      }
+    }
+    await dispatchKunRuntimeEvent(
+      {
+        kind: 'user_input_resolved',
+        seq: 9,
+        itemId: 'item_input_3',
+        inputId: 'input_3',
+        status: 'submitted',
+        answers: [
+          {
+            id: 'reqs',
+            label: 'Keep ratio, App icon',
+            value: 'Keep ratio, App icon',
+            labels: ['Keep ratio', 'App icon'],
+            values: ['Keep ratio', 'App icon']
+          }
+        ]
+      },
+      sink,
+      async () => undefined
+    )
+    expect(status).toMatchObject({
+      itemId: 'item_input_3',
+      status: 'submitted',
+      answers: [
+        {
+          id: 'reqs',
+          values: ['Keep ratio', 'App icon']
         }
       ]
     })
@@ -1007,6 +1160,8 @@ describe('Kun extension metadata mapping', () => {
       kind: 'user_message',
       text: 'look at this',
       displayText: 'Inspect attached image',
+      guiDesignCanvas: true,
+      guiDesignMode: false,
       attachmentIds: ['att_1'],
       fileReferences: [{
         path: '/workspace/deepseek-gui/src/App.tsx',
@@ -1022,6 +1177,7 @@ describe('Kun extension metadata mapping', () => {
       kind: 'user',
       meta: {
         displayText: 'Inspect attached image',
+        guiDesignCanvas: true,
         attachmentIds: ['att_1'],
         fileReferences: [{
           path: '/workspace/deepseek-gui/src/App.tsx',

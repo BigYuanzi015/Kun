@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useState, type ReactElement } from 'react'
 import {
   CUSTOM_SPEECH_TO_TEXT_PROVIDER_ID,
   DEFAULT_SPEECH_TO_TEXT_PROTOCOL,
@@ -186,20 +186,22 @@ export function SpeechToTextSettingsSection({ ctx }: { ctx: Record<string, any> 
     })
   }
 
-  const setLocalWhisperModelStatus = (status: LocalWhisperModelStatus): void => {
+  const setLocalWhisperModelStatus = useCallback((status: LocalWhisperModelStatus): void => {
     setLocalWhisperStatuses((current) => ({
       ...current,
       [status.modelId]: status
     }))
-  }
+  }, [])
 
-  const refreshLocalWhisperStatus = async (modelId: LocalWhisperModelId = selectedLocalWhisperModelId): Promise<void> => {
+  const refreshLocalWhisperStatus = useCallback(async (
+    modelId: LocalWhisperModelId = selectedLocalWhisperModelId
+  ): Promise<void> => {
     if (typeof window.kunGui?.getLocalWhisperModelStatus !== 'function') return
     const status = await window.kunGui.getLocalWhisperModelStatus(modelId)
     setLocalWhisperModelStatus(status)
-  }
+  }, [selectedLocalWhisperModelId, setLocalWhisperModelStatus])
 
-  const refreshLocalWhisperModelStatuses = async (): Promise<void> => {
+  const refreshLocalWhisperModelStatuses = useCallback(async (): Promise<void> => {
     if (typeof window.kunGui?.getLocalWhisperModelStatus !== 'function') return
     const statuses = await Promise.all(
       LOCAL_WHISPER_MODELS.map((model) => window.kunGui.getLocalWhisperModelStatus(model.id))
@@ -209,9 +211,9 @@ export function SpeechToTextSettingsSection({ ctx }: { ctx: Record<string, any> 
       for (const status of statuses) next[status.modelId] = status
       return next
     })
-  }
+  }, [])
 
-  const refreshLocalWhisperSourceStatuses = async (): Promise<void> => {
+  const refreshLocalWhisperSourceStatuses = useCallback(async (): Promise<void> => {
     if (typeof window.kunGui?.checkLocalWhisperDownloadSources !== 'function') return
     setLocalWhisperSourceStatuses(null)
     setLocalWhisperSourceCheckBusy(true)
@@ -221,7 +223,7 @@ export function SpeechToTextSettingsSection({ ctx }: { ctx: Record<string, any> 
     } finally {
       setLocalWhisperSourceCheckBusy(false)
     }
-  }
+  }, [selectedLocalWhisperModelId])
 
   useEffect(() => {
     if (!usingLocalWhisper) return
@@ -256,12 +258,12 @@ export function SpeechToTextSettingsSection({ ctx }: { ctx: Record<string, any> 
         }
       })
     })
-  }, [usingLocalWhisper])
+  }, [refreshLocalWhisperModelStatuses, refreshLocalWhisperSourceStatuses, usingLocalWhisper])
 
   useEffect(() => {
     if (!usingLocalWhisper) return
     void refreshLocalWhisperStatus(selectedLocalWhisperModelId).catch(() => undefined)
-  }, [usingLocalWhisper, selectedLocalWhisperModelId])
+  }, [refreshLocalWhisperStatus, selectedLocalWhisperModelId, usingLocalWhisper])
 
   const downloadLocalWhisper = async (): Promise<void> => {
     if (typeof window.kunGui?.downloadLocalWhisperModel !== 'function') return

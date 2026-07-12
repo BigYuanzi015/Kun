@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactElement } from 'react'
 import type { RightPanelMode } from '../chat/WorkbenchTopBar'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../../extensions/contribution-ids'
 import {
   WorkbenchPlanPanelOverlay,
   type WorkbenchPlanPanelProps
@@ -44,7 +45,7 @@ export function useWorkbenchPlanPanelRuntime({
 } {
   const [overlayPreferred, setOverlayPreferred] = useState(false)
   const planPanelInOverlay =
-    route === 'chat' && !activeSddDraft && rightPanelMode === 'plan' && overlayPreferred
+    route === 'chat' && !activeSddDraft && rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.plan && overlayPreferred
   const planPanelProps: WorkbenchPlanPanelProps = {
     workspaceRoot: activeSkillWorkspace,
     activeThreadId,

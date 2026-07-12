@@ -9,13 +9,13 @@ import { join } from 'node:path'
  * — it is not force-recreated. Appears after the next runtime restart.
  */
 
-const BUNDLED_SEED_MARKER = '.bundled-skills-seed-v1'
+const BUNDLED_SEED_MARKER = '.bundled-skills-seed-v2'
 const SKILL_ID = 'design-system'
 
 const SKILL_MANIFEST = {
   id: SKILL_ID,
   name: 'Design system & craft',
-  version: '1.0.0',
+  version: '1.1.0',
   description:
     'Brand-grade visual craft for design work — design-system-first thinking and anti-AI-slop rules.',
   entry: 'SKILL.md',
@@ -38,7 +38,10 @@ description: Brand-grade visual craft for design work — design-system-first th
 Hold this bar on any visual work — HTML mockups, prototypes, real UI.
 
 ## 1. Design system is the source of truth
-- If \`.kun-design/DESIGN_SYSTEM.md\` exists in the workspace, read it first and honor it: brand color, tone, type, radius, density, the named preset. It is the contract shared between the design canvas and the code.
+- Look for root \`DESIGN.md\` first. When it exists and validates, it is the canonical Google-compatible project theme shared by the canvas, HTML/SVG generation, and code implementation.
+- Patch its YAML front matter structurally, preserve its Markdown rationale and unknown extension keys, and use the exact current source hash for conflict-safe updates.
+- Never draw a separate HTML, SVG, or freeform "style guide" artifact. Kun renders \`DESIGN.md\` through its fixed built-in specimen board.
+- \`.kun-design/HANDOFF.md\` is generated project handoff, not a theme. \`.kun-design/DESIGN.md\` and \`.kun-design/design-system.json\` are compatibility/migration inputs only.
 - Derive every visual decision from tokens (color, spacing scale, radius, type scale), not ad-hoc values. Keep them consistent across the whole artifact.
 
 ## 2. Avoid generic AI tells
@@ -59,8 +62,8 @@ These read as "AI made this" — do not ship them:
 - **Responsive**: design mobile and desktop intentionally, not just a squished desktop.
 
 ## 4. Output
-- Single-file, self-contained HTML is the canvas format: inline CSS, real fonts, real components, no external build.
-- Make it runnable as-is. Prefer system fonts or a single well-chosen web font.
+- Choose the artifact that matches the request: self-contained HTML for interactive UI, SVG for vector illustration or motion, and editable native shapes for whiteboard structure.
+- Make HTML/SVG runnable as-is. Prefer system fonts or a single well-chosen web font.
 - When the user iterates, change only what they asked for — keep the rest stable.
 `
 

@@ -11,10 +11,14 @@ import { z } from 'zod'
 export const UsageSnapshotSchema = z.object({
   promptTokens: z.number().int().nonnegative(),
   completionTokens: z.number().int().nonnegative(),
+  /** Provider-reported reasoning tokens when separately available. */
+  reasoningTokens: z.number().int().nonnegative().optional(),
   totalTokens: z.number().int().nonnegative(),
   cachedTokens: z.number().int().nonnegative().optional(),
   cacheHitTokens: z.number().int().nonnegative().optional(),
   cacheMissTokens: z.number().int().nonnegative().optional(),
+  /** Tokens written into a provider-managed prompt cache. */
+  cacheWriteTokens: z.number().int().nonnegative().optional(),
   cacheHitRate: z.number().min(0).max(1).nullable(),
   cacheableTokenHitRate: z.number().min(0).max(1).nullable().optional(),
   totalInputTokenHitRate: z.number().min(0).max(1).nullable().optional(),
@@ -23,6 +27,11 @@ export const UsageSnapshotSchema = z.object({
   turns: z.number().int().nonnegative(),
   costUsd: z.number().nonnegative().optional(),
   costCny: z.number().nonnegative().optional(),
+  /** Provider-reported costs retained without assuming a two-currency world. */
+  costByCurrency: z.record(
+    z.string().regex(/^[A-Z]{3}$/),
+    z.number().nonnegative()
+  ).optional(),
   /**
    * @deprecated Savings are reported in tokens only (cache hits via
    * `cacheHitTokens`, compression via `tokenEconomySavingsTokens`).

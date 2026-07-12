@@ -98,4 +98,124 @@ describe('diffSettingsPatch', () => {
       url: 'http://127.0.0.1:9999'
     })
   })
+
+  it('round-trips a profiles-only subagent diff without losing sibling settings', () => {
+    const base = coerceRendererSettings(settings({
+      subagents: {
+        enabled: true,
+        maxParallel: 3,
+        maxChildRuns: 12,
+        defaultToolPolicy: 'inherit',
+        defaultProfile: 'researcher',
+        profiles: [{
+          id: 'researcher',
+          enabled: true,
+          name: 'Researcher',
+          mode: 'subagent',
+          toolPolicy: 'readOnly'
+        }]
+      }
+    }))
+    const replacement = {
+      id: 'reviewer',
+      enabled: true,
+      name: 'Reviewer',
+      mode: 'subagent' as const,
+      toolPolicy: 'readOnly' as const,
+      blockedSkills: ['unsafe-skill']
+    }
+    const next = mergeSettings(base, {
+      agents: { kun: { subagents: { profiles: [replacement] } } }
+    })
+
+    const patch = diffSettingsPatch(base, next)
+
+    expect(patch).toEqual({
+      agents: { kun: { subagents: { profiles: [replacement] } } }
+    })
+    expect(mergeSettings(base, patch).agents.kun.subagents).toEqual({
+      enabled: true,
+      maxParallel: 3,
+      maxChildRuns: 12,
+      defaultToolPolicy: 'inherit',
+      defaultProfile: 'researcher',
+      profiles: [replacement]
+    })
+  })
+
+  it('emits explicit clear sentinels for normalized-away model and reasoning overrides', () => {
+    const base = coerceRendererSettings(settings({
+      smallModel: 'small-model',
+      smallModelProviderId: 'provider-a',
+      titleModel: 'title-model',
+      titleProviderId: 'provider-a',
+      summaryModel: 'summary-model',
+      summaryProviderId: 'provider-a',
+      codeReviewModel: 'review-model',
+      codeReviewProviderId: 'provider-a',
+      titleReasoningEffort: 'low',
+      summaryReasoningEffort: 'medium',
+      codeReviewReasoningEffort: 'high',
+      contextCompaction: {
+        ...settings().agents.kun.contextCompaction,
+        summaryModel: 'compaction-model',
+        summaryProviderId: 'provider-a'
+      }
+    }))
+    const next = mergeSettings(base, {
+      agents: {
+        kun: {
+          smallModel: '',
+          smallModelProviderId: '',
+          titleModel: '',
+          titleProviderId: '',
+          summaryModel: '',
+          summaryProviderId: '',
+          codeReviewModel: '',
+          codeReviewProviderId: '',
+          titleReasoningEffort: 'off',
+          summaryReasoningEffort: 'off',
+          codeReviewReasoningEffort: 'off',
+          contextCompaction: {
+            summaryModel: '',
+            summaryProviderId: ''
+          }
+        }
+      }
+    })
+
+    const patch = diffSettingsPatch(base, next)
+
+    expect(patch).toEqual({
+      agents: {
+        kun: {
+          smallModel: '',
+          smallModelProviderId: '',
+          titleModel: '',
+          titleProviderId: '',
+          summaryModel: '',
+          summaryProviderId: '',
+          codeReviewModel: '',
+          codeReviewProviderId: '',
+          titleReasoningEffort: 'off',
+          summaryReasoningEffort: 'off',
+          codeReviewReasoningEffort: 'off',
+          contextCompaction: {
+            summaryModel: '',
+            summaryProviderId: ''
+          }
+        }
+      }
+    })
+    const roundTripped = mergeSettings(base, patch).agents.kun
+    expect(roundTripped.smallModel).toBeUndefined()
+    expect(roundTripped.titleModel).toBeUndefined()
+    expect(roundTripped.summaryModel).toBeUndefined()
+    expect(roundTripped.codeReviewModel).toBeUndefined()
+    expect(roundTripped.titleReasoningEffort).toBeUndefined()
+    expect(roundTripped.summaryReasoningEffort).toBeUndefined()
+    expect(roundTripped.codeReviewReasoningEffort).toBeUndefined()
+    expect(roundTripped.contextCompaction.summaryModel).toBeUndefined()
+    expect(roundTripped.contextCompaction.summaryProviderId).toBeUndefined()
+  })
 })

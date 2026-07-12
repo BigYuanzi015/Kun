@@ -10,6 +10,7 @@ type Props = {
   screenY: number
   screenWidth: number
   screenHeight: number
+  zIndex: number
   zoom: number
   active: boolean
   interactive: boolean
@@ -24,6 +25,7 @@ export function RunningAppFrameOverlay({
   screenY,
   screenWidth,
   screenHeight,
+  zIndex,
   zoom,
   active,
   interactive,
@@ -43,6 +45,7 @@ export function RunningAppFrameOverlay({
         top: screenY,
         width: screenWidth,
         height: screenHeight,
+        zIndex,
         pointerEvents
       }}
       onDoubleClick={(event) => {

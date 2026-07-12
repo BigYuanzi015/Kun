@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { ToolCallLike, ToolHostContext } from '../ports/tool-host.js'
-import { terminateSpawnTree } from '../adapters/tool/builtin-tool-utils.js'
+import { shellSpawnEnv, terminateSpawnTree } from '../adapters/tool/builtin-tool-utils.js'
 
 /**
  * Hook phases. Tool phases run inside the tool host around every tool
@@ -263,12 +263,22 @@ export function hookMatchesTool(
   return false
 }
 
+export const MAX_HOOK_MATCHER_CACHE_ENTRIES = 256
 const matcherCache = new Map<string, RegExp>()
+
+export const hookMatcherCacheForTesting = {
+  clear: (): void => matcherCache.clear(),
+  size: (): number => matcherCache.size
+}
 
 /** Compile a glob matcher: `*` matches any run of characters, `|` separates alternatives. */
 function compileMatcher(pattern: string): RegExp {
   const cached = matcherCache.get(pattern)
-  if (cached) return cached
+  if (cached) {
+    matcherCache.delete(pattern)
+    matcherCache.set(pattern, cached)
+    return cached
+  }
   const alternatives = pattern
     .split('|')
     .map((part) => part.trim())
@@ -276,6 +286,11 @@ function compileMatcher(pattern: string): RegExp {
     .map((part) => part.replace(/[.+?^${}()[\]\\]/g, '\\$&').replaceAll('*', '.*'))
   const regex = new RegExp(`^(?:${alternatives.join('|') || '$.'})$`)
   matcherCache.set(pattern, regex)
+  while (matcherCache.size > MAX_HOOK_MATCHER_CACHE_ENTRIES) {
+    const oldest = matcherCache.keys().next().value
+    if (oldest === undefined) break
+    matcherCache.delete(oldest)
+  }
   return regex
 }
 
@@ -315,6 +330,7 @@ async function runCommandHook(
   const payload = JSON.stringify(invocation)
   const child = spawn(hook.command, {
     cwd: hook.cwd || workspaceOf(invocation) || undefined,
+    env: shellSpawnEnv(),
     shell: true,
     stdio: ['pipe', 'pipe', 'pipe']
   })

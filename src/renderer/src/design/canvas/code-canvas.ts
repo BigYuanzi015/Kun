@@ -120,6 +120,10 @@ const OPEN_WHITEBOARD_CHINESE_DEICTIC_TARGET =
   /(?:选中|这个|那个|这里|那里|它|这些|那些)/
 const OPEN_WHITEBOARD_CHINESE_PLACEMENT =
   /(?:放|放到|放进|加到|添加到|贴到|拖到|移到|置入)[\s\S]{0,20}(?:画布|白板|画板|选中|框|这里|这个|里面|上面)/
+const OPEN_WHITEBOARD_ENGLISH_EXPORT =
+  /\b(?:export|save|download|convert|render)\b[\s\S]{0,40}\b(?:png|svg|image|picture|file|diagram|whiteboard|canvas|this|that|it)\b/i
+const OPEN_WHITEBOARD_CHINESE_EXPORT =
+  /(?:导出|转成|转换成|保存为|保存成)[\s\S]{0,24}(?:图片|图像|PNG|SVG|文件|架构图|流程图|白板|画布)/i
 
 export function shouldRouteCodePromptToCanvas(text: string): boolean {
   const value = text.trim()
@@ -135,6 +139,8 @@ export function shouldRouteOpenCodeWhiteboardPrompt(
   if (HTML_CANVAS_CODE_PATTERNS.some((pattern) => pattern.test(value))) return false
   if (/\bwhiteboard\b/i.test(value) || /白板/.test(value)) return true
   if (looksLikeStandaloneImageAssetPrompt(value)) return true
+  if (OPEN_WHITEBOARD_ENGLISH_EXPORT.test(value)) return true
+  if (OPEN_WHITEBOARD_CHINESE_EXPORT.test(value)) return true
   if (OPEN_WHITEBOARD_ENGLISH_PLACEMENT.test(value)) return true
   if (OPEN_WHITEBOARD_CHINESE_PLACEMENT.test(value)) return true
   const hasSelection = options?.hasSelection === true

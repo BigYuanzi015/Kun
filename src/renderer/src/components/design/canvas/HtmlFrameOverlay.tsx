@@ -174,6 +174,9 @@ export function HtmlFrameOverlay({
   }, [portalFrames, vbox, selectedIds])
 
   const selectedIdsKey = useMemo(() => [...selectedIds].sort().join(','), [selectedIds])
+  const paintIndexById = useMemo(() => new Map(
+    (document.objects[document.rootId]?.children ?? []).map((id, index) => [id, index + 1])
+  ), [document])
 
   useEffect(() => {
     onUseElementAsContext?.(null)
@@ -196,6 +199,7 @@ export function HtmlFrameOverlay({
               screenY={screenRect.y}
               screenWidth={screenRect.width}
               screenHeight={screenRect.height}
+              zIndex={paintIndexById.get(shape.id) ?? 1}
               zoom={zoom}
               active={active}
               interactive={interactiveId === shape.id}
@@ -215,6 +219,7 @@ export function HtmlFrameOverlay({
             screenY={screenRect.y}
             screenWidth={screenRect.width}
             screenHeight={screenRect.height}
+            zIndex={paintIndexById.get(shape.id) ?? 1}
             zoom={zoom}
             active={active}
             interactive={interactiveId === shape.id}

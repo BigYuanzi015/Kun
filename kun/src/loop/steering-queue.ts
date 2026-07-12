@@ -12,29 +12,59 @@ export type SteeringEntry = {
   messageSource?: UserMessageSource
 }
 
-export class SteeringQueue {
-  private readonly buffer: SteeringEntry[] = []
-  private turnId: string | null = null
+type SteeringBuffer = {
+  entries: SteeringEntry[]
+  bytes: number
+}
 
-  setTurn(turnId: string | null): void {
-    if (this.turnId !== turnId) {
-      this.buffer.length = 0
-    }
-    this.turnId = turnId
+/** Bound one active turn's queued user steering before the next model boundary. */
+export const DEFAULT_MAX_STEERING_ENTRIES_PER_TURN = 32
+export const DEFAULT_MAX_STEERING_BYTES_PER_TURN = 64 * 1024
+
+export class SteeringQueue {
+  private readonly buffers = new Map<string, SteeringBuffer>()
+  private readonly maxEntriesPerTurn: number
+  private readonly maxBytesPerTurn: number
+
+  constructor(options: {
+    maxEntriesPerTurn?: number
+    maxBytesPerTurn?: number
+  } = {}) {
+    this.maxEntriesPerTurn = normalizeLimit(
+      options.maxEntriesPerTurn,
+      DEFAULT_MAX_STEERING_ENTRIES_PER_TURN
+    )
+    this.maxBytesPerTurn = normalizeLimit(
+      options.maxBytesPerTurn,
+      DEFAULT_MAX_STEERING_BYTES_PER_TURN
+    )
   }
 
-  enqueue(turnId: string, entry: SteeringEntry): void {
-    if (this.turnId !== turnId) {
-      this.buffer.length = 0
-      this.turnId = turnId
-    }
+  /** Returns false when accepting this entry would exceed the per-turn bound. */
+  enqueue(turnId: string, entry: SteeringEntry): boolean {
     const text = entry.text.trim()
-    if (!text) return
-    this.buffer.push({
+    if (!text) return true
+    const normalized: SteeringEntry = {
       text,
       ...(entry.displayText?.trim() ? { displayText: entry.displayText.trim() } : {}),
       ...(entry.messageSource ? { messageSource: entry.messageSource } : {})
-    })
+    }
+    const bytes = steeringEntryBytes(normalized)
+    const buffer = this.buffers.get(turnId)
+    const currentEntries = buffer?.entries.length ?? 0
+    const currentBytes = buffer?.bytes ?? 0
+    if (
+      bytes > this.maxBytesPerTurn ||
+      currentEntries >= this.maxEntriesPerTurn ||
+      currentBytes + bytes > this.maxBytesPerTurn
+    ) {
+      return false
+    }
+    const next: SteeringBuffer = buffer ?? { entries: [], bytes: 0 }
+    next.entries.push(normalized)
+    next.bytes += bytes
+    this.buffers.set(turnId, next)
+    return true
   }
 
   /**
@@ -42,10 +72,11 @@ export class SteeringQueue {
    * this at safe boundaries (after a model response, before the next
    * model request). Returns an empty array when nothing is pending.
    */
-  drain(): SteeringEntry[] {
-    if (this.buffer.length === 0) return []
-    const out = [...this.buffer]
-    this.buffer.length = 0
+  drain(turnId: string): SteeringEntry[] {
+    const buffer = this.buffers.get(turnId)
+    if (!buffer?.entries.length) return []
+    const out = buffer.entries.map((entry) => ({ ...entry }))
+    this.buffers.delete(turnId)
     return out
   }
 
@@ -53,12 +84,20 @@ export class SteeringQueue {
    * Peek at the queued text without removing it. Used by the UI to
    * show pending steering in a "pending injection" indicator.
    */
-  peek(): SteeringEntry[] {
-    return [...this.buffer]
+  peek(turnId: string): SteeringEntry[] {
+    return (this.buffers.get(turnId)?.entries ?? []).map((entry) => ({ ...entry }))
   }
 
-  clear(): void {
-    this.buffer.length = 0
-    this.turnId = null
+  clear(turnId: string): void {
+    this.buffers.delete(turnId)
   }
+}
+
+function normalizeLimit(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback
+  return Math.max(1, Math.floor(value))
+}
+
+function steeringEntryBytes(entry: SteeringEntry): number {
+  return Buffer.byteLength(entry.text, 'utf8') + Buffer.byteLength(entry.displayText ?? '', 'utf8')
 }

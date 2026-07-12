@@ -44,8 +44,19 @@ export type WriteWorkspaceState = {
   fileError: string | null
   fileLoading: boolean
   saveStatus: WriteSaveStatus
+  /** Advances whenever the active document lifecycle changes, including reopening the same path. */
+  documentEpoch: number
+  /** Advances for each local content mutation within the active document epoch. */
+  contentRevision: number
+  /** Last content confirmed on disk for the active document epoch. */
+  persistedContent: string
   /** Set when an agent edited the active file and the change awaits red/green review. */
-  pendingAgentReview: { nextContent: string } | null
+  pendingAgentReview: {
+    workspaceRoot: string
+    filePath: string
+    documentEpoch: number
+    nextContent: string
+  } | null
   /** True while an inline diff review (agent edit or AI rewrite) is in progress. */
   reviewActive: boolean
   previewMode: WritePreviewMode

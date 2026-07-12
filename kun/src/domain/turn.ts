@@ -1,4 +1,4 @@
-import type { GuiPlanContextJson, Turn, TurnReasoningEffort, TurnStatus } from '../contracts/turns.js'
+import type { GuiDesignArtifactContextJson, GuiPlanContextJson, Turn, TurnReasoningEffort, TurnStatus } from '../contracts/turns.js'
 import type { ThreadMode } from '../contracts/threads.js'
 import type { TurnItem } from '../contracts/items.js'
 
@@ -10,19 +10,24 @@ export function createTurnRecord(input: {
   prompt: string
   model?: string
   providerId?: string
+  accountId?: string
   reasoningEffort?: TurnReasoningEffort
   attachmentIds?: string[]
   guiPlan?: GuiPlanContextJson
   guiDesignCanvas?: boolean
+  guiDesignMode?: boolean
+  guiDesignArtifact?: GuiDesignArtifactContextJson
   mode?: ThreadMode
   disableUserInput?: boolean
   imContext?: boolean
   workspaceCheckpointId?: string
+  extensionBudgetTokenBaseline?: number
   createdAt?: string
   status?: TurnStatus
 }): TurnEntity {
   const model = input.model?.trim()
   const providerId = input.providerId?.trim()
+  const accountId = input.accountId?.trim()
   const reasoningEffort = normalizeReasoningEffort(input.reasoningEffort)
   return {
     id: input.id,
@@ -38,13 +43,23 @@ export function createTurnRecord(input: {
     injectedInstructionSources: [],
     ...(model ? { model } : {}),
     ...(providerId ? { providerId } : {}),
+    ...(accountId ? { accountId } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(input.guiPlan ? { guiPlan: input.guiPlan } : {}),
     ...(input.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
+    ...(input.guiDesignMode ? { guiDesignMode: true } : {}),
+    ...(input.guiDesignArtifact ? { guiDesignArtifact: input.guiDesignArtifact } : {}),
     ...(input.mode ? { mode: input.mode } : {}),
     ...(input.disableUserInput ? { disableUserInput: true } : {}),
     ...(input.imContext ? { imContext: true } : {}),
     ...(input.workspaceCheckpointId ? { workspaceCheckpointId: input.workspaceCheckpointId } : {}),
+    ...(input.extensionBudgetTokenBaseline !== undefined
+      ? {
+          extensionBudgetTokenBaseline: input.extensionBudgetTokenBaseline,
+          extensionModelRequests: 0,
+          extensionToolInvocations: 0
+        }
+      : {}),
     createdAt: input.createdAt ?? new Date().toISOString()
   }
 }

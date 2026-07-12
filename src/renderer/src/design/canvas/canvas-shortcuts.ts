@@ -5,7 +5,7 @@ import { pasteClipboardImageToCanvas } from './canvas-image-import'
 import { filterEditableRootShapeIds, filterEditableShapeIds } from './canvas-editability'
 import { useCanvasUndoStore } from './canvas-undo-store'
 import { executeOps, type ShapeOp } from './shape-ops'
-import type { CanvasDocument, CanvasTool } from './canvas-types'
+import { isArtifactFrame, type CanvasDocument, type CanvasTool } from './canvas-types'
 import { zoomCanvasToContent, zoomCanvasToEditableSelection } from './canvas-focus'
 import {
   copyCanvasSelectionToClipboard,
@@ -83,7 +83,15 @@ function reorderSelection(action: 'front' | 'back' | 'forward' | 'backward'): bo
 
 function groupSelection(): boolean {
   const doc = useCanvasShapeStore.getState().document
-  const byParent = groupByParent(doc, editableSelectionRoots())
+  const roots = editableSelectionRoots()
+  // HTML/SVG previews are root-level DOM portals. Keep the selection intact and
+  // consume the shortcut instead of sending an invalid group op that would
+  // clear selection or detach the preview from canvas geometry.
+  if (roots.some((id) => {
+    const shape = doc.objects[id]
+    return Boolean(shape && isArtifactFrame(shape))
+  })) return true
+  const byParent = groupByParent(doc, roots)
   const ops: ShapeOp[] = []
   for (const ids of byParent.values()) {
     if (ids.length >= 2) ops.push({ op: 'group', ids })

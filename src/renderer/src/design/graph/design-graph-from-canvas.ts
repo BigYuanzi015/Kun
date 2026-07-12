@@ -1,4 +1,4 @@
-import type { CanvasDocument, CanvasShape } from '../canvas/canvas-types'
+import { embeddedArtifactOf, type CanvasDocument, type CanvasShape } from '../canvas/canvas-types'
 import type { DesignSystem } from '../canvas/design-system-types'
 import type { DesignArtifact, DesignDirectionStatus } from '../design-types'
 import type { DesignGraph, DesignGraphObject, DesignGraphObjectKind } from './design-graph-types'
@@ -18,7 +18,9 @@ type BuildDesignGraphOptions = {
 function graphKindForShape(shape: CanvasShape): DesignGraphObjectKind {
   if (shape.agentNote) return 'agent-note'
   if (shape.type === 'frame' && shape.runningApp?.url) return 'running-app-frame'
-  if (shape.type === 'frame' && shape.htmlArtifactId) return 'html-frame'
+  const artifact = embeddedArtifactOf(shape)
+  if (shape.type === 'frame' && artifact?.kind === 'html') return 'html-frame'
+  if (shape.type === 'frame' && artifact?.kind === 'svg') return 'svg-frame'
   if (shape.type === 'frame') return 'frame'
   if (shape.type === 'image' && shape.imageUrl?.trim()) return 'asset'
   return 'shape'
@@ -37,7 +39,8 @@ function shapeToGraphObject(
   shape: CanvasShape,
   artifacts: Map<string, DesignArtifact>
 ): DesignGraphObject {
-  const artifact = shape.htmlArtifactId ? artifacts.get(shape.htmlArtifactId) : undefined
+  const artifactReference = embeddedArtifactOf(shape)
+  const artifact = artifactReference ? artifacts.get(artifactReference.id) : undefined
   const codeBindings = codeBindingsForObject(document, shape.id)
   const asset = shape.type === 'image' ? canvasAssetByShapeId(document, shape.id) : undefined
   return {
@@ -51,7 +54,9 @@ function shapeToGraphObject(
     locked: shape.locked,
     source: {
       canvasShapeId: shape.id,
-      htmlArtifactId: shape.htmlArtifactId,
+      artifactId: artifactReference?.id,
+      artifactKind: artifactReference?.kind,
+      htmlArtifactId: artifactReference?.kind === 'html' ? artifactReference.id : undefined,
       runningAppUrl: shape.runningApp?.url,
       componentId: shape.componentId,
       assetPath: asset?.path
@@ -77,8 +82,10 @@ function shapeToGraphObject(
       devicePreset: shape.devicePreset,
       tokenBindings: shape.tokenBindings,
       componentVersion: shape.componentVersion,
-      htmlArtifactPath: artifact?.relativePath,
-      htmlDesignMdPath: artifact?.designMdPath,
+      artifactPath: artifact?.relativePath,
+      artifactDesignMdPath: artifact?.designMdPath,
+      htmlArtifactPath: artifact?.kind === 'html' ? artifact.relativePath : undefined,
+      htmlDesignMdPath: artifact?.kind === 'html' ? artifact.designMdPath : undefined,
       prototypeLinks: artifact?.prototypeLinks,
       runningApp: shape.runningApp,
       asset,
@@ -122,7 +129,8 @@ export function buildDesignGraphFromCanvasDocument(
     const object = shapeToGraphObject(document, shape, artifacts)
     objects[object.id] = object
 
-    const artifact = shape.htmlArtifactId ? artifacts.get(shape.htmlArtifactId) : undefined
+    const artifactReference = embeddedArtifactOf(shape)
+    const artifact = artifactReference ? artifacts.get(artifactReference.id) : undefined
     if (!artifact?.direction) continue
     const existing = directions[artifact.direction.id]
     const nextObjectIds = existing ? [...existing.objectIds, shape.id] : [shape.id]

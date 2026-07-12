@@ -94,10 +94,8 @@ export function useWorkbenchDesignAgentRuntime({
   })
   const designCodeRoundtrip = useDesignCodeRoundtripActions({
     workspaceRoot,
-    composerModelGroups,
     createThread,
     sendMessage,
-    ensureDesignThreadForWorkspace,
     setError,
     setConnectPhoneSidebarOpen,
     openDesign

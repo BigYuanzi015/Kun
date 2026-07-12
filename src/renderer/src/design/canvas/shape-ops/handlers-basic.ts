@@ -1,5 +1,5 @@
 import type { CanvasShape, ShapeType } from '../canvas-types'
-import { createDefaultShape, isImplicitImageSlot, shapeBounds, type DevicePreset } from '../canvas-types'
+import { createDefaultShape, isArtifactFrame, isImplicitImageSlot, shapeBounds, type DevicePreset } from '../canvas-types'
 import { useCanvasShapeStore, withDescendants } from '../canvas-shape-store'
 import { useCanvasSelectionStore } from '../canvas-selection-store'
 import { useCanvasViewportStore } from '../canvas-viewport-store'
@@ -76,6 +76,13 @@ export function executeBasicShapeOp(
         })
         return true
       }
+      if (op.parentId && isArtifactFrame(findShape(op.parentId)!)) {
+        errors.push({
+          code: 'INVALID_OP',
+          message: 'Cannot add canvas shapes inside an HTML or SVG artifact frame.'
+        })
+        return true
+      }
       const parentImageSlot = imageChildFillShouldUpdateParentSlot(op)
       if (parentImageSlot) {
         const imageUrl = typeof op.shape.imageUrl === 'string' ? op.shape.imageUrl.trim() : op.shape.imageUrl
@@ -96,7 +103,7 @@ export function executeBasicShapeOp(
       const { type } = shapeSpec
       const x = shapeSpec.x ?? 0
       const y = shapeSpec.y ?? 0
-      const base = createDefaultShape(type as ShapeType, x, y)
+      const base = createDefaultShape(type as ShapeType, x, y, options.shapePreset)
       // Apply optional overrides from the op (excluding type/x/y already baked in).
       const overrides: Partial<CanvasShape> = { ...shapeSpec }
       delete (overrides as Record<string, unknown>).type
@@ -160,12 +167,21 @@ export function executeBasicShapeOp(
       break
     }
     case 'reparent': {
-      if (!findShape(op.id)) {
+      const shape = findShape(op.id)
+      if (!shape) {
         errors.push({ code: 'SHAPE_NOT_FOUND', message: `No shape "${op.id}"` })
         return true
       }
-      if (!findShape(op.newParentId)) {
+      const newParent = findShape(op.newParentId)
+      if (!newParent) {
         errors.push({ code: 'PARENT_NOT_FOUND', message: `No parent "${op.newParentId}"` })
+        return true
+      }
+      if (isArtifactFrame(newParent) || (isArtifactFrame(shape) && op.newParentId !== store.document.rootId)) {
+        errors.push({
+          code: 'INVALID_OP',
+          message: 'HTML and SVG artifact frames must remain root-level canvas portals.'
+        })
         return true
       }
       store.reparentShape(op.id, op.newParentId, op.index)
@@ -383,13 +399,25 @@ export function executeBasicShapeOp(
         })
         return true
       }
+      if (members.some(isArtifactFrame)) {
+        errors.push({
+          code: 'INVALID_OP',
+          message: 'HTML and SVG artifact frames cannot be grouped because portal previews must remain root-level.'
+        })
+        return true
+      }
       // The group lands under the first member's parent so it sits where the
       // content already is; bounds wrap the whole selection.
       const parentId = members[0].parentId ?? doc0.rootId
       const bounds = collectiveBounds(
         members.map((s) => ({ id: s.id, x: s.x, y: s.y, width: s.width, height: s.height }))
       )
-      const container = createDefaultShape(op.asFrame ? 'frame' : 'group', bounds.x, bounds.y)
+      const container = createDefaultShape(
+        op.asFrame ? 'frame' : 'group',
+        bounds.x,
+        bounds.y,
+        options.shapePreset
+      )
       container.name = op.name ?? (op.asFrame ? 'Frame' : 'Group')
       container.width = bounds.width
       container.height = bounds.height

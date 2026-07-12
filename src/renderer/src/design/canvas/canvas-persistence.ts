@@ -1,10 +1,18 @@
-import type { CanvasAgentNote, CanvasDocument, CanvasRunningAppFrame, CanvasShape, Point } from './canvas-types'
+import type { CanvasAgentNote, CanvasDocument, CanvasEmbeddedArtifact, CanvasRunningAppFrame, CanvasShape, Point } from './canvas-types'
 import { ROOT_SHAPE_ID } from './canvas-types'
 import { normalizeRunningAppUrl } from './running-app-frame'
 import type { DesignOperation, DesignOperationJournalEntry } from '../graph/design-graph-types'
 import type { DesignCodeBinding, DesignCodeBindingTarget } from '../code-binding/code-binding-types'
+import {
+  normalizeDesignPersistenceWorkspaceRoot,
+  writeDesignWorkspaceFile
+} from '../design-persistence-coordinator'
 
 const DESIGN_DIR = '.kun-design'
+export const MAX_CANVAS_DOCUMENT_OBJECTS = 10_000
+export const MAX_CANVAS_CHILDREN_PER_SHAPE = 4_096
+export const MAX_CANVAS_GRAPH_DEPTH = 512
+export const MAX_CANVAS_POINTS_PER_SHAPE = 20_000
 
 export function canvasDocPath(artifactId: string, baseDir: string = DESIGN_DIR): string {
   return `${baseDir}/${artifactId}/canvas.json`
@@ -72,6 +80,12 @@ function parseRunningAppFrame(raw: unknown): CanvasRunningAppFrame | null {
   }
 }
 
+function parseEmbeddedArtifact(raw: unknown): CanvasEmbeddedArtifact | null {
+  if (!isObj(raw) || typeof raw.id !== 'string' || !raw.id.trim()) return null
+  if (raw.kind !== 'html' && raw.kind !== 'svg') return null
+  return { id: raw.id.trim(), kind: raw.kind }
+}
+
 function parseShape(raw: unknown, id: string): CanvasShape | null {
   if (!isObj(raw)) return null
   const type = raw.type
@@ -88,8 +102,49 @@ function parseShape(raw: unknown, id: string): CanvasShape | null {
   )
     return null
 
+  const finiteNumberFields = [
+    'x',
+    'y',
+    'width',
+    'height',
+    'rotation',
+    'opacity',
+    'fontSize',
+    'fontWeight',
+    'lineHeight'
+  ] as const
+  if (finiteNumberFields.some((field) =>
+    typeof raw[field] === 'number' && !Number.isFinite(raw[field])
+  )) return null
+  if (
+    typeof raw.cornerRadius === 'number' && !Number.isFinite(raw.cornerRadius) ||
+    Array.isArray(raw.cornerRadius) && (
+      raw.cornerRadius.length !== 4 ||
+      raw.cornerRadius.some((value) => typeof value !== 'number' || !Number.isFinite(value))
+    )
+  ) return null
+  if (
+    Array.isArray(raw.children) && (
+      raw.children.length > MAX_CANVAS_CHILDREN_PER_SHAPE ||
+      raw.children.some((child) => typeof child !== 'string' || !child.trim())
+    )
+  ) return null
+  if (
+    Array.isArray(raw.points) && (
+      raw.points.length > MAX_CANVAS_POINTS_PER_SHAPE ||
+      raw.points.some((point) =>
+        !isObj(point) ||
+        typeof point.x !== 'number' ||
+        !Number.isFinite(point.x) ||
+        typeof point.y !== 'number' ||
+        !Number.isFinite(point.y)
+      )
+    )
+  ) return null
+
   const agentNote = parseCanvasAgentNote(raw.agentNote)
   const runningApp = parseRunningAppFrame(raw.runningApp)
+  const embeddedArtifact = parseEmbeddedArtifact(raw.embeddedArtifact)
   return {
     id,
     type: type as CanvasShape['type'],
@@ -112,7 +167,7 @@ function parseShape(raw: unknown, id: string): CanvasShape | null {
         : Array.isArray(raw.cornerRadius) && raw.cornerRadius.length === 4
           ? (raw.cornerRadius as [number, number, number, number])
           : 0,
-    children: Array.isArray(raw.children) ? raw.children.filter((c): c is string => typeof c === 'string') : [],
+    children: Array.isArray(raw.children) ? raw.children as string[] : [],
     ...(typeof raw.textContent === 'string' && { textContent: raw.textContent }),
     ...(typeof raw.fontSize === 'number' && { fontSize: raw.fontSize }),
     ...(typeof raw.fontFamily === 'string' && { fontFamily: raw.fontFamily }),
@@ -123,6 +178,7 @@ function parseShape(raw: unknown, id: string): CanvasShape | null {
     ...(typeof raw.imageUrl === 'string' && { imageUrl: raw.imageUrl }),
     ...(typeof raw.aiImageHolder === 'boolean' && { aiImageHolder: raw.aiImageHolder }),
     ...(typeof raw.clipContent === 'boolean' && { clipContent: raw.clipContent }),
+    ...(embeddedArtifact ? { embeddedArtifact } : {}),
     ...(typeof raw.htmlArtifactId === 'string' && { htmlArtifactId: raw.htmlArtifactId }),
     ...(runningApp ? { runningApp } : {}),
     ...((raw.devicePreset === 'mobile' ||
@@ -136,11 +192,7 @@ function parseShape(raw: unknown, id: string): CanvasShape | null {
     ...(typeof raw.arrowheadEnd === 'string' && {
       arrowheadEnd: raw.arrowheadEnd as CanvasShape['arrowheadEnd']
     }),
-    ...(Array.isArray(raw.points) && {
-      points: (raw.points as unknown[]).filter(
-        (p): p is Point => isObj(p) && typeof p.x === 'number' && typeof p.y === 'number'
-      )
-    }),
+    ...(Array.isArray(raw.points) && { points: raw.points as Point[] }),
     // Effects / layout / constraints are passed through structurally — the
     // executor's Zod schema is the source of truth on write, so loading trusts
     // the on-disk shape and only guards the container kind to avoid crashes.
@@ -271,9 +323,14 @@ function flattenCoordinatesToAbsolute(
   objects: Record<string, CanvasShape>,
   rootId: string
 ): void {
-  const walk = (id: string, offsetX: number, offsetY: number): void => {
+  const stack: Array<{ id: string; offsetX: number; offsetY: number }> = [
+    { id: rootId, offsetX: 0, offsetY: 0 }
+  ]
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    const { id, offsetX, offsetY } = current
     const shape = objects[id]
-    if (!shape) return
+    if (!shape) continue
     const isRoot = id === rootId
     const absX = isRoot ? shape.x : shape.x + offsetX
     const absY = isRoot ? shape.y : shape.y + offsetY
@@ -281,9 +338,42 @@ function flattenCoordinatesToAbsolute(
       shape.x = absX
       shape.y = absY
     }
-    for (const childId of shape.children) walk(childId, absX, absY)
+    for (let index = shape.children.length - 1; index >= 0; index -= 1) {
+      stack.push({ id: shape.children[index], offsetX: absX, offsetY: absY })
+    }
   }
-  walk(rootId, 0, 0)
+}
+
+export function validateCanvasDocumentGraph(
+  objects: Record<string, CanvasShape>,
+  rootId: string
+): boolean {
+  const objectIds = Object.keys(objects)
+  if (objectIds.length === 0 || objectIds.length > MAX_CANVAS_DOCUMENT_OBJECTS) return false
+  const root = objects[rootId]
+  if (!root || root.parentId !== null) return false
+
+  const visited = new Set<string>([rootId])
+  const parentByChild = new Map<string, string>()
+  const stack: Array<{ id: string; depth: number }> = [{ id: rootId, depth: 0 }]
+  while (stack.length > 0) {
+    const { id, depth } = stack.pop()!
+    if (depth > MAX_CANVAS_GRAPH_DEPTH) return false
+    const shape = objects[id]
+    if (!shape || shape.children.length > MAX_CANVAS_CHILDREN_PER_SHAPE) return false
+    const uniqueChildren = new Set<string>()
+    for (const childId of shape.children) {
+      if (uniqueChildren.has(childId)) return false
+      uniqueChildren.add(childId)
+      const child = objects[childId]
+      if (!child || childId === rootId || child.parentId !== id) return false
+      if (parentByChild.has(childId) || visited.has(childId)) return false
+      parentByChild.set(childId, id)
+      visited.add(childId)
+      stack.push({ id: childId, depth: depth + 1 })
+    }
+  }
+  return visited.size === objectIds.length
 }
 
 export function parseCanvasDocument(raw: string): CanvasDocument | null {
@@ -297,14 +387,17 @@ export function parseCanvasDocument(raw: string): CanvasDocument | null {
   if (parsed.version !== 1 && parsed.version !== 2) return null
   const rootId = typeof parsed.rootId === 'string' ? parsed.rootId : ROOT_SHAPE_ID
   if (!isObj(parsed.objects)) return null
+  const rawObjects = Object.entries(parsed.objects as Record<string, unknown>)
+  if (rawObjects.length === 0 || rawObjects.length > MAX_CANVAS_DOCUMENT_OBJECTS) return null
 
   const objects: Record<string, CanvasShape> = {}
-  for (const [id, rawShape] of Object.entries(parsed.objects as Record<string, unknown>)) {
+  for (const [id, rawShape] of rawObjects) {
     const shape = parseShape(rawShape, id)
-    if (shape) objects[id] = shape
+    if (!shape) return null
+    objects[id] = shape
   }
 
-  if (!objects[rootId]) return null
+  if (!validateCanvasDocumentGraph(objects, rootId)) return null
   if (parsed.version === 1) flattenCoordinatesToAbsolute(objects, rootId)
   const graph = parseGraphMetadata(parsed.graph)
   const operationJournal = Array.isArray(parsed.operationJournal)
@@ -326,6 +419,11 @@ export function parseCanvasDocument(raw: string): CanvasDocument | null {
 }
 
 const _saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const _pendingSaves = new Map<string, {
+  workspaceRoot: string
+  path: string
+  content: string
+}>()
 
 function canvasSaveKey(workspaceRoot: string, artifactId: string, baseDir: string | undefined): string {
   return canvasDocumentKey(workspaceRoot, artifactId, baseDir)
@@ -337,22 +435,44 @@ export function persistCanvasDocument(
   doc: CanvasDocument,
   baseDir?: string
 ): void {
-  if (!workspaceRoot || typeof window.kunGui?.writeWorkspaceFile !== 'function') return
+  if (!workspaceRoot) return
 
   const key = canvasSaveKey(workspaceRoot, artifactId, baseDir)
   const existingTimer = _saveTimers.get(key)
   if (existingTimer) clearTimeout(existingTimer)
+  _pendingSaves.set(key, {
+    path: canvasDocPath(artifactId, baseDir),
+    workspaceRoot,
+    content: serializeCanvasDocument(doc)
+  })
   const timer = setTimeout(() => {
     _saveTimers.delete(key)
-    void window.kunGui
-      .writeWorkspaceFile({
-        path: canvasDocPath(artifactId, baseDir),
-        workspaceRoot,
-        content: serializeCanvasDocument(doc)
-      })
-      .catch(() => undefined)
+    const pending = _pendingSaves.get(key)
+    _pendingSaves.delete(key)
+    if (pending) void writeDesignWorkspaceFile(pending)
   }, 600)
   _saveTimers.set(key, timer)
+}
+
+export async function flushPendingCanvasDocuments(workspaceRoot?: string): Promise<void> {
+  const normalizedRoot = workspaceRoot === undefined
+    ? null
+    : normalizeDesignPersistenceWorkspaceRoot(workspaceRoot)
+  for (;;) {
+    const entries = [..._pendingSaves.entries()]
+      .filter(([, pending]) =>
+        normalizedRoot === null ||
+        normalizeDesignPersistenceWorkspaceRoot(pending.workspaceRoot) === normalizedRoot
+      )
+    if (entries.length === 0) return
+    await Promise.all(entries.map(async ([key, pending]) => {
+      const timer = _saveTimers.get(key)
+      if (timer) clearTimeout(timer)
+      _saveTimers.delete(key)
+      _pendingSaves.delete(key)
+      await writeDesignWorkspaceFile(pending)
+    }))
+  }
 }
 
 export async function loadCanvasDocument(

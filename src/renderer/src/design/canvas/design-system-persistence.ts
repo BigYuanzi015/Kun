@@ -6,6 +6,10 @@
  */
 import type { DesignSystem } from './design-system-types'
 import type { CanvasShape, ShapeType } from './canvas-types'
+import {
+  normalizeDesignPersistenceWorkspaceRoot,
+  writeDesignWorkspaceFile
+} from '../design-persistence-coordinator'
 
 const DESIGN_DIR = '.kun-design'
 const CANVAS_SHAPE_TYPES = new Set<ShapeType>([
@@ -122,6 +126,11 @@ export function parseDesignSystem(raw: string): DesignSystem | null {
 }
 
 const _saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const _pendingSaves = new Map<string, {
+  workspaceRoot: string
+  path: string
+  content: string
+}>()
 
 function designSystemSaveKey(workspaceRoot: string, baseDir: string | undefined): string {
   return [workspaceRoot, baseDir ?? DESIGN_DIR].join('\0')
@@ -132,21 +141,43 @@ export function persistDesignSystem(
   system: DesignSystem,
   baseDir?: string
 ): void {
-  if (!workspaceRoot || typeof window.kunGui?.writeWorkspaceFile !== 'function') return
+  if (!workspaceRoot) return
   const key = designSystemSaveKey(workspaceRoot, baseDir)
   const existingTimer = _saveTimers.get(key)
   if (existingTimer) clearTimeout(existingTimer)
+  _pendingSaves.set(key, {
+    path: designSystemPath(baseDir),
+    workspaceRoot,
+    content: serializeDesignSystem(system)
+  })
   const timer = setTimeout(() => {
     _saveTimers.delete(key)
-    void window.kunGui
-      .writeWorkspaceFile({
-        path: designSystemPath(baseDir),
-        workspaceRoot,
-        content: serializeDesignSystem(system)
-      })
-      .catch(() => undefined)
+    const pending = _pendingSaves.get(key)
+    _pendingSaves.delete(key)
+    if (pending) void writeDesignWorkspaceFile(pending)
   }, 600)
   _saveTimers.set(key, timer)
+}
+
+export async function flushPendingDesignSystems(workspaceRoot?: string): Promise<void> {
+  const normalizedRoot = workspaceRoot === undefined
+    ? null
+    : normalizeDesignPersistenceWorkspaceRoot(workspaceRoot)
+  for (;;) {
+    const entries = [..._pendingSaves.entries()]
+      .filter(([, pending]) =>
+        normalizedRoot === null ||
+        normalizeDesignPersistenceWorkspaceRoot(pending.workspaceRoot) === normalizedRoot
+      )
+    if (entries.length === 0) return
+    await Promise.all(entries.map(async ([key, pending]) => {
+      const timer = _saveTimers.get(key)
+      if (timer) clearTimeout(timer)
+      _saveTimers.delete(key)
+      _pendingSaves.delete(key)
+      await writeDesignWorkspaceFile(pending)
+    }))
+  }
 }
 
 export async function loadDesignSystem(

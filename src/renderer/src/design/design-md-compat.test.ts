@@ -26,6 +26,21 @@ function artifact(id: string, title: string, extra: Partial<DesignArtifact> = {}
   }
 }
 
+function svgArtifact(id: string, title: string): DesignArtifact {
+  const relativePath = `.kun-design/doc/${id}/v1.svg`
+  return {
+    id,
+    kind: 'svg',
+    title,
+    relativePath,
+    designMdPath: `.kun-design/doc/${id}/DESIGN.md`,
+    createdAt: now,
+    updatedAt: now,
+    versions: [{ id: `${id}-v1`, relativePath, createdAt: now, summary: '' }],
+    node: { x: 20, y: 40, width: 320, height: 240 }
+  }
+}
+
 function shape(id: string): CanvasShape {
   return {
     id,
@@ -49,8 +64,8 @@ function shape(id: string): CanvasShape {
 }
 
 describe('design-md-compat', () => {
-  it('uses a project-level DESIGN.md path under .kun-design', () => {
-    expect(STITCH_DESIGN_MD_PATH).toBe('.kun-design/DESIGN.md')
+  it('keeps the generated handoff separate from root DESIGN.md', () => {
+    expect(STITCH_DESIGN_MD_PATH).toBe('.kun-design/HANDOFF.md')
   })
 
   it('exports context, tokens, components, screens, and prototype flow', () => {
@@ -79,7 +94,7 @@ describe('design-md-compat', () => {
         tone: ['专业']
       },
       designSystem: system,
-      designSystemMdPath: '.kun-design/DESIGN_SYSTEM.md',
+      designSystemMdPath: '.kun-design/design-system.json',
       projectBriefPath: '.kun-design/doc/design.md',
       artifacts: [
         artifact('home', 'Home', {
@@ -93,7 +108,8 @@ describe('design-md-compat', () => {
             }
           ]
         }),
-        artifact('details', 'Details')
+        artifact('details', 'Details'),
+        svgArtifact('orbit', 'Orbit loader')
       ],
       updatedAt: now
     })
@@ -108,6 +124,10 @@ describe('design-md-compat', () => {
     expect(markdown).toContain('**Home** (home): HTML `.kun-design/doc/home/v1.html`; frame 390x844')
     expect(markdown).toContain('direction: Ops direction')
     expect(markdown).toContain('Open details -> Details (details) via `../details/v1.html`')
+    expect(markdown).toContain(
+      '**Orbit loader** (orbit): SVG `.kun-design/doc/orbit/v1.svg`; canvas frame 320x240; notes `.kun-design/doc/orbit/DESIGN.md`'
+    )
+    expect(markdown).toContain('Keep SVG motion declarative')
   })
 
   it('exports the prototype frame size each screen will use', () => {

@@ -3,6 +3,7 @@ import {
   createDefaultShape,
   createEmptyDocument,
   createHtmlFrameShape,
+  createSvgFrameShape,
   ROOT_SHAPE_ID
 } from '../canvas/canvas-types'
 import type { DesignWorkspaceState } from '../design-workspace-store-types'
@@ -40,10 +41,23 @@ function boardArtifact(): DesignArtifact {
   }
 }
 
+function svgArtifact(id: string, title: string): DesignArtifact {
+  return {
+    id,
+    kind: 'svg',
+    title,
+    relativePath: `.kun-design/doc/${id}/v1.svg`,
+    designMdPath: `.kun-design/doc/${id}/DESIGN.md`,
+    createdAt: now,
+    updatedAt: now,
+    versions: [{ id: `${id}-v1`, relativePath: `.kun-design/doc/${id}/v1.svg`, createdAt: now, summary: '' }]
+  }
+}
+
 function workspaceState(artifacts: DesignArtifact[]): Pick<
   DesignWorkspaceState,
   'activeArtifactId' | 'artifacts' | 'designContext' | 'prepareHtmlTurn'
-> {
+> & Partial<Pick<DesignWorkspaceState, 'prepareSvgTurn'>> {
   return {
     activeArtifactId: artifacts[0]?.id ?? null,
     artifacts,
@@ -56,12 +70,71 @@ function workspaceState(artifacts: DesignArtifact[]): Pick<
         basePath: `.kun-design/doc/${artifactId}/v1.html`,
         designMdPath: `.kun-design/doc/${artifactId}/DESIGN.md`
       }
+    }),
+    prepareSvgTurn: vi.fn(async (_: string, options?: { artifactId?: string }) => {
+      const artifactId = options?.artifactId ?? 'fresh-svg'
+      return {
+        artifactId,
+        relativePath: `.kun-design/doc/${artifactId}/v2.svg`,
+        basePath: `.kun-design/doc/${artifactId}/v1.svg`,
+        designMdPath: `.kun-design/doc/${artifactId}/DESIGN.md`,
+        newlyCreated: false,
+        versionCreated: true
+      }
     })
   }
 }
 
 describe('design turn target resolver', () => {
-  it('resolves an explicit HTML screen frame as a screen turn', () => {
+  it('routes an explicit SVG artifact into a dedicated versioned SVG turn', async () => {
+    const board = boardArtifact()
+    const svg = svgArtifact('orbit', 'Orbit loader')
+    const state = workspaceState([board, svg])
+
+    const resolved = await resolveDesignTurnTarget({
+      promptText: 'Make the orbit ease in and out',
+      workspaceState: state,
+      boardArtifact: board,
+      canvasDocument: createEmptyDocument(),
+      selectedShapeIds: new Set(),
+      explicitSvgArtifactId: svg.id
+    })
+
+    expect(resolved).toMatchObject({
+      target: 'svg',
+      artifactRelativePath: '.kun-design/doc/orbit/v2.svg',
+      basePath: '.kun-design/doc/orbit/v1.svg',
+      svgArtifactId: 'orbit',
+      designNotesPath: '.kun-design/doc/orbit/DESIGN.md',
+      nextIntentMode: 'modify'
+    })
+    expect(state.prepareSvgTurn).toHaveBeenCalledWith(
+      'Make the orbit ease in and out',
+      expect.objectContaining({ artifactId: 'orbit', reusePendingInitial: true })
+    )
+  })
+
+  it('routes a selected SVG frame without needing an explicit override', async () => {
+    const board = boardArtifact()
+    const svg = svgArtifact('mark', 'Animated mark')
+    const frame = { ...createSvgFrameShape('Animated mark', 24, 32, svg.id, 320, 240), id: 'frame_svg', parentId: ROOT_SHAPE_ID }
+    const doc = createEmptyDocument()
+    doc.objects[frame.id] = frame
+    doc.objects[ROOT_SHAPE_ID] = { ...doc.objects[ROOT_SHAPE_ID], children: [frame.id] }
+    const state = workspaceState([board, svg])
+
+    const resolved = await resolveDesignTurnTarget({
+      promptText: 'Slow this animation down',
+      workspaceState: state,
+      boardArtifact: board,
+      canvasDocument: doc,
+      selectedShapeIds: new Set([frame.id])
+    })
+
+    expect(resolved).toMatchObject({ target: 'svg', svgArtifactId: 'mark' })
+  })
+
+  it('resolves an explicit HTML screen frame as a screen turn', async () => {
     const artifact = htmlArtifact('home', 'Home')
     const doc = createEmptyDocument()
     const frame = { ...createHtmlFrameShape('Home frame', 10, 20, 'home', 'desktop'), id: 'frame_home', parentId: ROOT_SHAPE_ID }
@@ -69,7 +142,7 @@ describe('design turn target resolver', () => {
     doc.objects[frame.id] = frame
     const state = workspaceState([artifact, boardArtifact()])
 
-    const resolved = resolveDesignTurnTarget({
+    const resolved = await resolveDesignTurnTarget({
       promptText: 'Improve this screen',
       workspaceState: state,
       boardArtifact: boardArtifact(),
@@ -94,10 +167,10 @@ describe('design turn target resolver', () => {
     }))
   })
 
-  it('resolves selected HTML element edits as focused HTML turns', () => {
+  it('resolves selected HTML element edits as focused HTML turns', async () => {
     const artifact = htmlArtifact('home', 'Home')
     const state = workspaceState([artifact, boardArtifact()])
-    const resolved = resolveDesignTurnTarget({
+    const resolved = await resolveDesignTurnTarget({
       promptText: 'Change this button',
       workspaceState: state,
       boardArtifact: boardArtifact(),
@@ -125,12 +198,12 @@ describe('design turn target resolver', () => {
     })
   })
 
-  it('resolves canvas selections into selected canvas snapshots', () => {
+  it('resolves canvas selections into selected canvas snapshots', async () => {
     const doc = createEmptyDocument()
     const rect = { ...createDefaultShape('rect', 40, 80), id: 'rect_1', parentId: ROOT_SHAPE_ID }
     doc.objects[ROOT_SHAPE_ID] = { ...doc.objects[ROOT_SHAPE_ID], children: [rect.id] }
     doc.objects[rect.id] = rect
-    const resolved = resolveDesignTurnTarget({
+    const resolved = await resolveDesignTurnTarget({
       promptText: 'Annotate this card',
       workspaceState: { ...workspaceState([boardArtifact()]), activeArtifactId: 'board' },
       boardArtifact: boardArtifact(),
@@ -147,8 +220,8 @@ describe('design turn target resolver', () => {
     })
   })
 
-  it('resolves empty design canvas turns as generate intent', () => {
-    const resolved = resolveDesignTurnTarget({
+  it('resolves empty design canvas turns as generate intent', async () => {
+    const resolved = await resolveDesignTurnTarget({
       promptText: 'Create a dashboard',
       workspaceState: { ...workspaceState([boardArtifact()]), activeArtifactId: 'board' },
       boardArtifact: boardArtifact(),

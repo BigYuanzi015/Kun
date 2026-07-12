@@ -176,6 +176,19 @@ export function providerIdForComposerModel(
   return modelGroups.find((group) => modelGroupHasModel(group, model))?.providerId ?? ''
 }
 
+export function accountIdForComposerSelection(
+  modelGroups: readonly ModelProviderModelGroup[] | undefined,
+  providerId: string,
+  modelId: string
+): string {
+  const provider = providerId.trim()
+  const model = modelId.trim()
+  if (!provider || !model) return ''
+  const group = modelGroups?.find((candidate) => candidate.providerId === provider)
+  if (!group || !modelGroupHasModel(group, model)) return ''
+  return group.accountId?.trim() ?? ''
+}
+
 export function resolveComposerContextWindowTokens(
   modelGroups: readonly ModelProviderModelGroup[],
   modelId: string,

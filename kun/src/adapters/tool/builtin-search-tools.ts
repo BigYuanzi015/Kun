@@ -1,9 +1,13 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { relative, resolve } from 'node:path'
 import { LocalToolHost, type LocalTool } from './local-tool-host.js'
 import type { FindLocalToolOptions, GrepLocalToolOptions, GrepMatch, LsLocalToolOptions } from './builtin-tool-types.js'
 import {
   DEFAULT_FIND_LIMIT,
+  DEFAULT_GREP_MAX_CONTEXT_LINES,
+  DEFAULT_GREP_MAX_FILE_BYTES,
+  DEFAULT_GREP_MAX_MATCHES,
+  DEFAULT_GREP_MAX_TOTAL_BYTES,
   DEFAULT_LIST_LIMIT,
   DEFAULT_SEARCH_LIMIT,
   FD_EXECUTABLE_CANDIDATES,
@@ -203,10 +207,18 @@ export function createGrepLocalTool(options: GrepLocalToolOptions = {}): LocalTo
       const literal = normalizeBoolean(args.literal)
       const ignoreCase = normalizeBoolean(args.ignoreCase)
       const contextLines = typeof args.context === 'number' && Number.isFinite(args.context) && args.context > 0
-        ? Math.floor(args.context)
+        ? Math.min(DEFAULT_GREP_MAX_CONTEXT_LINES, Math.floor(args.context))
         : 0
       const glob = typeof args.glob === 'string' && args.glob.trim() ? args.glob.trim() : null
-      const limit = normalizePositiveInteger(args.limit, options.defaultLimit ?? DEFAULT_SEARCH_LIMIT)
+      const limit = Math.min(
+        DEFAULT_GREP_MAX_MATCHES,
+        normalizePositiveInteger(args.limit, options.defaultLimit ?? DEFAULT_SEARCH_LIMIT)
+      )
+      const maxFileBytes = normalizePositiveInteger(options.maxFileBytes, DEFAULT_GREP_MAX_FILE_BYTES)
+      const maxTotalBytes = Math.max(
+        maxFileBytes,
+        normalizePositiveInteger(options.maxTotalBytes, DEFAULT_GREP_MAX_TOTAL_BYTES)
+      )
       const rawPath = typeof args.path === 'string' && args.path.trim() ? args.path : '.'
       const flags = ignoreCase ? 'i' : ''
       const effectiveMatcher = literal
@@ -241,6 +253,46 @@ export function createGrepLocalTool(options: GrepLocalToolOptions = {}): LocalTo
         }
       }
       const matches: GrepMatch[] = []
+      const linesByPath = new Map<string, string[] | null>()
+      let scannedBytes = 0
+      let skippedLargeFiles = 0
+      let scanByteLimitReached = false
+      let commandOutputTruncated = false
+      const loadTextLines = async (candidatePath: string): Promise<string[] | null> => {
+        if (linesByPath.has(candidatePath)) return linesByPath.get(candidatePath) ?? null
+        try {
+          const fileStat = await stat(candidatePath)
+          const fileBytes = Math.max(0, fileStat.size)
+          if (!fileStat.isFile() || fileBytes > maxFileBytes || scannedBytes + fileBytes > maxTotalBytes) {
+            if (fileStat.isFile() && fileBytes > maxFileBytes) skippedLargeFiles += 1
+            if (fileStat.isFile() && scannedBytes + fileBytes > maxTotalBytes) scanByteLimitReached = true
+            linesByPath.set(candidatePath, null)
+            return null
+          }
+          const buffer = await readFile(candidatePath)
+          // Re-check after opening in case the file changed after stat().
+          if (buffer.length > maxFileBytes || scannedBytes + buffer.length > maxTotalBytes) {
+            if (buffer.length > maxFileBytes) skippedLargeFiles += 1
+            if (scannedBytes + buffer.length > maxTotalBytes) scanByteLimitReached = true
+            linesByPath.set(candidatePath, null)
+            return null
+          }
+          scannedBytes += buffer.length
+          if (isBinaryBuffer(buffer)) {
+            linesByPath.set(candidatePath, null)
+            return null
+          }
+          const lines = buffer.toString('utf8').replace(/\r\n/g, '\n').split('\n')
+          linesByPath.set(candidatePath, lines)
+          return lines
+        } catch {
+          // Files can legitimately disappear while rg/scan is walking a live
+          // workspace. Treat that one path as unavailable rather than failing
+          // the entire bounded search.
+          linesByPath.set(candidatePath, null)
+          return null
+        }
+      }
       const rg = resolveExecutable(options.rgExecutableCandidates ?? RG_EXECUTABLE_CANDIDATES)
       if (rg) {
         const rgArgs = ['--hidden', '--line-number', '--with-filename', '--color', 'never']
@@ -249,6 +301,7 @@ export function createGrepLocalTool(options: GrepLocalToolOptions = {}): LocalTo
         if (glob) rgArgs.push('-g', glob)
         rgArgs.push(pattern, absolutePath)
         const result = await spawnCapture(rg, rgArgs, { cwd: root, signal: context.abortSignal })
+        commandOutputTruncated = result.outputTruncated
         const rows = result.stdout
           .split(/\r?\n/)
           .map((line) => line.trim())
@@ -263,9 +316,8 @@ export function createGrepLocalTool(options: GrepLocalToolOptions = {}): LocalTo
           const candidateRelative = normalizeToolPath(relative(root, candidatePath) || '.')
           if (globMatcher && !globMatcher.test(candidateRelative)) continue
           const columnMatch = effectiveMatcher.exec(lineText)
-          const buffer = await readFile(candidatePath)
-          if (isBinaryBuffer(buffer)) continue
-          const lines = buffer.toString('utf8').replace(/\r\n/g, '\n').split('\n')
+          const lines = contextLines > 0 ? await loadTextLines(candidatePath) : null
+          if (contextLines > 0 && !lines) continue
           matches.push({
             path: candidatePath,
             relative_path: candidateRelative,
@@ -274,8 +326,8 @@ export function createGrepLocalTool(options: GrepLocalToolOptions = {}): LocalTo
             text: lineText,
             ...(contextLines > 0
               ? {
-                  context_before: lines.slice(Math.max(0, lineNumber - 1 - contextLines), lineNumber - 1),
-                  context_after: lines.slice(lineNumber, lineNumber + contextLines)
+                  context_before: lines!.slice(Math.max(0, lineNumber - 1 - contextLines), lineNumber - 1),
+                  context_after: lines!.slice(lineNumber, lineNumber + contextLines)
                 }
               : {})
           })
@@ -286,9 +338,8 @@ export function createGrepLocalTool(options: GrepLocalToolOptions = {}): LocalTo
           if (matches.length >= limit) break
           const candidateRelative = normalizeToolPath(relative(root, candidatePath) || '.')
           if (globMatcher && !globMatcher.test(candidateRelative)) continue
-          const buffer = await readFile(candidatePath)
-          if (isBinaryBuffer(buffer)) continue
-          const lines = buffer.toString('utf8').replace(/\r\n/g, '\n').split('\n')
+          const lines = await loadTextLines(candidatePath)
+          if (!lines) continue
           for (let index = 0; index < lines.length; index += 1) {
             const line = lines[index] ?? ''
             const result = effectiveMatcher.exec(line)
@@ -322,7 +373,10 @@ export function createGrepLocalTool(options: GrepLocalToolOptions = {}): LocalTo
           backend: rg ? 'rg' : 'scan',
           matches,
           truncated: matches.length >= limit,
-          match_limit_reached: matches.length >= limit ? limit : null
+          match_limit_reached: matches.length >= limit ? limit : null,
+          skipped_large_files: skippedLargeFiles,
+          scan_byte_limit_reached: scanByteLimitReached,
+          command_output_truncated: commandOutputTruncated
         }
       }
     })

@@ -9,6 +9,7 @@ export type DesignDirectionGroup = {
 
 export type GroupedDesignArtifacts = {
   html: DesignArtifact[]
+  svg: DesignArtifact[]
   canvas: DesignArtifact[]
   directions: DesignDirectionGroup[]
   archivedDirections: DesignDirectionGroup[]
@@ -45,6 +46,7 @@ export function groupDesignArtifacts(
   const grouped = artifacts.reduce<GroupedDesignArtifacts>(
     (groups, artifact) => {
       if (artifact.kind === 'canvas') groups.canvas.push(artifact)
+      else if (artifact.kind === 'svg') groups.svg.push(artifact)
       else {
         if (artifact.direction) {
           let direction = groups.directions.find((item) => item.id === artifact.direction?.id)
@@ -63,7 +65,7 @@ export function groupDesignArtifacts(
       }
       return groups
     },
-    { html: [], canvas: [], directions: [], archivedDirections: [] }
+    { html: [], svg: [], canvas: [], directions: [], archivedDirections: [] }
   )
   const directions = grouped.directions.filter((direction) => direction.artifacts.length > 0)
   grouped.directions = directions.filter((direction) => direction.status !== 'archived')

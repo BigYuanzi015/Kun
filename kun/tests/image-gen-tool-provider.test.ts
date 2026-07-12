@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -120,18 +120,53 @@ describe('Image gen tool provider', () => {
   })
 
   it('maps aspect ratio and size tier to provider sizes', () => {
-    expect(mapImageSize(undefined, undefined, undefined)).toBeUndefined()
-    expect(mapImageSize(undefined, undefined, '1536x1024')).toBe('1536x1024')
-    expect(mapImageSize(undefined, undefined, 'auto')).toBe('auto')
-    expect(mapImageSize('1:1', undefined, undefined)).toBe('1024x1024')
-    expect(mapImageSize('1:1', '2K', undefined)).toBe('2048x2048')
-    expect(mapImageSize('16:9', '1K', undefined)).toBe('1024x576')
-    expect(mapImageSize('9:16', '2K', undefined)).toBe('1152x2048')
-    expect(mapImageSize('21:9', '1K', undefined)).toBe('1024x448')
-    expect(mapImageSize('3:2', '1K', undefined)).toBe('1024x704')
+    expect(mapImageSize(undefined, undefined, undefined, '1K')).toBe('1024x1024')
+    expect(mapImageSize(undefined, undefined, undefined, '2K')).toBe('2048x2048')
+    expect(mapImageSize(undefined, undefined, undefined, 'auto')).toBe('auto')
+    expect(mapImageSize('16:9', undefined, undefined, 'auto')).toBe('1024x576')
+    expect(mapImageSize(undefined, undefined, '1536x1024', '2K')).toBe('1536x1024')
+    expect(mapImageSize('3:2', undefined, '1536x1024', '2K')).toBe('1536x1024')
+    expect(mapImageSize(undefined, undefined, 'auto', '2K')).toBe('auto')
+    expect(mapImageSize('16:9', undefined, 'auto', '2K')).toBe('2048x1152')
+    expect(mapImageSize('1:1', undefined, undefined, '1K')).toBe('1024x1024')
+    expect(mapImageSize('1:1', '2K', undefined, '1K')).toBe('2048x2048')
+    expect(mapImageSize('16:9', '1K', undefined, '2K')).toBe('1024x576')
+    expect(mapImageSize('9:16', '2K', undefined, '1K')).toBe('1152x2048')
+    expect(mapImageSize('21:9', '1K', undefined, '2K')).toBe('1024x448')
+    expect(mapImageSize('3:2', '1K', undefined, '2K')).toBe('1024x704')
+    // An explicit tool override wins over both configured size fields.
+    expect(mapImageSize('16:9', '2K', '1536x1024', '1K')).toBe('2048x1152')
     // Unknown ratios fall back to a square at the requested tier.
-    expect(mapImageSize('7:5', '2K', undefined)).toBe('2048x2048')
-    expect(mapImageSize(undefined, '2K', undefined)).toBe('2048x2048')
+    expect(mapImageSize('7:5', '2K', undefined, '1K')).toBe('2048x2048')
+    expect(mapImageSize(undefined, '2K', undefined, '1K')).toBe('2048x2048')
+  })
+
+  it('defaults image resolution to 1K and validates configured tiers', () => {
+    expect(imageGenConfig().defaultResolution).toBe('1K')
+    expect(imageGenConfig({ defaultResolution: 'auto' }).defaultResolution).toBe('auto')
+    expect(imageGenConfig({ defaultResolution: '2K' }).defaultResolution).toBe('2K')
+    expect(() => imageGenConfig({ defaultResolution: '4K' })).toThrow()
+  })
+
+  it('advertises settings-backed quality and resolution semantics without dynamic values', () => {
+    const oneKTool = buildImageGenToolProviders(imageGenConfig({
+      defaultResolution: '1K',
+      quality: 'low'
+    }), { client: fakeClient() }).providers[0].tools[0]
+    const twoKTool = buildImageGenToolProviders(imageGenConfig({
+      defaultResolution: '2K',
+      quality: 'high'
+    }), { client: fakeClient() }).providers[0].tools[0]
+
+    expect(oneKTool.description).toContain('Image quality is applied automatically from Settings')
+    const properties = oneKTool.inputSchema.properties as Record<string, { description?: string }>
+    expect(properties.aspect_ratio.description).toContain('preserving the selected or default resolution')
+    expect(properties.image_size.description).toContain('only when the user explicitly requests 1K or 2K')
+    expect(properties.image_size.description).toContain('Settings default resolution')
+    expect(properties.image_size.description).toContain('independent of image quality')
+    expect(properties.image_size.description).not.toContain('defaults to 1K')
+    expect(twoKTool.description).toBe(oneKTool.description)
+    expect(twoKTool.inputSchema).toEqual(oneKTool.inputSchema)
   })
 
   it('keeps explicit width/height for MiniMax image-01 only', () => {
@@ -487,11 +522,103 @@ describe('Image gen tool provider', () => {
     await expect(store.resolveContent(id, { threadId: 'thr_other' })).rejects.toThrow(/not authorized/)
   })
 
+  it('uses the configured default resolution unless the user explicitly overrides it', async () => {
+    const client = fakeClient()
+    const host = new LocalToolHost({
+      registry: new CapabilityRegistry(
+        buildImageGenToolProviders(imageGenConfig({ defaultResolution: '2K' }), {
+          client,
+          nowIso: () => '2026-06-10T00:00:00.000Z'
+        }).providers
+      )
+    })
+
+    await host.execute({
+      callId: 'call_default_resolution',
+      toolName: 'generate_image',
+      arguments: { prompt: 'wide landscape', aspect_ratio: '16:9' }
+    }, buildContext())
+    await host.execute({
+      callId: 'call_explicit_resolution',
+      toolName: 'generate_image',
+      arguments: { prompt: 'smaller wide landscape', aspect_ratio: '16:9', image_size: '1K' }
+    }, buildContext())
+
+    expect(client.generateCalls[0]).toMatchObject({ size: '2048x1152' })
+    expect(client.generateCalls[1]).toMatchObject({ size: '1024x576' })
+  })
+
+  it('lets the provider choose dimensions when default resolution is auto and no ratio is requested', async () => {
+    const client = fakeClient()
+    const host = new LocalToolHost({
+      registry: new CapabilityRegistry(
+        buildImageGenToolProviders(imageGenConfig({ defaultResolution: 'auto' }), {
+          client,
+          nowIso: () => '2026-06-10T00:00:00.000Z'
+        }).providers
+      )
+    })
+
+    await host.execute({
+      callId: 'call_auto_resolution',
+      toolName: 'generate_image',
+      arguments: { prompt: 'provider-sized image' }
+    }, buildContext())
+
+    expect(client.generateCalls[0]).not.toHaveProperty('size')
+  })
+
+  it('rejects generated-image writes through an escaping workspace symlink', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'kun-imagegen-outside-'))
+    try {
+      await symlink(outside, join(workspace, '.deepseekgui-images'), process.platform === 'win32' ? 'junction' : 'dir')
+      const client = fakeClient()
+      const host = hostFor(client)
+
+      const result = await host.execute({
+        callId: 'call_escape',
+        toolName: 'generate_image',
+        arguments: { prompt: 'must stay in workspace' }
+      }, { ...buildContext(), sandboxMode: 'workspace-write' })
+
+      expect(result.item).toMatchObject({ kind: 'tool_result', isError: true })
+      expect(JSON.stringify(result.item)).toContain('workspace_path_escape')
+      expect(client.generateCalls).toHaveLength(1)
+      await expect(readdir(outside)).resolves.toEqual([])
+    } finally {
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('does not read a reference image through an escaping workspace symlink', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'kun-imagegen-reference-outside-'))
+    try {
+      await mkdir(join(workspace, 'refs'))
+      await writeFile(join(outside, 'secret.png'), png(8, 8))
+      await symlink(join(outside, 'secret.png'), join(workspace, 'refs', 'linked.png'), 'file')
+      const client = fakeClient()
+      const host = hostFor(client)
+
+      const result = await host.execute({
+        callId: 'call_reference_escape',
+        toolName: 'generate_image',
+        arguments: { prompt: 'use reference', reference_image_paths: ['refs/linked.png'] }
+      }, { ...buildContext(), sandboxMode: 'workspace-write' })
+
+      expect(result.item).toMatchObject({ kind: 'tool_result', isError: true })
+      expect(JSON.stringify(result.item)).toContain('invalid_reference_path')
+      expect(client.generateCalls).toHaveLength(0)
+      expect(client.editCalls).toHaveLength(0)
+    } finally {
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
   it('passes configured image quality through tool execution', async () => {
     const client = fakeClient()
     const host = new LocalToolHost({
       registry: new CapabilityRegistry(
-        buildImageGenToolProviders(imageGenConfig({ quality: 'high' }), {
+        buildImageGenToolProviders(imageGenConfig({ quality: 'high', defaultResolution: '2K' }), {
           client,
           nowIso: () => '2026-06-10T00:00:00.000Z'
         }).providers
@@ -507,7 +634,7 @@ describe('Image gen tool provider', () => {
     expect(result.item).toMatchObject({ kind: 'tool_result', isError: false })
     if (result.item.kind !== 'tool_result') return
     expect(result.item.output).toMatchObject({ quality: 'high' })
-    expect(client.generateCalls[0]).toMatchObject({ quality: 'high' })
+    expect(client.generateCalls[0]).toMatchObject({ quality: 'high', size: '2048x2048' })
   })
 
   it('posts generations as JSON and decodes b64_json responses', async () => {

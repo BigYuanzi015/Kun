@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileArtifactStore, InMemoryArtifactStore, type ArtifactStore } from './artifact-store.js'
@@ -91,6 +91,36 @@ runStoreContract('FileArtifactStore', async () => {
 })
 
 describe('FileArtifactStore streaming reads', () => {
+  it('serializes concurrent writes so the artifact quota cannot race', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kun-artifact-quota-'))
+    try {
+      const store = new FileArtifactStore(dir, () => 't0', { maxArtifacts: 1 })
+      const [first, second] = await Promise.allSettled([
+        store.put({ content: 'first artifact' }),
+        store.put({ content: 'second artifact' })
+      ])
+
+      expect([first, second].filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      expect([first, second].filter((result) => result.status === 'rejected')).toHaveLength(1)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('writes artifact data and metadata with private filesystem permissions', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kun-artifact-private-'))
+    try {
+      const store = new FileArtifactStore(dir, () => 't0')
+      const result = await store.put({ content: 'sensitive artifact' })
+
+      expect((await stat(dir)).mode & 0o777).toBe(0o700)
+      expect((await stat(join(dir, `${result.meta.id}.bin`))).mode & 0o777).toBe(0o600)
+      expect((await stat(join(dir, `${result.meta.id}.json`))).mode & 0o777).toBe(0o600)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('seeks a byte range and a line window from a large artifact without loading it whole', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kun-artifacts-'))
     try {

@@ -18,7 +18,6 @@ import {
   KUN_RUNTIME_INFO_PATH,
   KUN_RUNTIME_TOOLS_PATH,
   KUN_SKILLS_PATH,
-  kunApprovalPath,
   kunThreadCompactPath,
   kunThreadEventsPath,
   kunThreadForkPath,
@@ -77,6 +76,8 @@ import {
   threadFromCore
 } from './kun-mapper'
 import { rendererRuntimeClient } from './runtime-client'
+
+const MAX_PENDING_SSE_DISPATCH_BATCHES = 32
 
 function createSseStreamId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `sse-${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -165,6 +166,7 @@ export class KunRuntimeProvider implements AgentProvider {
     mode?: KunThreadMode
     agentId?: string
     providerId?: string
+    accountId?: string
     model?: string
     systemPrompt?: string
   }): Promise<NormalizedThread> {
@@ -182,6 +184,7 @@ export class KunRuntimeProvider implements AgentProvider {
         approvalPolicy: runtime.approvalPolicy,
         sandboxMode: runtime.sandboxMode,
         ...(input.providerId?.trim() ? { providerId: input.providerId.trim() } : {}),
+        ...(input.accountId?.trim() ? { accountId: input.accountId.trim() } : {}),
         ...(input.agentId?.trim() ? { agentId: input.agentId.trim() } : {}),
         ...(input.systemPrompt?.trim() ? { systemPrompt: input.systemPrompt.trim() } : {})
       })
@@ -227,6 +230,8 @@ export class KunRuntimeProvider implements AgentProvider {
         skillInjectionBytes: turn.skillInjectionBytes,
         injectedInstructionSources: turn.injectedInstructionSources,
         instructionInjectionBytes: turn.instructionInjectionBytes,
+        guiDesignCanvas: turn.guiDesignCanvas,
+        guiDesignMode: turn.guiDesignMode,
         workspaceCheckpointId: item.workspaceCheckpointId ?? turn.workspaceCheckpointId
       }))
     )
@@ -271,6 +276,7 @@ export class KunRuntimeProvider implements AgentProvider {
       mode?: KunThreadMode
       model?: string
       providerId?: string
+      accountId?: string
       reasoningEffort?: string
       displayText?: string
       guiPlan?: {
@@ -282,6 +288,12 @@ export class KunRuntimeProvider implements AgentProvider {
         title?: string
       }
       guiDesignCanvas?: boolean
+      guiDesignMode?: boolean
+      guiDesignArtifact?: {
+        kind: 'svg'
+        artifactId: string
+        relativePath: string
+      }
       attachmentIds?: string[]
       workspaceCheckpointId?: string
       fileReferences?: Array<{ path: string; relativePath: string; name: string; kind?: 'file' | 'directory' }>
@@ -293,6 +305,7 @@ export class KunRuntimeProvider implements AgentProvider {
       prompt: text,
       model: options?.model,
       providerId: options?.providerId,
+      accountId: options?.accountId,
       approvalPolicy: runtime.approvalPolicy,
       sandboxMode: runtime.sandboxMode
     }
@@ -318,6 +331,12 @@ export class KunRuntimeProvider implements AgentProvider {
     }
     if (options?.guiDesignCanvas) {
       body.guiDesignCanvas = true
+    }
+    if (options?.guiDesignMode) {
+      body.guiDesignMode = true
+    }
+    if (options?.guiDesignArtifact) {
+      body.guiDesignArtifact = options.guiDesignArtifact
     }
     if (options?.attachmentIds?.length) {
       body.attachmentIds = options.attachmentIds
@@ -361,7 +380,7 @@ export class KunRuntimeProvider implements AgentProvider {
   async reviewThread(
     threadId: string,
     target: ReviewTarget,
-    options?: { model?: string; providerId?: string }
+    options?: { model?: string; providerId?: string; accountId?: string }
   ): Promise<{ turnId: string; threadId: string; userMessageItemId?: string; reviewItemId?: string }> {
     const body: Record<string, unknown> = { target }
     if (options?.model?.trim()) {
@@ -369,6 +388,9 @@ export class KunRuntimeProvider implements AgentProvider {
     }
     if (options?.providerId?.trim()) {
       body.providerId = options.providerId.trim()
+    }
+    if (options?.accountId?.trim()) {
+      body.accountId = options.accountId.trim()
     }
     const response = await rendererRuntimeClient.runtimeRequest(
       kunThreadReviewPath(threadId),
@@ -601,16 +623,22 @@ export class KunRuntimeProvider implements AgentProvider {
 
   async submitApprovalDecision(
     approvalId: string,
-    decision: 'allow' | 'deny'
-  ): Promise<void> {
-    const response = await rendererRuntimeClient.runtimeRequest(
-      kunApprovalPath(approvalId),
-      'POST',
-      JSON.stringify({ decision })
-    )
-    if (!response.ok) {
-      throw runtimeErrorToError(readRuntimeError(response.body, 'approval decision failed'))
+    decision: 'allow' | 'deny',
+    userInitiated = false
+  ): Promise<'submitted' | 'cancelled'> {
+    const protectedResult = await window.kunGui.resolveKunApproval({
+      approvalId,
+      decision,
+      source: userInitiated ? 'user' : 'policy'
+    })
+    if (!protectedResult.confirmed) return 'cancelled'
+    if (!protectedResult.response.ok) {
+      throw runtimeErrorToError(readRuntimeError(
+        protectedResult.response.body,
+        'approval decision failed'
+      ))
     }
+    return 'submitted'
   }
 
   async submitUserInputResponse(inputId: string, answers: UserInputAnswer[]): Promise<void> {
@@ -905,7 +933,8 @@ export class KunRuntimeProvider implements AgentProvider {
     const streamId = createSseStreamId()
     await new Promise<void>(async (resolve) => {
       let settled = false
-      const pendingDispatches = new Set<Promise<void>>()
+      let dispatchTail: Promise<void> = Promise.resolve()
+      let queuedDispatchBatches = 0
       const finish = (): void => {
         if (settled) return
         settled = true
@@ -913,7 +942,7 @@ export class KunRuntimeProvider implements AgentProvider {
         offEnd()
         offErr()
         signal.removeEventListener('abort', onAbort)
-        void Promise.allSettled([...pendingDispatches]).then(() => resolve())
+        void dispatchTail.finally(() => resolve())
       }
       const offData = rendererRuntimeClient.onSseEvent((payload) => {
         if (payload.streamId !== streamId) return
@@ -931,21 +960,44 @@ export class KunRuntimeProvider implements AgentProvider {
           entry && typeof entry === 'object' ? (entry as CoreRuntimeEventJson) : {}
         )
         if (batch.length === 0) return
+        if (queuedDispatchBatches >= MAX_PENDING_SSE_DISPATCH_BATCHES) {
+          sink.onError(new Error('SSE renderer dispatch backlog exceeded its safety limit'))
+          void rendererRuntimeClient.stopSse(streamId)
+          finish()
+          return
+        }
         let maxSeq: number | null = null
         for (const event of batch) {
           if (typeof event.seq === 'number') {
             maxSeq = maxSeq === null ? event.seq : Math.max(maxSeq, event.seq)
           }
         }
-        if (maxSeq !== null) {
-          sink.onSeq(maxSeq)
-        }
-        const task = dispatchKunRuntimeEvents(batch, sink, (runtimeEvent, eventSink) =>
-          this.handleApprovalRequest(runtimeEvent, eventSink)
-        ).finally(() => {
-          pendingDispatches.delete(task)
+        // Keep batches strictly ordered. The main process reads no further SSE
+        // data until this batch is acknowledged, so dispatch must not fan out
+        // into an unbounded renderer-side promise set.
+        queuedDispatchBatches += 1
+        const task = dispatchTail.then(async () => {
+          if (signal.aborted || settled) return
+          await dispatchKunRuntimeEvents(batch, sink, (runtimeEvent, eventSink) =>
+            this.handleApprovalRequest(runtimeEvent, eventSink)
+          )
+          if (signal.aborted || settled) return
+          if (payload.batchId) {
+            await rendererRuntimeClient.ackSse(streamId, payload.batchId)
+          }
+          if (signal.aborted || settled) return
+          if (maxSeq !== null) sink.onSeq(maxSeq)
+        }).catch((error) => {
+          if (!settled) {
+            sink.onError(error instanceof Error ? error : new Error(String(error)))
+            void rendererRuntimeClient.stopSse(streamId)
+            finish()
+          }
         })
-        pendingDispatches.add(task)
+        dispatchTail = task
+        void task.finally(() => {
+          queuedDispatchBatches = Math.max(0, queuedDispatchBatches - 1)
+        })
       })
       const offErr = rendererRuntimeClient.onSseError(({ streamId: sid, message, status }) => {
         if (sid !== streamId) return
@@ -966,7 +1018,7 @@ export class KunRuntimeProvider implements AgentProvider {
       }
       signal.addEventListener('abort', onAbort, { once: true })
       try {
-        await rendererRuntimeClient.startSse(threadId, sinceSeq, streamId)
+        await rendererRuntimeClient.startSse(threadId, sinceSeq, streamId, { acknowledgedBatches: true })
       } catch (error) {
         sink.onError(error instanceof Error ? error : new Error(String(error)))
         finish()

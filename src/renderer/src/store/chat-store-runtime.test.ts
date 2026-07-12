@@ -23,6 +23,7 @@ import {
   emptyWriteThreadRegistry,
   markWriteThread
 } from '../write/write-thread-registry'
+import { useWriteWorkspaceStore } from '../write/write-workspace-store'
 
 function makeSinkHarness(overrides: Partial<ChatState> = {}): {
   getState: () => ChatState
@@ -305,6 +306,71 @@ describe('thread event sink binding', () => {
       text: 'Workspace is /tmp/project.'
     })
   })
+
+  it('projects a replayed duplicate completion once, including external effects', () => {
+    const showTurnCompleteNotification = vi.fn(async () => ({ ok: true }))
+    vi.stubGlobal('window', {
+      kunGui: { showTurnCompleteNotification }
+    })
+    const refreshThreads = vi.fn(async () => undefined)
+    const drainQueuedMessages = vi.fn(async () => undefined)
+    const { getState, set, get } = makeSinkHarness({
+      activeThreadId: 'thread-duplicate-completion',
+      currentTurnId: 'turn-duplicate-completion',
+      currentTurnUserId: 'user-duplicate-completion',
+      blocks: [
+        { kind: 'user', id: 'user-duplicate-completion', turnId: 'turn-duplicate-completion', text: 'hello' },
+        { kind: 'assistant', id: 'assistant-duplicate-completion', turnId: 'turn-duplicate-completion', text: 'done' }
+      ],
+      threads: [makeThread({ id: 'thread-duplicate-completion', title: 'Duplicate completion' })],
+      refreshThreads,
+      drainQueuedMessages
+    })
+    const sink = buildThreadEventSink(set, get, { threadId: 'thread-duplicate-completion' })
+
+    sink.onTurnComplete()
+    const projectedOnce = getState()
+    sink.onTurnComplete()
+
+    expect(getState()).toEqual(projectedOnce)
+    expect(showTurnCompleteNotification).toHaveBeenCalledTimes(1)
+    expect(refreshThreads).toHaveBeenCalledTimes(1)
+    expect(drainQueuedMessages).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+
+  it('refreshes the active Write workspace exactly for a successful in-workspace file change', () => {
+    const originalWriteState = useWriteWorkspaceStore.getState()
+    const refreshWorkspace = vi.fn(async () => undefined)
+    const syncActiveFileFromDisk = vi.fn(async () => true)
+    useWriteWorkspaceStore.setState({
+      workspaceRoot: '/workspace/write',
+      activeFilePath: '/workspace/write/draft.md',
+      refreshWorkspace,
+      syncActiveFileFromDisk
+    })
+    const { set, get } = makeSinkHarness({ route: 'write' })
+    const sink = buildThreadEventSink(set, get, { threadId: 'thread-current' })
+
+    sink.onTool({
+      itemId: 'tool-write',
+      summary: 'write_file',
+      status: 'success',
+      toolKind: 'file_change',
+      filePath: 'draft.md'
+    })
+
+    expect(refreshWorkspace).toHaveBeenCalledOnce()
+    expect(refreshWorkspace).toHaveBeenCalledWith('/workspace/write')
+    expect(syncActiveFileFromDisk).toHaveBeenCalledOnce()
+    expect(syncActiveFileFromDisk).toHaveBeenCalledWith('/workspace/write', {
+      path: '/workspace/write/draft.md',
+      animate: true,
+      force: true,
+      reviewAsDiff: true
+    })
+    useWriteWorkspaceStore.setState(originalWriteState, true)
+  })
 })
 
 describe('busy watchdog re-arming on live ticks (#goal-recovering-banner)', () => {
@@ -493,6 +559,71 @@ describe('thread event sink runtime errors', () => {
           detached: true
         }
       }
+    })
+  })
+
+  it('keeps pending child lifecycle repair state isolated per thread stream', () => {
+    const first = makeSinkHarness({
+      activeThreadId: 'thread-first',
+      busy: false,
+      currentTurnId: null,
+      currentTurnUserId: null,
+      blocks: []
+    })
+    const second = makeSinkHarness({
+      activeThreadId: 'thread-second',
+      busy: false,
+      currentTurnId: null,
+      currentTurnUserId: null,
+      blocks: []
+    })
+    const firstSink = buildThreadEventSink(first.set, first.get, { threadId: 'thread-first' })
+    const secondSink = buildThreadEventSink(second.set, second.get, { threadId: 'thread-second' })
+
+    firstSink.onTool({
+      itemId: 'child_lifecycle_shared-child',
+      summary: 'child completed',
+      status: 'success',
+      updateOnly: true,
+      createdAt: '2026-07-04T00:00:02.000Z',
+      toolKind: 'tool_call',
+      detail: JSON.stringify({ childId: 'shared-child', status: 'completed', detached: true }),
+      meta: {
+        child: {
+          parentThreadId: 'thread-first',
+          parentTurnId: 'turn-first',
+          childId: 'shared-child',
+          childStatus: 'completed',
+          detached: true
+        }
+      }
+    })
+
+    secondSink.onTool({
+      itemId: 'tool_delegate_second',
+      summary: 'delegate_task',
+      status: 'running',
+      createdAt: '2026-07-04T00:00:03.000Z',
+      toolKind: 'tool_call',
+      detail: JSON.stringify({ childId: 'shared-child', status: 'queued', detached: true }),
+      meta: {
+        child: {
+          parentThreadId: 'thread-second',
+          parentTurnId: 'turn-second',
+          childId: 'shared-child',
+          childStatus: 'queued',
+          detached: true
+        }
+      }
+    })
+
+    expect(first.getState().blocks).toEqual([])
+    expect(second.getState().blocks).toHaveLength(1)
+    expect(second.getState().blocks[0]).toMatchObject({
+      kind: 'tool',
+      id: 'tool_delegate_second',
+      status: 'running',
+      meta: { child: { childId: 'shared-child', childStatus: 'queued' } }
     })
   })
 

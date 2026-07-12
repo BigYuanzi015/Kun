@@ -17,6 +17,8 @@ export type WorkbenchRightPanelHostProps = Pick<
   | 'planPanel'
   | 'canvas'
   | 'file'
+  | 'extensionView'
+  | 'workspaceRoot'
   | 'onCollapse'
 > & {
   onBeginResize: PointerEventHandler<HTMLDivElement>
@@ -46,6 +48,8 @@ export function WorkbenchRightPanelHost({
   planPanel,
   canvas,
   file,
+  extensionView,
+  workspaceRoot,
   onCollapse
 }: WorkbenchRightPanelHostProps): ReactElement | null {
   return (
@@ -65,6 +69,8 @@ export function WorkbenchRightPanelHost({
       planPanel={planPanel}
       canvas={canvas}
       file={file}
+      extensionView={extensionView}
+      workspaceRoot={workspaceRoot}
       onCollapse={onCollapse}
     />
   )

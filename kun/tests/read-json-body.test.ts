@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { readJsonBody } from '../src/server/read-json-body.js'
+import { DEFAULT_MAX_JSON_BODY_BYTES, readJsonBody } from '../src/server/read-json-body.js'
 
 describe('readJsonBody', () => {
+  it('uses a small default limit for control-plane JSON', () => {
+    expect(DEFAULT_MAX_JSON_BODY_BYTES).toBe(1 * 1024 * 1024)
+  })
+
   it('returns an empty object for requests without a body', async () => {
     await expect(readJsonBody(new Request('http://localhost/v1/demo'))).resolves.toEqual({
       ok: true,
@@ -37,14 +41,27 @@ describe('readJsonBody', () => {
   })
 
   it('rejects a declared body that exceeds the configured byte limit', async () => {
+    let cancelled = false
+    let pulled = false
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        pulled = true
+      },
+      cancel() {
+        cancelled = true
+      }
+    })
     const result = await readJsonBody(new Request('http://localhost/v1/demo', {
       method: 'POST',
       headers: { 'content-length': '128' },
-      body: '{}'
-    }), 32)
+      body,
+      duplex: 'half'
+    } as RequestInit & { duplex: 'half' }), 32)
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.response.status).toBe(413)
+    expect(pulled).toBe(false)
+    expect(cancelled).toBe(true)
   })
 
   it('rejects a streamed body that exceeds the configured byte limit', async () => {

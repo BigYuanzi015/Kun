@@ -1,6 +1,7 @@
 import {
   createEmptyDocument,
   createHtmlFrameShape,
+  isArtifactFrame,
   isHtmlFrame,
   type CanvasDocument,
   type CanvasShape,
@@ -22,6 +23,7 @@ import {
 } from './design-context'
 import { useCanvasViewportStore } from './canvas/canvas-viewport-store'
 import { serializeCanvasDocument } from './canvas/canvas-persistence'
+import { writeDesignWorkspaceFile } from './design-persistence-coordinator'
 import { createLinkedHtmlScreen } from './canvas/screen-lifecycle'
 import {
   createDesignArtifactId,
@@ -401,12 +403,14 @@ export function syncHtmlArtifactsToBoardDocument(
     ),
     useCanvasViewportStore.getState().vbox
   )
-  const occupiedAutoRects: Rect[] = Array.from(framesByArtifactId.values()).map((shape) => ({
-    x: shape.x,
-    y: shape.y,
-    width: shape.width,
-    height: shape.height
-  }))
+  const occupiedAutoRects: Rect[] = Object.values(workingDoc.objects)
+    .filter((shape) => shape.visible !== false && isArtifactFrame(shape))
+    .map((shape) => ({
+      x: shape.x,
+      y: shape.y,
+      width: shape.width,
+      height: shape.height
+    }))
   const placedAutoRects: Rect[] = []
   let autoIndex = 0
 
@@ -418,6 +422,26 @@ export function syncHtmlArtifactsToBoardDocument(
     const defaultDevicePreset = defaultDevicePresetForArtifact(artifact, designTarget)
     if (!existing && artifact.node?.boardHidden) return
     if (existing) {
+      const rootHasFrame = root.children.includes(existing.id)
+      if (existing.parentId !== workingDoc.rootId || !rootHasFrame || existing.frameId !== null) {
+        if (!next) next = cloneDocument(workingDoc)
+        const current = next.objects[existing.id]
+        const currentRoot = next.objects[next.rootId]
+        if (current && currentRoot) {
+          if (current.parentId && current.parentId !== next.rootId && next.objects[current.parentId]) {
+            const oldParent = next.objects[current.parentId]
+            next.objects[current.parentId] = {
+              ...oldParent,
+              children: oldParent.children.filter((childId) => childId !== current.id)
+            }
+          }
+          next.objects[current.id] = { ...current, parentId: next.rootId, frameId: null }
+          if (!currentRoot.children.includes(current.id)) {
+            next.objects[next.rootId] = { ...currentRoot, children: [...currentRoot.children, current.id] }
+          }
+          if (!updatedFrameIds.includes(current.id)) updatedFrameIds.push(current.id)
+        }
+      }
       const patch: Partial<CanvasShape> = {}
       const nextName = artifact.title || existing.name
       if (existing.name !== nextName) patch.name = nextName
@@ -456,7 +480,7 @@ export function syncHtmlArtifactsToBoardDocument(
       if (Object.keys(patch).length > 0) {
         if (!next) next = cloneDocument(workingDoc)
         next.objects[existing.id] = { ...next.objects[existing.id], ...patch }
-        updatedFrameIds.push(existing.id)
+        if (!updatedFrameIds.includes(existing.id)) updatedFrameIds.push(existing.id)
       }
       return
     }
@@ -480,6 +504,7 @@ export function syncHtmlArtifactsToBoardDocument(
     frame.width = rect.width
     frame.height = rect.height
     frame.name = artifact.title || frame.name
+    frame.parentId = next.rootId
     if (customNode) occupiedAutoRects.push({ x: frame.x, y: frame.y, width: frame.width, height: frame.height })
     else placedAutoRects.push({ x: frame.x, y: frame.y, width: frame.width, height: frame.height })
 
@@ -553,19 +578,12 @@ export async function ensureDesignBoardArtifact(
     versions: [{ id: `${artifactId}-v1`, relativePath, createdAt, summary: '' }]
   }
 
-  if (typeof window.kunGui?.writeWorkspaceFile === 'function') {
-    const write = await window.kunGui
-      .writeWorkspaceFile({
-        path: relativePath,
-        workspaceRoot: trimmedRoot,
-        content: serializeCanvasDocument(createEmptyDocument())
-      })
-      .catch((error: unknown) => ({
-        ok: false as const,
-        message: error instanceof Error ? error.message : String(error)
-      }))
-    if (!write.ok) useDesignWorkspaceStore.getState().setFileError(write.message)
-  }
+  const write = await writeDesignWorkspaceFile({
+    path: relativePath,
+    workspaceRoot: trimmedRoot,
+    content: serializeCanvasDocument(createEmptyDocument())
+  })
+  if (!write.ok) return null
 
   useDesignWorkspaceStore.getState().upsertArtifact(artifact)
   return artifact

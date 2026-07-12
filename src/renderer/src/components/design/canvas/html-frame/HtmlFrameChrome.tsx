@@ -74,7 +74,7 @@ export function HtmlFrameChrome({
           {previewWebviewUrl && screenWidth > 170 ? (
             <>
               {editing ? (
-                <span className="rounded-full border border-accent/30 bg-white/88 px-2 py-1 text-[10.5px] font-medium text-accent shadow-sm backdrop-blur-md dark:bg-ds-card/88">
+                <span className="rounded-full border border-accent/30 bg-white/88 px-2 py-1 text-[10.5px] font-medium text-accent shadow-sm backdrop-blur-md dark:border-accent/45 dark:bg-[#20252e] dark:text-[#aeb8ff]">
                   点击文字进行修改
                 </span>
               ) : null}
@@ -90,7 +90,7 @@ export function HtmlFrameChrome({
                 className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10.5px] font-semibold shadow-[0_10px_30px_rgba(20,47,95,0.12)] backdrop-blur-md transition ${
                   editing
                     ? 'border-accent bg-accent text-white hover:opacity-90'
-                    : 'border-ds-border bg-white/90 text-ds-ink hover:bg-white dark:bg-ds-card/88'
+                    : 'border-ds-border bg-white/90 text-[#273142] hover:bg-white dark:border-white/15 dark:bg-[#20252e] dark:text-white/90 dark:hover:bg-[#2a303b]'
                 }`}
               >
                 {editing ? (

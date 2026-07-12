@@ -9,11 +9,13 @@ import {
   shellOpenExternalUrlSchema,
   skillGithubImportPayloadSchema,
   skillListPayloadSchema,
+  sseAckPayloadSchema,
   sseStartPayloadSchema,
   workspaceDirectoryCreatePayloadSchema,
   workspaceDirectoryTargetPayloadSchema,
   workspaceEntryDeletePayloadSchema,
   workspaceEntryRenamePayloadSchema,
+  workspaceImageBytesSavePayloadSchema,
   workspaceImagePickPayloadSchema,
   writeExportPayloadSchema,
   writeRichClipboardPayloadSchema,
@@ -187,6 +189,36 @@ describe('app-ipc-schemas', () => {
     ).toThrow(/runtime request path is not allowed/)
   })
 
+  it('keeps approval decisions off the generic runtime request bridge', () => {
+    expect(() =>
+      runtimeRequestPayloadSchema.parse({
+        path: '/v1/approvals/appr_1',
+        method: 'POST',
+        body: '{"decision":"allow"}'
+      })
+    ).toThrow(/runtime request path is not allowed/)
+  })
+
+  it('keeps extension workbench and configuration operations off the generic runtime bridge', () => {
+    for (const payload of [
+      { path: '/v1/extensions/workbench', method: 'GET' },
+      {
+        path: '/v1/extensions/configuration/snapshot',
+        method: 'POST',
+        body: '{"contributionIds":[]}'
+      },
+      {
+        path: '/v1/extensions/configuration',
+        method: 'PUT',
+        body: '{}'
+      }
+    ] as const) {
+      expect(() => runtimeRequestPayloadSchema.parse(payload)).toThrow(
+        /runtime request path is not allowed/
+      )
+    }
+  })
+
   it('accepts a valid settings patch for kun and write settings', () => {
     const payload = settingsPatchSchema.parse({
       theme: 'dark',
@@ -215,6 +247,9 @@ describe('app-ipc-schemas', () => {
           toolOutputLimits: {
             maxLines: 30000,
             maxBytes: 1048576
+          },
+          subagents: {
+            maxParallel: 5
           }
         }
       },
@@ -248,6 +283,7 @@ describe('app-ipc-schemas', () => {
     expect(payload.agents?.kun?.tokenEconomy?.historyHygiene?.maxToolResultTokens).toBe(4000)
     expect(payload.agents?.kun?.toolOutputLimits?.maxLines).toBe(30000)
     expect(payload.agents?.kun?.toolOutputLimits?.maxBytes).toBe(1048576)
+    expect(payload.agents?.kun?.subagents).toEqual({ maxParallel: 5 })
     expect(payload.write?.autoSaveEnabled).toBe(false)
     expect(payload.write?.autoSaveDelayMs).toBe(180000)
     expect(payload.write?.inlineCompletion?.model).toBe('deepseek-v4-pro')
@@ -415,6 +451,7 @@ describe('app-ipc-schemas', () => {
           },
           imageGeneration: {
             model: longModelId,
+            defaultResolution: '2K',
             quality: 'high'
           }
         }
@@ -429,9 +466,13 @@ describe('app-ipc-schemas', () => {
 
     expect(payload.provider?.providers?.[0]?.models).toEqual([longModelId])
     expect(payload.agents?.kun?.model).toBe(longModelId)
+    expect(payload.agents?.kun?.imageGeneration?.defaultResolution).toBe('2K')
     expect(payload.agents?.kun?.imageGeneration?.quality).toBe('high')
     expect(payload.schedule?.model).toBe(longModelId)
     expect(payload.workflow?.model).toBe(longModelId)
+    expect(() => settingsPatchSchema.parse({
+      agents: { kun: { imageGeneration: { defaultResolution: '4K' } } }
+    })).toThrow()
   })
 
   it('accepts schedule settings patches and task payloads', () => {
@@ -702,6 +743,16 @@ describe('app-ipc-schemas', () => {
         sinceSeq: -1
       })
     ).toThrow()
+    expect(sseStartPayloadSchema.parse({
+      threadId: 'thread-1',
+      sinceSeq: 0,
+      acknowledgedBatches: true
+    }).acknowledgedBatches).toBe(true)
+    expect(sseAckPayloadSchema.parse({ streamId: 'stream-1', batchId: 'batch-1' })).toEqual({
+      streamId: 'stream-1',
+      batchId: 'batch-1'
+    })
+    expect(() => sseAckPayloadSchema.parse({ streamId: 'stream-1', batchId: '' })).toThrow()
   })
 
   it('accepts long Feishu install device codes', () => {
@@ -887,5 +938,17 @@ describe('app-ipc-schemas', () => {
         somethingExtra: 'nope'
       })
     ).toThrow()
+  })
+
+  it('accepts an exact filename for workspace image bytes', () => {
+    expect(workspaceImageBytesSavePayloadSchema.parse({
+      workspaceRoot: '/tmp/workspace',
+      dataBase64: 'aW1hZ2U=',
+      mimeType: 'image/png',
+      imageDirectory: '.deepseekgui-images',
+      fileName: 'architecture-a1b2c3.png'
+    })).toMatchObject({
+      fileName: 'architecture-a1b2c3.png'
+    })
   })
 })

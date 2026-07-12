@@ -1,7 +1,7 @@
 import { useCanvasSelectionStore } from '../canvas-selection-store'
 import { useCanvasShapeStore } from '../canvas-shape-store'
 import { useCanvasViewportStore } from '../canvas-viewport-store'
-import { createDefaultShape } from '../canvas-types'
+import { createDefaultShape, type CanvasShapePreset } from '../canvas-types'
 import type { Point } from '../canvas-types'
 import type { CanvasPointerEvent, CanvasToolHandler } from './tool-types'
 import {
@@ -16,7 +16,7 @@ import { normalizeFreehandPoints, simplifyFreehandPoints } from './freehand-poin
  * Freehand pencil. Accumulates raw pointer samples and stores them as a points
  * polyline relative to the (recomputed) bounding box on every move.
  */
-export function createDrawTool(): CanvasToolHandler {
+export function createDrawTool(preset?: CanvasShapePreset): CanvasToolHandler {
   let drawing = false
   let previewId: string | null = null
   let creationUndo: CreatedShapeUndo | null = null
@@ -28,7 +28,7 @@ export function createDrawTool(): CanvasToolHandler {
     onPointerDown(e: CanvasPointerEvent) {
       drawing = true
       raw = [{ x: e.canvasX, y: e.canvasY }]
-      const shape = createDefaultShape('draw', e.canvasX, e.canvasY)
+      const shape = createDefaultShape('draw', e.canvasX, e.canvasY, preset)
       shape.width = 0
       shape.height = 0
       shape.points = [{ x: 0, y: 0 }]

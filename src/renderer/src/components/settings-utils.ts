@@ -41,6 +41,27 @@ type RendererSettingsShape = AppSettingsPatch
 type SettingsPatch = AppSettingsPatch
 const SETTINGS_DIFF_NO_CHANGE = Symbol('settings-diff-no-change')
 
+// Optional model/reasoning slots are normalized out of the in-memory snapshot
+// when the user selects "follow default" / "off". A structural diff cannot
+// express that deletion by omission, because omission means "leave unchanged"
+// to the main-process patch merger. Emit the same explicit clear values the
+// settings controls use so persisted overrides are actually removed.
+const SETTINGS_CLEAR_SENTINELS: Readonly<Record<string, string>> = {
+  'agents.kun.smallModel': '',
+  'agents.kun.smallModelProviderId': '',
+  'agents.kun.titleModel': '',
+  'agents.kun.titleProviderId': '',
+  'agents.kun.summaryModel': '',
+  'agents.kun.summaryProviderId': '',
+  'agents.kun.codeReviewModel': '',
+  'agents.kun.codeReviewProviderId': '',
+  'agents.kun.titleReasoningEffort': 'off',
+  'agents.kun.summaryReasoningEffort': 'off',
+  'agents.kun.codeReviewReasoningEffort': 'off',
+  'agents.kun.contextCompaction.summaryModel': '',
+  'agents.kun.contextCompaction.summaryProviderId': ''
+}
+
 export const DEFAULT_WORKSPACE_ROOT = '~/.kun/default_workspace'
 
 export function splitSettingsList(raw: string): string[] {
@@ -99,7 +120,7 @@ export function mergeSettings(current: AppSettingsV1, patch: SettingsPatch): App
 }
 
 export function diffSettingsPatch(base: AppSettingsV1, next: AppSettingsV1): AppSettingsPatch {
-  const diff = diffSettingsValue(base, next)
+  const diff = diffSettingsValue(base, next, [])
   return diff === SETTINGS_DIFF_NO_CHANGE ? {} : diff as AppSettingsPatch
 }
 
@@ -153,13 +174,22 @@ export function coerceRendererSettings(settings: AppSettingsV1): AppSettingsV1 {
   }
 }
 
-function diffSettingsValue(base: unknown, next: unknown): unknown | typeof SETTINGS_DIFF_NO_CHANGE {
+function diffSettingsValue(
+  base: unknown,
+  next: unknown,
+  path: readonly string[]
+): unknown | typeof SETTINGS_DIFF_NO_CHANGE {
   if (settingsValueEqual(base, next)) return SETTINGS_DIFF_NO_CHANGE
   if (isPlainSettingsRecord(base) && isPlainSettingsRecord(next)) {
     const out: Record<string, unknown> = {}
     for (const key of Object.keys(next).sort()) {
-      const childDiff = diffSettingsValue(base[key], next[key])
+      const childDiff = diffSettingsValue(base[key], next[key], [...path, key])
       if (childDiff !== SETTINGS_DIFF_NO_CHANGE) out[key] = childDiff
+    }
+    for (const key of Object.keys(base).sort()) {
+      if (Object.prototype.hasOwnProperty.call(next, key)) continue
+      const sentinel = SETTINGS_CLEAR_SENTINELS[[...path, key].join('.')]
+      if (sentinel !== undefined) out[key] = sentinel
     }
     return Object.keys(out).length > 0 ? out : SETTINGS_DIFF_NO_CHANGE
   }

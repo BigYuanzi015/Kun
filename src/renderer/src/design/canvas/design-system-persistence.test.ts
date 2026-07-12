@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   designSystemPath,
+  flushPendingDesignSystems,
   parseDesignSystem,
   persistDesignSystem,
   serializeDesignSystem
@@ -130,6 +131,33 @@ describe('design-system-persistence', () => {
       expect(writeWorkspaceFile).toHaveBeenCalledTimes(1)
       expect(writeWorkspaceFile).toHaveBeenCalledWith({
         path: designSystemPath('.kun-canvas/code-thread-1'),
+        workspaceRoot: '/workspace',
+        content: serializeDesignSystem(latestSystem)
+      })
+    })
+
+    it('flushes the latest debounced design system without waiting for the timer', async () => {
+      vi.useFakeTimers()
+      const writeWorkspaceFile = vi.fn(async ({ path }: { path: string }) => ({
+        ok: true as const,
+        path,
+        savedAt: 'now'
+      }))
+      vi.stubGlobal('window', { kunGui: { writeWorkspaceFile } })
+      const latestSystem: DesignSystem = {
+        tokens: {
+          'brand/primary': { name: 'brand/primary', kind: 'color', value: '#14b8a6' }
+        },
+        components: {}
+      }
+
+      persistDesignSystem('/workspace', createEmptyDesignSystem(), '.kun-design/doc-1')
+      persistDesignSystem('/workspace', latestSystem, '.kun-design/doc-1')
+      await flushPendingDesignSystems('/workspace')
+
+      expect(writeWorkspaceFile).toHaveBeenCalledTimes(1)
+      expect(writeWorkspaceFile).toHaveBeenCalledWith({
+        path: designSystemPath('.kun-design/doc-1'),
         workspaceRoot: '/workspace',
         content: serializeDesignSystem(latestSystem)
       })

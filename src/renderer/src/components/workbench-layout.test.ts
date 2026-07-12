@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { fitWorkbenchWidths, workbenchWidthConstraintsForRightPanel } from './workbench-layout'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../extensions/contribution-ids'
 
 describe('fitWorkbenchWidths', () => {
   it('keeps ordinary right panels within the inspector width cap', () => {
@@ -8,7 +9,7 @@ describe('fitWorkbenchWidths', () => {
       304,
       1400,
       { leftPanelVisible: true, rightPanelVisible: true },
-      workbenchWidthConstraintsForRightPanel('chat', 'browser')
+      workbenchWidthConstraintsForRightPanel('chat', BUILTIN_RIGHT_PANEL_IDS.browser)
     )
 
     expect(next.left).toBe(304)
@@ -21,7 +22,7 @@ describe('fitWorkbenchWidths', () => {
       304,
       1400,
       { leftPanelVisible: true, rightPanelVisible: true },
-      workbenchWidthConstraintsForRightPanel('chat', 'canvas')
+      workbenchWidthConstraintsForRightPanel('chat', BUILTIN_RIGHT_PANEL_IDS.canvas)
     )
 
     expect(next.left).toBe(304)

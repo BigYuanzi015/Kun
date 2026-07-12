@@ -56,6 +56,8 @@ export type WorkbenchConversationStageProps = {
     onToggleRightPanelMode: Parameters<typeof WorkbenchSideRail>[0]['onToggleRightPanelMode']
     planPanelEnabled: boolean
     onToggleFileTree: () => void
+    extensionItems?: Parameters<typeof WorkbenchSideRail>[0]['extensionItems']
+    extensionContainers?: Parameters<typeof WorkbenchSideRail>[0]['extensionContainers']
   }
 }
 
@@ -117,6 +119,8 @@ export function WorkbenchConversationStage({
             fileTreeEnabled={Boolean(fileTree.workspaceRoot)}
             onToggleFileTree={sideRail.onToggleFileTree}
             onOpenSideChat={sideChat.onOpen}
+            extensionItems={sideRail.extensionItems}
+            extensionContainers={sideRail.extensionContainers}
           />
         ) : null}
       </div>

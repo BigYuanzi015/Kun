@@ -3,21 +3,52 @@ import { randomUUID } from 'node:crypto'
 import { URL } from 'node:url'
 import type { AppSettingsV1 } from '../shared/app-settings'
 import { kunThreadEventsPath } from '../shared/kun-endpoints'
-import { sseStartPayloadSchema, streamIdSchema } from './ipc/app-ipc-schemas'
+import { sseAckPayloadSchema, sseStartPayloadSchema, streamIdSchema } from './ipc/app-ipc-schemas'
 import type { JsonSettingsStore } from './settings-store'
 import { getRuntimeBaseUrlForSettings, runtimeAuthHeaders } from './runtime/kun-adapter'
 
 type SseControllerState = {
   controller: AbortController
   stoppedByClient: boolean
+  pendingAck?: {
+    batchId: string
+    resolve: (acknowledged: boolean) => void
+  }
 }
 
 const SSE_RECONNECT_BASE_MS = 750
 const SSE_RECONNECT_MAX_MS = 5_000
 const SSE_START_TIMEOUT_MS = 15_000
+const SSE_ACK_TIMEOUT_MS = 15_000
+export const MAX_SSE_FRAME_BUFFER_BYTES = 1 * 1024 * 1024
+export const MAX_SSE_BATCH_EVENTS = 128
+export const MAX_SSE_BATCH_BYTES = 512 * 1024
 
 
 const sseControllers = new Map<string, SseControllerState>()
+
+function waitForSseBatchAck(
+  state: SseControllerState,
+  batchId: string,
+  signal: AbortSignal
+): Promise<boolean> {
+  if (state.stoppedByClient || signal.aborted) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (acknowledged: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      if (state.pendingAck?.batchId === batchId) state.pendingAck = undefined
+      resolve(acknowledged)
+    }
+    const timer = setTimeout(() => finish(false), SSE_ACK_TIMEOUT_MS)
+    const onAbort = () => finish(false)
+    state.pendingAck = { batchId, resolve: finish }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
 
 function sendSseMessage(wc: WebContents, channel: string, payload: unknown): boolean {
   if (wc.isDestroyed()) return false
@@ -112,7 +143,7 @@ function isFatalSseStatus(status: number | undefined): boolean {
 }
 
 function isTransientSseErrorMessage(message: string): boolean {
-  return /sse start timeout|fetch failed|network|terminated|aborted|socket|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|UND_ERR/i.test(message)
+  return /sse start timeout|sse renderer acknowledgement timeout|fetch failed|network|terminated|aborted|socket|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|UND_ERR/i.test(message)
 }
 
 async function fetchSseWithStartTimeout(
@@ -161,6 +192,7 @@ export function registerRuntimeSseIpc(options: {
     const existing = sseControllers.get(id)
     if (existing) {
       existing.stoppedByClient = true
+      existing.pendingAck?.resolve(false)
       existing.controller.abort()
       sseControllers.delete(id)
     }
@@ -168,6 +200,7 @@ export function registerRuntimeSseIpc(options: {
     const state: SseControllerState = { controller: ac, stoppedByClient: false }
     sseControllers.set(id, state)
     const base = getRuntimeBaseUrlForSettings(s)
+    const acknowledgedBatches = request.acknowledgedBatches === true
 
     ;(async () => {
       const wc = event.sender
@@ -212,15 +245,12 @@ export function registerRuntimeSseIpc(options: {
             let buffer = ''
 
             let pendingEvents: Record<string, unknown>[] = []
-            let throttleTimer: any = null
+            let pendingBytes = 0
 
-            const flushEvents = (): boolean => {
-              if (throttleTimer) {
-                clearTimeout(throttleTimer)
-                throttleTimer = null
-              }
+            const flushEvents = async (): Promise<boolean> => {
               if (state.stoppedByClient || ac.signal.aborted) {
                 pendingEvents = []
+                pendingBytes = 0
                 return false
               }
               if (pendingEvents.length === 0) return true
@@ -234,12 +264,53 @@ export function registerRuntimeSseIpc(options: {
 
               const batch = pendingEvents
               pendingEvents = []
-              if (!sendSseMessage(wc, 'runtime:sse-event', { streamId: id, events: batch })) {
+              pendingBytes = 0
+              const batchId = acknowledgedBatches ? randomUUID() : undefined
+              if (!sendSseMessage(wc, 'runtime:sse-event', {
+                streamId: id,
+                events: batch,
+                ...(batchId ? { batchId } : {})
+              })) {
                 state.stoppedByClient = true
                 ac.abort()
                 return false
               }
+              if (batchId) {
+                const acknowledged = await waitForSseBatchAck(state, batchId, ac.signal)
+                if (!acknowledged) {
+                  if (state.stoppedByClient || ac.signal.aborted) return false
+                  throw new Error('sse renderer acknowledgement timeout')
+                }
+              }
               nextSinceSeq = batchMaxSeq
+              return true
+            }
+
+            const enqueueParsedEvent = async (block: string): Promise<boolean> => {
+              const parsed = parseSseData(block)
+              if (parsed === null) return true
+              // Route-level SSE failures are control frames without an event
+              // id. They must not be treated as normal runtime `error` events:
+              // acknowledging one would retain the old cursor and reconnect
+              // into the same corrupt/oversized record forever.
+              if (parsed.event === 'error' && !parsed.id) {
+                const message = parsed.data && typeof parsed.data === 'object'
+                  ? (parsed.data as { message?: unknown }).message
+                  : undefined
+                throw new Error(typeof message === 'string' ? message : 'SSE server replay error')
+              }
+              const bytes = Buffer.byteLength(block, 'utf8')
+              if (
+                pendingEvents.length > 0 &&
+                (pendingEvents.length >= MAX_SSE_BATCH_EVENTS || pendingBytes + bytes > MAX_SSE_BATCH_BYTES)
+              ) {
+                if (!await flushEvents()) return false
+              }
+              pendingEvents.push(coerceSsePayload(parsed))
+              pendingBytes += bytes
+              if (pendingEvents.length >= MAX_SSE_BATCH_EVENTS || pendingBytes >= MAX_SSE_BATCH_BYTES) {
+                return flushEvents()
+              }
               return true
             }
 
@@ -250,41 +321,29 @@ export function registerRuntimeSseIpc(options: {
                 buffer += dec.decode(value, { stream: true })
 
                 let next: { block: string; rest: string } | null
-                let hasNewEvents = false
                 while ((next = takeSseBlock(buffer)) !== null) {
                   const block = next.block
                   buffer = next.rest
-                  const parsed = parseSseData(block)
-                  if (parsed !== null) {
-                    const payload = coerceSsePayload(parsed)
-                    pendingEvents.push(payload)
-                    hasNewEvents = true
-                  }
+                  if (!await enqueueParsedEvent(block)) return
                 }
-                if (hasNewEvents) {
-                  if (!throttleTimer) {
-                    throttleTimer = setTimeout(() => {
-                      throttleTimer = null
-                      flushEvents()
-                    }, 100)
-                  }
+                if (Buffer.byteLength(buffer, 'utf8') > MAX_SSE_FRAME_BUFFER_BYTES) {
+                  throw new Error(`SSE frame exceeds ${MAX_SSE_FRAME_BUFFER_BYTES} bytes`)
                 }
+                if (!await flushEvents()) return
               }
               buffer += dec.decode()
               const trailing = buffer.trim()
               if (trailing) {
-                const parsed = parseSseData(trailing)
-                if (parsed !== null) {
-                  const payload = coerceSsePayload(parsed)
-                  pendingEvents.push(payload)
-                }
+                if (!await enqueueParsedEvent(trailing)) return
               }
+              await flushEvents()
             } finally {
-              if (throttleTimer) {
-                clearTimeout(throttleTimer)
-                throttleTimer = null
+              try {
+                await reader.cancel()
+              } catch {
+                // Test doubles and already-closed readers may not support a
+                // cancellable body; there is nothing left to retain here.
               }
-              flushEvents()
             }
           } catch (e) {
             if (state.stoppedByClient || ac.signal.aborted) return
@@ -304,6 +363,7 @@ export function registerRuntimeSseIpc(options: {
           }
         }
       } finally {
+        state.pendingAck?.resolve(false)
         if (!state.stoppedByClient && !ac.signal.aborted) {
           sendSseMessage(wc, 'runtime:sse-end', { streamId: id })
         }
@@ -320,11 +380,20 @@ export function registerRuntimeSseIpc(options: {
     return { streamId: id }
   })
 
+  ipcMain.handle('runtime:sse:ack', async (_, args: unknown) => {
+    const acknowledgement = sseAckPayloadSchema.parse(args)
+    const state = sseControllers.get(acknowledgement.streamId)
+    if (!state || state.pendingAck?.batchId !== acknowledgement.batchId) return false
+    state.pendingAck.resolve(true)
+    return true
+  })
+
   ipcMain.handle('runtime:sse:stop', async (_, streamId: unknown) => {
     const normalizedStreamId = streamIdSchema.parse(streamId)
     const state = sseControllers.get(normalizedStreamId)
     if (state) {
       state.stoppedByClient = true
+      state.pendingAck?.resolve(false)
       state.controller.abort()
     }
     return true

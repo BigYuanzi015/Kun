@@ -90,9 +90,22 @@ describe('shellConfig', () => {
 })
 
 describe('shellSpawnEnv', () => {
-  it('returns the env unchanged on non-Windows platforms', () => {
-    const env = { PATH: '/usr/bin:/bin' }
-    expect(shellSpawnEnv(env, 'darwin')).toBe(env)
+  it('keeps only the shell allow-list on non-Windows platforms', () => {
+    const env = {
+      PATH: '/usr/bin:/bin',
+      HOME: '/Users/test',
+      LANG: 'en_US.UTF-8',
+      LC_ALL: 'en_US.UTF-8',
+      KUN_RUNTIME_TOKEN: 'runtime-secret',
+      DEEPSEEK_API_KEY: 'model-secret',
+      AWS_SECRET_ACCESS_KEY: 'cloud-secret'
+    }
+    expect(shellSpawnEnv(env, 'darwin')).toEqual({
+      PATH: '/usr/bin:/bin',
+      HOME: '/Users/test',
+      LANG: 'en_US.UTF-8',
+      LC_ALL: 'en_US.UTF-8'
+    })
   })
 
   it('appends the core Windows system dirs when PATH is missing them', () => {
@@ -117,6 +130,20 @@ describe('shellSpawnEnv', () => {
     ].join(';')
     const result = shellSpawnEnv({ Path: path, SystemRoot: 'C:\\Windows' }, 'win32')
     expect(result.Path).toBe(path)
+  })
+
+  it('does not inherit runtime or provider credentials on Windows', () => {
+    const result = shellSpawnEnv({
+      Path: 'C:\\Tools',
+      SystemRoot: 'C:\\Windows',
+      KUN_RUNTIME_TOKEN: 'runtime-secret',
+      DEEPSEEK_API_KEY: 'model-secret',
+      GITHUB_TOKEN: 'github-secret'
+    }, 'win32')
+    expect(result).not.toHaveProperty('KUN_RUNTIME_TOKEN')
+    expect(result).not.toHaveProperty('DEEPSEEK_API_KEY')
+    expect(result).not.toHaveProperty('GITHUB_TOKEN')
+    expect(result).toMatchObject({ SystemRoot: 'C:\\Windows' })
   })
 })
 

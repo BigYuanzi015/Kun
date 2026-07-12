@@ -1,9 +1,10 @@
 import { memo } from 'react'
 import type { CanvasShape } from '../../../../design/canvas/canvas-types'
-import { isHtmlFrame } from '../../../../design/canvas/canvas-types'
+import { embeddedArtifactOf, isArtifactFrame, isHtmlFrame } from '../../../../design/canvas/canvas-types'
+import { roundedRectPath } from '../../../../design/canvas/canvas-rounded-rect'
 import { useDesignWorkspaceStore } from '../../../../design/design-workspace-store'
 import { ShapeDispatcher } from './ShapeDispatcher'
-import { ShapePaintDefs, primaryFillPaint } from './shape-paint'
+import { ShapePaintDefs, primaryFillPaint, strokeDasharray } from './shape-paint'
 
 type HtmlFramePreviewStatus = 'pending' | 'ready' | 'error' | undefined
 type HtmlFrameParallelStatus = 'queued' | 'running' | 'done' | 'failed' | undefined
@@ -47,15 +48,16 @@ function FrameShapeInner({
   objects: Record<string, CanvasShape>
 }) {
   const previewStatus = useDesignWorkspaceStore((s) => {
-    if (!isHtmlFrame(shape) || !shape.htmlArtifactId) return undefined
-    return s.artifacts.find((artifact) => artifact.id === shape.htmlArtifactId)?.previewStatus
+    const reference = embeddedArtifactOf(shape)
+    if (!isArtifactFrame(shape) || !reference) return undefined
+    return s.artifacts.find((artifact) => artifact.id === reference.id)?.previewStatus
   })
   const parallelStatus = useDesignWorkspaceStore((s) => {
     if (!isHtmlFrame(shape) || !shape.htmlArtifactId) return undefined
     return s.parallelPageStates[shape.htmlArtifactId]?.status
   })
 
-  if (isHtmlFrame(shape)) {
+  if (isArtifactFrame(shape)) {
     return (
       <HtmlFramePlaceholder
         shape={shape}
@@ -66,6 +68,7 @@ function FrameShapeInner({
 
   const { fill, fillOpacity } = primaryFillPaint(shape)
   const clipId = shape.clipContent ? `clip-${shape.id}` : undefined
+  const outlinePath = roundedRectPath(shape.width, shape.height, shape.cornerRadius)
 
   // AI image holder: an empty frame the design agent fills in place by setting
   // imageUrl, converting the holder to a single image shape. Until then, show
@@ -78,38 +81,29 @@ function FrameShapeInner({
   return (
     <>
       <ShapePaintDefs shape={shape} />
-      <rect
-        x={0}
-        y={0}
-        width={shape.width}
-        height={shape.height}
-        fill={fill}
-        fillOpacity={fillOpacity}
-      />
+      <path d={outlinePath} fill={fill} fillOpacity={fillOpacity} />
       {shape.strokes.map((s, i) => (
-        <rect
+        <path
           key={i}
-          x={0}
-          y={0}
-          width={shape.width}
-          height={shape.height}
+          d={outlinePath}
           fill="none"
           stroke={s.color}
           strokeWidth={s.width}
           strokeOpacity={s.opacity}
+          strokeDasharray={strokeDasharray(s.dash, s.width)}
+          strokeLinecap="round"
+          strokeLinejoin="round"
         />
       ))}
       {isHolder && (
-        <rect
-          x={0}
-          y={0}
-          width={shape.width}
-          height={shape.height}
+        <path
+          d={outlinePath}
           fill="none"
           stroke="#3b82d8"
           strokeWidth={1.5}
           strokeDasharray="6 4"
-          rx={4}
+          strokeLinecap="round"
+          strokeLinejoin="round"
         />
       )}
       {showHolderHint && (
@@ -129,7 +123,7 @@ function FrameShapeInner({
       {clipId && (
         <defs>
           <clipPath id={clipId}>
-            <rect x={0} y={0} width={shape.width} height={shape.height} />
+            <path d={outlinePath} />
           </clipPath>
         </defs>
       )}

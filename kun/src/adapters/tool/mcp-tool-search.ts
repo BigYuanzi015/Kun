@@ -272,7 +272,7 @@ function createMcpSearchTools(
       inputSchema: {
         type: 'object',
         properties: {
-          toolId: { type: 'string', description: 'Canonical MCP tool id in the form serverId/toolName.' }
+          toolId: { type: 'string', description: 'Canonical MCP tool id in the form mcp_<server>_<tool>.' }
         },
         required: ['toolId']
       },
@@ -290,12 +290,13 @@ function createMcpSearchTools(
       inputSchema: {
         type: 'object',
         properties: {
-          toolId: { type: 'string', description: 'Canonical MCP tool id in the form serverId/toolName.' },
+          toolId: { type: 'string', description: 'Canonical MCP tool id in the form mcp_<server>_<tool>.' },
           arguments: { type: 'object', description: 'Arguments matching the MCP tool input schema.' }
         },
         required: ['toolId', 'arguments']
       },
       policy: 'on-request',
+      toolKind: 'command_execution',
       execute: async (args, context) => {
         const toolId = stringArg(args.toolId)
         const record = resolveAvailableRecord(options, catalog, context, toolId)
@@ -323,7 +324,14 @@ function createMcpSearchTools(
         type: 'object',
         properties: {}
       },
-      policy: 'auto',
+      // Refreshing invokes every connected MCP server, so it is an external
+      // command boundary just like mcp_call rather than a local index read.
+      policy: 'on-request',
+      toolKind: 'command_execution',
+      // A child turn can explicitly block individual MCP servers. A catalog
+      // refresh is global state and cannot safely refresh only a subset, so do
+      // not let such a turn contact any MCP server through this back door.
+      shouldAdvertise: (context) => !context.blockedProviderIds?.some((id) => id.startsWith('mcp:')),
       execute: async (_args, context) => {
         const visible = frozenMcpCatalogView(options, catalog, context)
         const records = await options.refreshCatalog()

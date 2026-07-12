@@ -1,5 +1,11 @@
 import type { TurnItem } from '../contracts/items.js'
-import type { ModelRequest, ModelTextAttachmentFallback, ModelToolSpec } from '../ports/model-client.js'
+import type {
+  ModelDocumentAttachment,
+  ModelInputAttachment,
+  ModelRequest,
+  ModelTextAttachmentFallback,
+  ModelToolSpec
+} from '../ports/model-client.js'
 import { ContextEstimator } from './context-estimator.js'
 
 const CHARS_PER_TOKEN = 4
@@ -15,6 +21,8 @@ export function estimateModelRequestInputTokens(request: ModelRequest): number {
   tokens += estimateItems(request.history)
   tokens += estimateTools(request.tools)
   tokens += estimateTextFallbacks(request.attachmentTextFallbacks)
+  tokens += estimateDocuments(request.attachmentDocuments)
+  tokens += estimateImageAttachments(request.attachments)
   tokens += estimateText(request.requiredToolName)
   tokens += estimateText(request.reasoningEffort)
   return Math.max(0, tokens)
@@ -69,6 +77,30 @@ function estimateTextFallbacks(fallbacks?: ModelTextAttachmentFallback[]): numbe
       String(attachment.byteSize),
       attachment.dataBase64
     ].join('\n'))
+  }, 0)
+}
+
+function estimateDocuments(documents?: ModelDocumentAttachment[]): number {
+  if (!documents?.length) return 0
+  return documents.reduce((sum, document) => sum + estimateText([
+    document.name,
+    document.mimeType,
+    document.text
+  ].join('\n')), 0)
+}
+
+/**
+ * Providers meter vision input differently from the base64 transport encoding.
+ * Estimate from pixels when known (with a conservative fallback) so normal
+ * image inputs are included in the hard cap without treating their 4/3 wire
+ * encoding as text tokens.
+ */
+function estimateImageAttachments(attachments?: ModelInputAttachment[]): number {
+  if (!attachments?.length) return 0
+  return attachments.reduce((sum, attachment) => {
+    const pixels = (attachment.width ?? 0) * (attachment.height ?? 0)
+    const imageTokens = pixels > 0 ? Math.max(256, Math.ceil(pixels / 768)) : 2_048
+    return sum + imageTokens + estimateText(`${attachment.name}\n${attachment.mimeType}`)
   }, 0)
 }
 

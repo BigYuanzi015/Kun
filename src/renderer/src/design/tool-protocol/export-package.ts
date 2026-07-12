@@ -6,9 +6,10 @@ import type { DesignToolState } from './tool-state'
 
 export type DesignExportResourceKind =
   | 'project-design-md'
-  | 'design-system-md'
+  | 'project-theme-design-md'
   | 'canvas'
   | 'html'
+  | 'svg'
   | 'screen-design-md'
   | 'graph-json'
 
@@ -26,12 +27,14 @@ export type DesignExportPackageOptions = {
   title: string
   brief?: string
   updatedAt: string
-  designSystemMdPath: string
+  designSystemPath: string
   projectBriefPath?: string
 }
 
 function frameIdForArtifact(state: DesignToolState, artifactId: string): string | undefined {
-  return Object.values(state.graph.objects).find((object) => object.source?.htmlArtifactId === artifactId)?.id
+  return Object.values(state.graph.objects).find((object) =>
+    (object.source?.artifactId ?? object.source?.htmlArtifactId) === artifactId
+  )?.id
 }
 
 function artifactResources(state: DesignToolState): DesignExportResource[] {
@@ -48,7 +51,7 @@ function artifactResources(state: DesignToolState): DesignExportResource[] {
     }
     const frameId = frameIdForArtifact(state, artifact.id)
     resources.push({
-      kind: 'html',
+      kind: artifact.kind,
       path: artifact.relativePath,
       artifactId: artifact.id,
       ...(frameId ? { frameId } : {}),
@@ -75,6 +78,7 @@ function packageCounts(state: DesignToolState): Record<string, number> {
   return {
     objects: Object.keys(state.graph.objects).length,
     screens: state.artifacts.filter((artifact) => artifact.kind === 'html').length,
+    svgArtifacts: state.artifacts.filter((artifact) => artifact.kind === 'svg').length,
     canvasArtifacts: state.artifacts.filter((artifact) => artifact.kind === 'canvas').length,
     directions: Object.keys(state.graph.directions).length,
     tokens: state.graph.designSystem?.tokenCount ?? 0,
@@ -94,12 +98,12 @@ export function buildDesignExportPackage(
     designSystem: state.designSystem,
     artifacts: state.artifacts,
     updatedAt: options.updatedAt,
-    designSystemMdPath: options.designSystemMdPath,
+    designSystemMdPath: options.designSystemPath,
     projectBriefPath: options.projectBriefPath
   })
   const resources: DesignExportResource[] = [
     { kind: 'project-design-md', path: STITCH_DESIGN_MD_PATH, title: options.title },
-    { kind: 'design-system-md', path: options.designSystemMdPath, title: 'DESIGN_SYSTEM.md' },
+    { kind: 'project-theme-design-md', path: options.designSystemPath, title: 'Project theme DESIGN.md' },
     { kind: 'graph-json', path: '.kun-design/design-graph.json', title: 'Design Graph' },
     ...artifactResources(state)
   ]
@@ -112,7 +116,7 @@ export function buildDesignExportPackage(
     updatedAt: options.updatedAt,
     paths: {
       designMd: STITCH_DESIGN_MD_PATH,
-      designSystemMd: options.designSystemMdPath,
+      designSystem: options.designSystemPath,
       ...(options.projectBriefPath ? { projectBrief: options.projectBriefPath } : {})
     },
     counts: packageCounts(state),

@@ -10,6 +10,7 @@ import {
   findDesignBoardArtifact
 } from './design-board'
 import type { DesignHtmlElementContext } from './design-composer-context'
+import { useProjectDesignSystemStore } from './canvas/project-design-system-store'
 import type { DesignPromptSource } from './design-quality-repair-dispatch'
 import {
   buildDesignTurnSendOverrides,
@@ -74,6 +75,7 @@ export type SubmitDesignTurnOptions = SubmitDesignTurnDeps & {
   suppressedIds?: ReadonlySet<string>
   htmlElementContext?: DesignHtmlElementContext | null
   explicitScreenShapeId?: string | null
+  explicitSvgArtifactId?: string | null
   clearAutoRepairScope?: (scopeKey: string) => void
 }
 
@@ -92,10 +94,39 @@ export async function submitDesignTurn(
   const buildPayload = options.buildPromptPayload ?? buildDesignTurnPromptPayload
   const takeCanvasErrors = options.takeLastCanvasErrors ?? takeLastCanvasOpErrors
 
-  const latestDesignState = getDesignState()
+  const initialDesignState = getDesignState()
+  const turnContext = {
+    workspaceRoot: initialDesignState.workspaceRoot || options.workspaceRoot,
+    documentId: initialDesignState.activeDocumentId
+  }
+  const fail = (message: string): SubmitDesignTurnResult => {
+    getDesignState().setFileError(message)
+    return { status: 'file-error', message }
+  }
+  const contextMatches = (boardId?: string): boolean => {
+    const state = getDesignState()
+    if (
+      !turnContext.documentId ||
+      (state.workspaceRoot || options.workspaceRoot) !== turnContext.workspaceRoot ||
+      state.activeDocumentId !== turnContext.documentId
+    ) {
+      return false
+    }
+    return !boardId || findDesignBoardArtifact(state.artifacts)?.id === boardId
+  }
+  const contextError = 'Design turn was cancelled because the active workspace or design document changed.'
+  if (!turnContext.documentId || !contextMatches()) return fail(contextError)
+
+  let latestDesignState = initialDesignState
   let boardArtifact = findDesignBoardArtifact(latestDesignState.artifacts)
-  if (!boardArtifact) {
-    boardArtifact = await ensureBoard(options.workspaceRoot)
+  try {
+    if (!boardArtifact) {
+      boardArtifact = await ensureBoard(options.workspaceRoot)
+      if (!contextMatches(boardArtifact?.id)) return fail(contextError)
+      latestDesignState = getDesignState()
+    }
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error))
   }
   if (!boardArtifact) return { status: 'missing-board' }
   if (latestDesignState.activeArtifactId !== boardArtifact.id) {
@@ -104,17 +135,33 @@ export async function submitDesignTurn(
 
   const canvasDoc = getCanvasShapeState().document
   const selectedShapeIds = getCanvasSelectionState().selectedIds
-  const resolvedTarget = resolveTarget({
-    promptText: options.promptText,
-    workspaceState: latestDesignState,
-    boardArtifact,
-    canvasDocument: canvasDoc,
-    selectedShapeIds,
-    suppressedIds: options.suppressedIds,
-    htmlElementContext: options.htmlElementContext,
-    explicitScreenShapeId: options.explicitScreenShapeId,
-    viewBox: getCanvasViewportState().vbox
-  })
+  let resolvedTarget: ResolvedDesignTurnTarget
+  try {
+    resolvedTarget = await resolveTarget({
+      promptText: options.promptText,
+      workspaceState: latestDesignState,
+      boardArtifact,
+      canvasDocument: canvasDoc,
+      selectedShapeIds,
+      suppressedIds: options.suppressedIds,
+      htmlElementContext: options.htmlElementContext,
+      explicitScreenShapeId: options.explicitScreenShapeId,
+      explicitSvgArtifactId: options.explicitSvgArtifactId,
+      viewBox: getCanvasViewportState().vbox
+    })
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error))
+  }
+  const failAfterResolve = async (message: string): Promise<SubmitDesignTurnResult> => {
+    try {
+      await resolvedTarget.rollbackPreparedVersion?.()
+    } catch (rollbackError) {
+      const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+      return fail(`${message} Rollback failed: ${detail}`)
+    }
+    return fail(message)
+  }
+  if (!contextMatches(boardArtifact.id)) return failAfterResolve(contextError)
   if (resolvedTarget.nextIntentMode) {
     getDesignState().setDesignIntentMode(resolvedTarget.nextIntentMode)
   }
@@ -123,54 +170,82 @@ export async function submitDesignTurn(
   }
   getDesignState().setActiveArtifact(boardArtifact.id)
 
-  const turnFiles = await prepareTurn({
-    workspaceRoot: options.workspaceRoot,
-    promptText: options.promptText,
-    resolvedTarget,
-    artifacts: getDesignState().artifacts,
-    designContext: latestDesignState.designContext
-  })
+  let turnFiles: PrepareDesignTurnFilesResult
+  try {
+    turnFiles = await prepareTurn({
+      workspaceRoot: options.workspaceRoot,
+      promptText: options.promptText,
+      resolvedTarget,
+      artifacts: getDesignState().artifacts,
+      designContext: latestDesignState.designContext
+    })
+  } catch (error) {
+    return failAfterResolve(error instanceof Error ? error.message : String(error))
+  }
+  if (!contextMatches(boardArtifact.id)) return failAfterResolve(contextError)
   if (!turnFiles.ok) {
-    getDesignState().setFileError(turnFiles.message)
-    return { status: 'file-error', message: turnFiles.message }
+    return failAfterResolve(turnFiles.message)
   }
 
   const promptState = getDesignState()
+  const projectDesignMd = useProjectDesignSystemStore.getState()
   const canvasErrorKey = canvasOpErrorKey(options.workspaceRoot, promptState.activeDocumentId, boardArtifact.id)
-  const promptPayload = await buildPayload({
-    target: resolvedTarget.target,
-    mode: (options.attachmentIds?.length ?? 0) > 0 ? 'image' : 'text',
-    promptText: options.promptText,
-    artifactRelativePath: resolvedTarget.artifactRelativePath,
-    workspaceRoot: options.workspaceRoot,
-    promptState,
-    boardArtifact,
-    visibleTargets: resolvedTarget.visibleTargets,
-    canvasDocument: getCanvasShapeState().document,
-    designSystem: getDesignSystemState().system,
-    tokensByArtifact: getDesignTokensState().byArtifact,
-    ...(resolvedTarget.designNotesPath ? { designNotesPath: resolvedTarget.designNotesPath } : {}),
-    ...(resolvedTarget.basePath ? { basePath: resolvedTarget.basePath } : {}),
-    ...(resolvedTarget.htmlArtifactId ? { htmlArtifactId: resolvedTarget.htmlArtifactId } : {}),
-    ...(resolvedTarget.htmlElementContext ? { htmlElementContext: resolvedTarget.htmlElementContext } : {}),
-    ...(resolvedTarget.canvasSnapshot ? { canvasSnapshot: resolvedTarget.canvasSnapshot } : {}),
-    ...(resolvedTarget.htmlFrameContext ? { frameContext: resolvedTarget.htmlFrameContext } : {}),
-    ...(resolvedTarget.selectedFrame ? { selectedFrame: resolvedTarget.selectedFrame } : {}),
-    ...(resolvedTarget.target === 'canvas' ? { previousOpErrors: takeCanvasErrors(canvasErrorKey) } : {})
-  })
-  const sent = await options.sendMessage(
-    promptPayload.prompt,
-    'agent',
-    buildDesignTurnSendOverrides({
-      displayText: options.displayText,
-      promptState: promptState as DesignTurnPromptState,
-      resolveProviderId: options.resolveProviderId,
-      ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+  let promptPayload: DesignTurnPromptPayload
+  try {
+    promptPayload = await buildPayload({
       target: resolvedTarget.target,
-      attachmentIds: options.attachmentIds ?? [],
-      attachments: options.attachments ?? []
+      mode: (options.attachmentIds?.length ?? 0) > 0 ? 'image' : 'text',
+      promptText: options.promptText,
+      artifactRelativePath: resolvedTarget.artifactRelativePath,
+      workspaceRoot: options.workspaceRoot,
+      promptState,
+      boardArtifact,
+      visibleTargets: resolvedTarget.visibleTargets,
+      canvasDocument: getCanvasShapeState().document,
+      designSystem: getDesignSystemState().system,
+      ...(projectDesignMd.workspaceRoot === options.workspaceRoot && projectDesignMd.status === 'ready' && projectDesignMd.sourceHash
+        ? { projectDesignMdSourceHash: projectDesignMd.sourceHash }
+        : {}),
+      tokensByArtifact: getDesignTokensState().byArtifact,
+      ...(resolvedTarget.designNotesPath ? { designNotesPath: resolvedTarget.designNotesPath } : {}),
+      ...(resolvedTarget.basePath ? { basePath: resolvedTarget.basePath } : {}),
+      ...(resolvedTarget.htmlArtifactId ? { htmlArtifactId: resolvedTarget.htmlArtifactId } : {}),
+      ...(resolvedTarget.htmlElementContext ? { htmlElementContext: resolvedTarget.htmlElementContext } : {}),
+      ...(resolvedTarget.canvasSnapshot ? { canvasSnapshot: resolvedTarget.canvasSnapshot } : {}),
+      ...(resolvedTarget.htmlFrameContext ? { frameContext: resolvedTarget.htmlFrameContext } : {}),
+      ...(resolvedTarget.selectedFrame ? { selectedFrame: resolvedTarget.selectedFrame } : {}),
+      ...(resolvedTarget.target === 'canvas' ? { previousOpErrors: takeCanvasErrors(canvasErrorKey) } : {})
     })
-  )
+  } catch (error) {
+    return failAfterResolve(error instanceof Error ? error.message : String(error))
+  }
+  if (!contextMatches(boardArtifact.id)) return failAfterResolve(contextError)
+  let sent: boolean
+  try {
+    sent = await options.sendMessage(
+      promptPayload.prompt,
+      'agent',
+      buildDesignTurnSendOverrides({
+        displayText: options.displayText,
+        promptState: promptState as DesignTurnPromptState,
+        resolveProviderId: options.resolveProviderId,
+        ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+        target: resolvedTarget.target,
+        attachmentIds: options.attachmentIds ?? [],
+        attachments: options.attachments ?? [],
+        ...(resolvedTarget.svgArtifactId ? {
+          guiDesignArtifact: {
+            kind: 'svg' as const,
+            artifactId: resolvedTarget.svgArtifactId,
+            relativePath: resolvedTarget.artifactRelativePath
+          }
+        } : {})
+      })
+    )
+  } catch (error) {
+    return failAfterResolve(error instanceof Error ? error.message : String(error))
+  }
+  if (!sent) return failAfterResolve('Design turn could not be sent.')
   return sent
     ? {
         status: 'sent',

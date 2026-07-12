@@ -8,6 +8,7 @@ import {
   saveDesignThreadRegistry,
   type DesignThreadWorkspaceRecord
 } from './design-thread-registry'
+import { writeDesignWorkspaceFile } from './design-persistence-coordinator'
 
 /**
  * Mirrors Design Assistant conversations into the owning design document dir:
@@ -214,7 +215,7 @@ export async function persistDesignChatMetaForDoc(input: {
   }
 
   try {
-    const written = await window.kunGui.writeWorkspaceFile({
+    const written = await writeDesignWorkspaceFile({
       workspaceRoot: input.workspaceRoot,
       path: metaPath,
       content: `${JSON.stringify(meta, null, 2)}\n`
@@ -235,7 +236,7 @@ export async function writeDesignChatTranscriptForThread(input: {
   const transcriptPath = designChatTranscriptRelativePath(input.docId, input.threadId)
   if (!transcriptPath) return false
   try {
-    const written = await window.kunGui.writeWorkspaceFile({
+    const written = await writeDesignWorkspaceFile({
       workspaceRoot: input.workspaceRoot,
       path: transcriptPath,
       content: serializeDesignChatTranscript(input.blocks, {

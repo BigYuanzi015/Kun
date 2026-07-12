@@ -120,7 +120,9 @@ function stripImagesFromOutput(output: unknown): unknown {
   const clone: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(output)) {
     if (key === 'data_base64') {
-      clone[key] = EVICTED_IMAGE_PLACEHOLDER
+      // Removing the transport field is required: leaving any non-empty
+      // string here makes extractToolResultImages() treat the placeholder as
+      // real base64 and forwards the supposedly-evicted image again.
       continue
     }
     if (key === 'images') {

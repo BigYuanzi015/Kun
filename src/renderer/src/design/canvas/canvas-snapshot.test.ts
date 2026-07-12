@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { snapshotCanvas } from './canvas-snapshot'
-import { createDefaultShape, createEmptyDocument, createHtmlFrameShape } from './canvas-types'
+import { createDefaultShape, createEmptyDocument, createHtmlFrameShape, createSvgFrameShape } from './canvas-types'
 import { createRunningAppFrameShape } from './running-app-frame'
 import type { DesignArtifact } from '../design-types'
 
@@ -347,6 +347,32 @@ describe('snapshotCanvas', () => {
       w: 1280,
       h: 800
     })
+  })
+
+  it('reports SVG artifact frames as occupied vector resources', () => {
+    const doc = createEmptyDocument()
+    const motion = createSvgFrameShape('Orbit loader', 80, 120, 'motion', 320, 240)
+    doc.objects[motion.id] = { ...motion, parentId: doc.rootId }
+    doc.objects[doc.rootId] = { ...doc.objects[doc.rootId], children: [motion.id] }
+
+    const snap = snapshotCanvas(doc, new Set([motion.id]), {
+      viewBox: { x: 0, y: 0, width: 1200, height: 800 }
+    })
+
+    expect(snap.shapes[0]).toMatchObject({
+      embeddedArtifact: { id: 'motion', kind: 'svg' }
+    })
+    expect(snap.placement?.occupiedFrames).toEqual([
+      expect.objectContaining({
+        id: motion.id,
+        artifactId: 'motion',
+        artifactKind: 'svg',
+        x: 80,
+        y: 120,
+        w: 320,
+        h: 240
+      })
+    ])
   })
 
   it('keeps selected, nearby, and viewport-visible shapes when maxShapes truncates', () => {

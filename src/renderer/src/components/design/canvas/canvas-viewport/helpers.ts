@@ -10,7 +10,7 @@ import { createArrowTool, createLineTool } from '../../../../design/canvas/tools
 import { createDrawTool } from '../../../../design/canvas/tools/draw-tool'
 import type { CanvasToolHandler } from '../../../../design/canvas/tools/tool-types'
 import type { CanvasDocument, CanvasTool, Rect, ViewBox } from '../../../../design/canvas/canvas-types'
-import { isHtmlFrame, shapeBounds, shapeGeometry } from '../../../../design/canvas/canvas-types'
+import { embeddedArtifactOf, isHtmlFrame, shapeBounds, shapeGeometry } from '../../../../design/canvas/canvas-types'
 
 const CANVAS_VIEWPORT_STORAGE_PREFIX = 'kun.design.canvasViewport'
 const IMAGE_ANNOTATION_ACTION_WIDTH = 112
@@ -73,12 +73,19 @@ export function resolveSelectedImageAnnotationAction(
   if (viewport.containerWidth <= 0 || viewport.containerHeight <= 0) return null
 
   const bounds = shapeGeometry(shape).selrect
-  const scaleX = viewport.containerWidth / viewport.vbox.width
-  const scaleY = viewport.containerHeight / viewport.vbox.height
-  const shapeLeft = (bounds.x - viewport.vbox.x) * scaleX
-  const shapeTop = (bounds.y - viewport.vbox.y) * scaleY
-  const shapeRight = (bounds.x + bounds.width - viewport.vbox.x) * scaleX
-  const shapeBottom = (bounds.y + bounds.height - viewport.vbox.y) * scaleY
+  // The SVG uses its default preserveAspectRatio="xMidYMid meet" behavior.
+  // Mirror its uniform scale and centered letterboxing so this HTML overlay
+  // stays attached to the selected image in non-matching viewport ratios.
+  const scale = Math.min(
+    viewport.containerWidth / viewport.vbox.width,
+    viewport.containerHeight / viewport.vbox.height
+  )
+  const offsetX = (viewport.containerWidth - viewport.vbox.width * scale) / 2
+  const offsetY = (viewport.containerHeight - viewport.vbox.height * scale) / 2
+  const shapeLeft = offsetX + (bounds.x - viewport.vbox.x) * scale
+  const shapeTop = offsetY + (bounds.y - viewport.vbox.y) * scale
+  const shapeRight = offsetX + (bounds.x + bounds.width - viewport.vbox.x) * scale
+  const shapeBottom = offsetY + (bounds.y + bounds.height - viewport.vbox.y) * scale
   if (
     shapeRight < 0 ||
     shapeLeft > viewport.containerWidth ||
@@ -287,7 +294,12 @@ function liveShapeShouldReplaceLoaded(
   loadedShape: CanvasDocument['objects'][string] | undefined
 ): boolean {
   if (!loadedShape) return true
-  return Boolean(liveShape.htmlArtifactId && liveShape.htmlArtifactId !== loadedShape.htmlArtifactId)
+  const liveArtifact = embeddedArtifactOf(liveShape)
+  const loadedArtifact = embeddedArtifactOf(loadedShape)
+  return Boolean(
+    liveArtifact &&
+      (liveArtifact.id !== loadedArtifact?.id || liveArtifact.kind !== loadedArtifact.kind)
+  )
 }
 
 export function mergeLoadedCanvasDocumentWithLiveChanges(
@@ -345,5 +357,16 @@ const toolFactories: Record<CanvasTool, () => CanvasToolHandler> = {
 
 export function createCanvasTool(tool: CanvasTool, surface: 'design' | 'code'): CanvasToolHandler {
   if (tool === 'image') return createAiImageTool({ openAssistant: surface === 'design' })
+  if (surface === 'code') {
+    switch (tool) {
+      case 'rect': return createRectTool('diagram')
+      case 'ellipse': return createEllipseTool('diagram')
+      case 'text': return createTextTool('diagram')
+      case 'frame': return createFrameTool('diagram')
+      case 'arrow': return createArrowTool('diagram')
+      case 'line': return createLineTool('diagram')
+      case 'draw': return createDrawTool('diagram')
+    }
+  }
   return toolFactories[tool]()
 }

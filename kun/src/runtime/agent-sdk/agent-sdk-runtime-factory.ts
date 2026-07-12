@@ -4,6 +4,7 @@
  * keeping the orchestration (and its tests) free of both.
  */
 import { AgentSdkRuntime, type SdkRuntimeDeps, type SdkTurnContext } from './agent-sdk-runtime.js'
+import type { SdkStreamResourceLimits } from './sdk-event-mapper.js'
 import { resolveSdkModel, type ToolApprovalDecision } from './sdk-options-builder.js'
 import type { BridgeableTool, KunToolResult } from './sdk-tool-bridge.js'
 import type { SdkApi } from './sdk-protocol.js'
@@ -12,7 +13,7 @@ import type { TurnService } from '../../services/turn-service.js'
 import type { SessionStore } from '../../ports/session-store.js'
 import type { ThreadStore } from '../../ports/thread-store.js'
 import type { CapabilityRegistry } from '../../adapters/tool/capability-registry.js'
-import type { ToolHostContext } from '../../ports/tool-host.js'
+import type { ToolHost, ToolHostContext } from '../../ports/tool-host.js'
 import {
   DEFAULT_SANDBOX_MODE,
   type ApprovalPolicy,
@@ -30,7 +31,12 @@ import {
   memoryInstructions,
   isStalePlanContext
 } from '../../loop/agent-loop.js'
-import type { GuiPlanContext } from '../../ports/tool-host.js'
+import {
+  DESIGN_MODE_INSTRUCTION,
+  SVG_ARTIFACT_ALLOWED_TOOL_NAMES,
+  SVG_ARTIFACT_MODE_INSTRUCTION
+} from '../../loop/design-mode.js'
+import type { GuiDesignArtifactContext, GuiPlanContext } from '../../ports/tool-host.js'
 import type { ThreadRecord } from '../../contracts/threads.js'
 import type {
   UserInputGate,
@@ -38,14 +44,25 @@ import type {
   UserInputResolution
 } from '../../ports/user-input-gate.js'
 import type { TurnItem } from '../../contracts/items.js'
+import type { ApprovalGate } from '../../ports/approval-gate.js'
+import { createApprovalRequest, type ApprovalRequest } from '../../domain/approval.js'
 import { makeUserInputItem } from '../../domain/item.js'
+import { awaitAbortableGate } from '../../services/interactive-gate.js'
 import {
   buildHistoryTranscript,
   DEFAULT_SDK_HISTORY_TRANSCRIPT_MAX_BYTES
 } from './sdk-context-assembler.js'
+import { shellSpawnEnv } from '../../adapters/tool/builtin-tool-utils.js'
+import type { TurnLimitsConfig } from '../../loop/turn-limits.js'
 
 export interface AgentSdkRuntimeFactoryDeps {
   registry: CapabilityRegistry
+  /**
+   * The canonical host boundary for bridged Kun tool execution. Serve always
+   * supplies this; an omitted host is denied closed rather than bypassing the
+   * policy, sandbox, approval, hook, and operation-journal layers.
+   */
+  toolHost?: ToolHost
   turns: TurnService
   sessionStore: SessionStore
   threadStore: ThreadStore
@@ -74,12 +91,20 @@ export interface AgentSdkRuntimeFactoryDeps {
   memoryStore?: MemoryStore
   /** Interactive-input gate — lets the bridged `user_input` tool surface kun's GUI panel. */
   userInputGate?: UserInputGate
+  /** GUI approval gate shared with native tool execution. Missing means deny closed. */
+  approvalGate?: ApprovalGate
   /** Clock for stamping item timestamps (falls back to Date when absent). */
   nowIso?: () => string
   /** Cap for the replayed history transcript (bytes); defaults to the assembler's. */
   historyTranscriptMaxBytes?: number
+  /** Native runtime safety limits, also applied to delegated Agent SDK turns. */
+  turnLimits?: TurnLimitsConfig
+  /** Optional SDK stream-budget overrides; omitted in normal production wiring. */
+  sdkStreamLimits?: Partial<SdkStreamResourceLimits>
   pathToClaudeCodeExecutable?: string
 }
+
+const MAX_DIAGNOSTIC_SESSION_IDS = 256
 
 /** Lazily load the real SDK without a static import (so kun typechecks without it). */
 let sdkPromise: Promise<SdkApi> | undefined
@@ -119,30 +144,20 @@ export function resolveTurnPlanContext(
 export function waitForGate(
   gate: UserInputGate,
   request: UserInputRequest,
-  signal: AbortSignal
+  signal: AbortSignal,
+  armedPending?: Promise<UserInputResolution>
 ): Promise<UserInputResolution> {
-  const pending = gate.request(request)
+  const pending = armedPending ?? gate.request(request)
   if (signal.aborted) {
     gate.resolve(request.id, { status: 'cancelled' })
     return Promise.resolve({ status: 'cancelled' })
   }
-  return new Promise<UserInputResolution>((resolve, reject) => {
-    const onAbort = (): void => {
-      gate.resolve(request.id, { status: 'cancelled' })
-      signal.removeEventListener('abort', onAbort)
-      reject(new Error('cancelled while awaiting user input'))
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-    pending
-      .then((resolution) => {
-        signal.removeEventListener('abort', onAbort)
-        resolve(resolution)
-      })
-      .catch((error) => {
-        signal.removeEventListener('abort', onAbort)
-        reject(error)
-      })
-  })
+  return awaitAbortableGate(
+    pending,
+    signal,
+    () => { gate.resolve(request.id, { status: 'cancelled' }) },
+    'cancelled while awaiting user input'
+  )
 }
 
 export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSdkRuntime {
@@ -151,6 +166,28 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
   // every turn (see loadTurnContext), which — unlike the SDK's in-memory resume —
   // survives a provider switch mid-thread and a runtime restart.
   const sessionIds = new Map<string, string>()
+  // Skill activation is turn-scoped. Keep the exact result used for the SDK
+  // tool catalog so bridged execution sees the same skill-gated tools after a
+  // GUI input pause/resume.
+  const activeSkillIdsByTurn = new Map<string, readonly string[]>()
+  const skillPromptByTurn = new Map<string, string>()
+  const skillTurnKey = (threadId: string, turnId: string): string => `${threadId}\u0000${turnId}`
+
+  const resolveActiveSkillIds = async (
+    thread: ThreadRecord,
+    turn: ThreadRecord['turns'][number]
+  ): Promise<readonly string[]> => {
+    const key = skillTurnKey(thread.id, turn.id)
+    if (!deps.skillRuntime) return activeSkillIdsByTurn.get(key) ?? []
+    const resolution = await deps.skillRuntime.resolveTurn({
+      prompt: skillPromptByTurn.get(key) ?? turn.prompt ?? '',
+      workspace: thread.workspace,
+      threadId: thread.id,
+      turnId: turn.id
+    })
+    activeSkillIdsByTurn.set(key, resolution.activeSkillIds)
+    return resolution.activeSkillIds
+  }
 
   const nowIso = (): string => (deps.nowIso ? deps.nowIso() : new Date().toISOString())
 
@@ -168,6 +205,16 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
     const gate = deps.userInputGate
     if (!gate) return undefined
     return async (input): Promise<UserInputResolution> => {
+      const request: UserInputRequest = {
+        id: input.id,
+        threadId,
+        turnId,
+        itemId: input.itemId,
+        prompt: input.prompt,
+        questions: input.questions
+      }
+      // Arm first so an event subscriber can immediately submit a response.
+      const pending = gate.request(request)
       const item = makeUserInputItem({
         id: input.itemId,
         threadId,
@@ -176,42 +223,92 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
         prompt: input.prompt,
         questions: input.questions
       })
-      await deps.turns.applyItem(threadId, item)
-      await deps.events.record({
-        kind: 'user_input_requested',
-        threadId,
-        turnId,
-        itemId: item.id,
-        inputId: input.id,
-        status: 'pending',
-        prompt: input.prompt,
-        questions: input.questions
-      })
+      try {
+        await deps.turns.applyItem(threadId, item)
+        await deps.events.record({
+          kind: 'user_input_requested',
+          threadId,
+          turnId,
+          itemId: item.id,
+          inputId: input.id,
+          status: 'pending',
+          prompt: input.prompt,
+          questions: input.questions
+        })
+      } catch (error) {
+        gate.resolve(input.id, { status: 'cancelled' })
+        void pending.catch(() => undefined)
+        throw error
+      }
       let resolution: UserInputResolution
       try {
-        resolution = await waitForGate(
-          gate,
-          { id: input.id, threadId, turnId, itemId: input.itemId, prompt: input.prompt, questions: input.questions },
-          signal
-        )
+        resolution = await waitForGate(gate, request, signal, pending)
       } catch {
         resolution = { status: 'cancelled' }
       }
       await deps.turns.updateItem(threadId, item.id, {
         status: resolution.status,
-        finishedAt: nowIso()
+        finishedAt: nowIso(),
+        ...(resolution.status === 'submitted' ? { answers: resolution.answers } : {})
       } as Partial<TurnItem>)
-      await deps.events.record({
-        kind: 'user_input_resolved',
-        threadId,
-        turnId,
-        itemId: item.id,
-        inputId: input.id,
-        status: resolution.status,
-        prompt: input.prompt,
-        questions: input.questions
-      })
+      const alreadyRecorded = (await deps.sessionStore.loadEventsSince(threadId, 0)).some(
+        (event) => event.kind === 'user_input_resolved' && event.inputId === input.id
+      )
+      if (!alreadyRecorded) {
+        await deps.events.record({
+          kind: 'user_input_resolved',
+          threadId,
+          turnId,
+          itemId: item.id,
+          inputId: input.id,
+          status: resolution.status,
+          prompt: input.prompt,
+          questions: input.questions,
+          ...(resolution.status === 'submitted' ? { answers: resolution.answers } : {})
+        })
+      }
       return resolution
+    }
+  }
+
+  const makeAwaitApproval = (
+    approvalPolicy: ApprovalPolicy,
+    sandboxMode: SandboxMode | undefined,
+    signal: AbortSignal
+  ): ((approval: ApprovalRequest) => Promise<'allow' | 'deny'>) => async (approval) => {
+    if (approvalPolicy === 'never' || !deps.approvalGate) return 'deny'
+    const pending = deps.approvalGate.request(approval)
+    const cancelPendingApproval = (reason: string): void => {
+      if (!deps.approvalGate?.expire?.(approval.id, reason)) {
+        deps.approvalGate?.decide(approval.id, 'deny', reason)
+      }
+    }
+    try {
+      await deps.events.record({
+        kind: 'approval_requested',
+        threadId: approval.threadId,
+        turnId: approval.turnId,
+        approvalId: approval.id,
+        toolName: approval.toolName,
+        status: 'pending',
+        approvalPolicy,
+        sandboxMode: sandboxMode ?? DEFAULT_SANDBOX_MODE,
+        summary: approval.summary
+      })
+    } catch (error) {
+      cancelPendingApproval('failed to publish approval request')
+      void pending.catch(() => undefined)
+      throw error
+    }
+    try {
+      return await awaitAbortableGate(
+        pending,
+        signal,
+        () => { cancelPendingApproval('turn aborted while awaiting approval') },
+        'approval wait aborted'
+      )
+    } catch {
+      return 'deny'
     }
   }
 
@@ -222,25 +319,38 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
     opts?: {
       planMode?: boolean
       guiPlan?: GuiPlanContext
+      guiDesignCanvas?: boolean
+      guiDesignMode?: boolean
+      guiDesignArtifact?: GuiDesignArtifactContext
+      activeSkillIds?: readonly string[]
+      allowedToolNames?: readonly string[]
       sandboxMode?: SandboxMode
+      approvalPolicy?: ApprovalPolicy
+      signal?: AbortSignal
       awaitUserInput?: ToolHostContext['awaitUserInput']
+      awaitApproval?: ToolHostContext['awaitApproval']
     }
   ): ToolHostContext => ({
     threadId,
     turnId,
     workspace,
-    approvalPolicy: deps.defaultApprovalPolicy,
+    approvalPolicy: opts?.approvalPolicy ?? deps.defaultApprovalPolicy,
     sandboxMode: opts?.sandboxMode ?? deps.defaultSandboxMode ?? DEFAULT_SANDBOX_MODE,
-    abortSignal: new AbortController().signal,
+    abortSignal: opts?.signal ?? new AbortController().signal,
     // Expose plan state so `create_plan` is advertised (listTools) and executable
     // (executeKunTool) on plan turns — both are gated on it.
     ...(opts?.planMode ? { threadMode: 'plan' as const } : {}),
     ...(opts?.guiPlan ? { guiPlan: opts.guiPlan } : {}),
+    ...(opts?.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
+    ...(opts?.guiDesignMode ? { guiDesignMode: true } : {}),
+    ...(opts?.guiDesignArtifact ? { guiDesignArtifact: opts.guiDesignArtifact } : {}),
+    ...(opts?.activeSkillIds ? { activeSkillIds: opts.activeSkillIds } : {}),
+    ...(opts?.allowedToolNames ? { allowedToolNames: opts.allowedToolNames } : {}),
     // Wire interactive input to kun's GUI panel (advertises `user_input`).
     ...(opts?.awaitUserInput ? { awaitUserInput: opts.awaitUserInput } : {}),
-    // The SDK gates every call via canUseTool, so the bridged execution path
-    // itself does not re-prompt; this stub keeps the context type satisfied.
-    awaitApproval: async () => 'allow'
+    // Execution supplies the real GUI approval callback; listing contexts stay
+    // deny-closed because no tool may execute through them.
+    awaitApproval: opts?.awaitApproval ?? (async () => 'deny')
   })
 
   const resolveImages = async (
@@ -276,6 +386,7 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
       const thread = await deps.threadStore.get(threadId)
       if (!thread) return null
       const turn = thread.turns.find((candidate) => candidate.id === turnId)
+      if (!turn) return null
       const items = await deps.sessionStore.loadItems(threadId)
       const userItem = [...items]
         .reverse()
@@ -290,17 +401,63 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
       const providerId = turn?.providerId?.trim() || thread.providerId?.trim()
       const providerCfg = providerId ? deps.providerConfigs[providerId] : undefined
       const token = providerCfg?.apiKey?.trim() || deps.defaultToken?.trim()
+      // Resolve skills before listing bridgeable tools. Some managed tools
+      // (notably PPT Master) are deliberately advertised only for an active
+      // skill, and the SDK must see the same per-turn catalog as the native
+      // Kun loop.
+      const skillResolution = deps.skillRuntime
+        ? await deps.skillRuntime.resolveTurn({
+            prompt: userText,
+            workspace: thread.workspace,
+            threadId,
+            turnId
+          })
+        : undefined
+      const activeSkillIds = skillResolution?.activeSkillIds ?? []
+      const turnKey = skillTurnKey(threadId, turnId)
+      activeSkillIdsByTurn.set(turnKey, activeSkillIds)
+      skillPromptByTurn.set(turnKey, userText)
       // Plan turns expose create_plan (and narrow kun tools to the plan-allowed
       // set); resolve before listing tools so the bridge sees create_plan.
       // awaitUserInput presence is what advertises `user_input` (the signal here
       // is only for advertisement; the real per-call signal is set on execution).
-      const plan = resolveTurnPlanContext(thread, turnId)
+      const dedicatedSvgTurn = turn.guiDesignArtifact?.kind === 'svg'
+      const plan = dedicatedSvgTurn
+        ? { planMode: false as const }
+        : resolveTurnPlanContext(thread, turnId)
       const ctx = toolContext(threadId, turnId, thread.workspace, {
         ...plan,
-        sandboxMode: thread.sandboxMode,
+        ...(turn?.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
+        ...(turn?.guiDesignMode ? { guiDesignMode: true } : {}),
+        ...(turn?.guiDesignArtifact ? { guiDesignArtifact: turn.guiDesignArtifact } : {}),
+        ...(turn?.guiDesignArtifact?.kind === 'svg'
+          ? { allowedToolNames: SVG_ARTIFACT_ALLOWED_TOOL_NAMES }
+          : {}),
+        activeSkillIds,
+        sandboxMode: thread.sandboxMode ?? deps.defaultSandboxMode,
         awaitUserInput: makeAwaitUserInput(threadId, turnId, new AbortController().signal)
       })
-      const bridgeableTools: BridgeableTool[] = deps.registry.listTools(ctx).map((spec) => ({
+      // An Agent SDK query pins its in-process MCP schemas at startup and
+      // cannot add tools after `load_skill` returns. Pre-bridge schemas gated
+      // by skills visible in this workspace; executeKunTool still re-resolves
+      // the real active ids for every call, so schema visibility is not
+      // execution authority.
+      const availableSkillIds = typeof deps.skillRuntime?.availableSkillIdsForWorkspace === 'function'
+        ? await deps.skillRuntime.availableSkillIdsForWorkspace(thread.workspace)
+        : activeSkillIds
+      const bridgeListingContext = toolContext(threadId, turnId, thread.workspace, {
+        ...plan,
+        ...(turn?.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
+        ...(turn?.guiDesignMode ? { guiDesignMode: true } : {}),
+        ...(turn?.guiDesignArtifact ? { guiDesignArtifact: turn.guiDesignArtifact } : {}),
+        ...(turn?.guiDesignArtifact?.kind === 'svg'
+          ? { allowedToolNames: SVG_ARTIFACT_ALLOWED_TOOL_NAMES }
+          : {}),
+        activeSkillIds: [...new Set([...activeSkillIds, ...availableSkillIds])],
+        sandboxMode: thread.sandboxMode ?? deps.defaultSandboxMode,
+        awaitUserInput: makeAwaitUserInput(threadId, turnId, new AbortController().signal)
+      })
+      const bridgeableTools: BridgeableTool[] = deps.registry.listTools(bridgeListingContext).map((spec) => ({
         name: spec.name,
         description: spec.description,
         inputSchema: spec.inputSchema
@@ -320,9 +477,6 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
       // instruction telling the model to call create_plan (now advertised above).
       const planMode = plan.planMode
 
-      const skillResolution = deps.skillRuntime
-        ? await deps.skillRuntime.resolveTurn({ prompt: userText, workspace: thread.workspace })
-        : undefined
       const instructionResolution = deps.instructionRuntime
         ? await deps.instructionRuntime.resolveTurn({ workspace: thread.workspace })
         : undefined
@@ -349,6 +503,11 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
 
       const contextInstructions = [
         ...(planMode ? [PLAN_MODE_INSTRUCTION] : []),
+        ...(turn?.guiDesignArtifact?.kind === 'svg'
+          ? [SVG_ARTIFACT_MODE_INSTRUCTION]
+          : turn?.guiDesignMode
+            ? [DESIGN_MODE_INSTRUCTION]
+            : []),
         ...(instructionResolution?.instruction ? [instructionResolution.instruction] : []),
         ...(goalInstruction ? [goalInstruction] : []),
         ...(todoInstruction ? [todoInstruction] : []),
@@ -361,9 +520,12 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
         workspace: thread.workspace,
         userText,
         threadPersona: thread.systemPrompt?.trim() || undefined,
-        approvalPolicy: deps.defaultApprovalPolicy,
+        approvalPolicy: thread.approvalPolicy ?? deps.defaultApprovalPolicy,
         sandboxMode: thread.sandboxMode,
         planMode,
+        ...(turn?.guiDesignArtifact?.kind === 'svg'
+          ? { allowSdkBuiltins: false, requireSvgCompletion: true }
+          : {}),
         // Claude Code only accepts Anthropic models; coerce a thread's non-Claude
         // model (e.g. an old deepseek thread now routed to the subscription) to
         // the runtime default so the turn doesn't fail "model may not exist".
@@ -378,30 +540,98 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
 
     async executeKunTool(threadId, turnId, toolName, args, signal): Promise<KunToolResult> {
       const thread = await deps.threadStore.get(threadId)
+      const turn = thread?.turns.find((candidate) => candidate.id === turnId)
+      if (!thread || !turn || signal?.aborted) {
+        return { output: 'turn is no longer active; tool execution was cancelled', isError: true }
+      }
+      if (!deps.toolHost) {
+        return { output: 'Kun tool host is unavailable; tool execution was denied', isError: true }
+      }
       // Re-resolve plan context so create_plan can write to its reserved path.
-      const plan = thread ? resolveTurnPlanContext(thread, turnId) : undefined
+      const plan = turn.guiDesignArtifact?.kind === 'svg'
+        ? { planMode: false as const }
+        : resolveTurnPlanContext(thread, turnId)
+      const approvalPolicy = thread.approvalPolicy ?? deps.defaultApprovalPolicy
+      const sandboxMode = thread.sandboxMode ?? deps.defaultSandboxMode
+      const toolSignal = signal ?? new AbortController().signal
+      const activeSkillIds = await resolveActiveSkillIds(thread, turn)
       // Real per-call signal so an interactive user_input cancels on turn abort.
-      const ctx = toolContext(threadId, turnId, thread?.workspace ?? process.cwd(), {
+      const ctx = toolContext(threadId, turnId, thread.workspace, {
         ...(plan ?? {}),
-        ...(thread?.sandboxMode ? { sandboxMode: thread.sandboxMode } : {}),
-        awaitUserInput: makeAwaitUserInput(threadId, turnId, signal ?? new AbortController().signal)
+        ...(turn?.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
+        ...(turn?.guiDesignMode ? { guiDesignMode: true } : {}),
+        ...(turn?.guiDesignArtifact ? { guiDesignArtifact: turn.guiDesignArtifact } : {}),
+        ...(turn?.guiDesignArtifact?.kind === 'svg'
+          ? { allowedToolNames: SVG_ARTIFACT_ALLOWED_TOOL_NAMES }
+          : {}),
+        ...(activeSkillIds ? { activeSkillIds } : {}),
+        ...(sandboxMode ? { sandboxMode } : {}),
+        approvalPolicy,
+        signal: toolSignal,
+        awaitApproval: makeAwaitApproval(approvalPolicy, sandboxMode, toolSignal),
+        awaitUserInput: makeAwaitUserInput(threadId, turnId, toolSignal)
       })
       try {
-        const record = deps.registry.resolveTool(toolName, ctx)
-        const result = await record.tool.execute(args, ctx)
-        return { output: result.output, isError: result.isError }
+        // The SDK's MCP handler must cross the same LocalToolHost boundary as
+        // native turns. Calling CapabilityRegistry.tool.execute directly skips
+        // policy/sandbox/approval gates, hooks, read-before-edit validation,
+        // and the operation journal.
+        const result = await deps.toolHost.execute({
+          // A bridge call can be concurrent with another invocation of the
+          // same tool in one turn. Keep each call's approval and operation
+          // journal identity distinct so one pending approval cannot replace
+          // another in the gate.
+          callId: deps.ids.next('call_sdk'),
+          toolName,
+          arguments: args
+        }, ctx)
+        if (result.item.kind !== 'tool_result') {
+          return {
+            output: `Kun tool ${toolName} returned an invalid result item`,
+            isError: true
+          }
+        }
+        return { output: result.item.output, isError: result.item.isError }
       } catch (err) {
         return { output: err instanceof Error ? err.message : String(err), isError: true }
       }
     },
 
-    // MVP permission posture: honor 'never' (block all); otherwise allow. Routing
-    // 'always'/'on-request' to the GUI approval panel is a follow-up.
-    async decideToolApproval(): Promise<ToolApprovalDecision> {
-      if (deps.defaultApprovalPolicy === 'never') {
+    async decideToolApproval(threadId, turnId, toolName, input, signal): Promise<ToolApprovalDecision> {
+      // Bridged Kun tools perform their own per-tool policy check through the
+      // LocalToolHost context above; asking here too would create two prompts.
+      if (toolName.startsWith('mcp__kun__')) return { allow: true }
+      const thread = await deps.threadStore.get(threadId)
+      const turn = thread?.turns.find((candidate) => candidate.id === turnId)
+      if (thread && turn && toolName === 'Bash') {
+        const activeSkillIds = await resolveActiveSkillIds(thread, turn)
+        if (activeSkillIds.includes('ppt-master')) {
+          return {
+            allow: false,
+            message: 'Bash is unavailable while PPT Master is active; use ppt_master_run for managed presentation steps.'
+          }
+        }
+      }
+      const approvalPolicy = thread?.approvalPolicy ?? deps.defaultApprovalPolicy
+      if (approvalPolicy === 'never') {
         return { allow: false, message: 'tools are disabled for this turn (policy: never)' }
       }
-      return { allow: true }
+      if (approvalPolicy === 'auto') return { allow: true }
+      const approval = createApprovalRequest({
+        id: deps.ids.next('appr'),
+        threadId,
+        turnId,
+        toolName,
+        summary: `Run ${toolName}(${JSON.stringify(input).slice(0, 4_000)})`
+      })
+      const decision = await makeAwaitApproval(
+        approvalPolicy,
+        thread?.sandboxMode ?? deps.defaultSandboxMode,
+        signal ?? new AbortController().signal
+      )(approval)
+      return decision === 'allow'
+        ? { allow: true }
+        : { allow: false, message: 'Tool call was denied by the approval policy or user.' }
     },
 
     async recordEvent(draft): Promise<void> {
@@ -413,17 +643,37 @@ export function createAgentSdkRuntime(deps: AgentSdkRuntimeFactoryDeps): AgentSd
     },
 
     async finishTurn(threadId, turnId, status, error): Promise<void> {
-      await deps.turns.finishTurn({ threadId, turnId, status, ...(error ? { error } : {}) })
+      try {
+        await deps.turns.finishTurn({ threadId, turnId, status, ...(error ? { error } : {}) })
+      } finally {
+        activeSkillIdsByTurn.delete(skillTurnKey(threadId, turnId))
+        skillPromptByTurn.delete(skillTurnKey(threadId, turnId))
+        if (typeof deps.skillRuntime?.clearTurnActivation === 'function') {
+          deps.skillRuntime.clearTurnActivation(threadId, turnId)
+        }
+      }
     },
 
     async saveSessionId(threadId, sessionId): Promise<void> {
+      sessionIds.delete(threadId)
       sessionIds.set(threadId, sessionId)
+      if (sessionIds.size > MAX_DIAGNOSTIC_SESSION_IDS) {
+        const oldest = sessionIds.keys().next().value
+        if (oldest !== undefined) sessionIds.delete(oldest)
+      }
     },
 
     loadSdk: loadAgentSdk,
-    baseEnv: () => process.env,
+    // The embedded SDK launches a separate agent process. Give it the same
+    // scrubbed base environment as native shell tools; buildScopedEnv adds the
+    // selected SDK OAuth credential explicitly when it is needed.
+    baseEnv: () => shellSpawnEnv(),
     kunSystemPrompt: () => deps.prefix.systemPrompt,
     nextId: (prefix) => deps.ids.next(prefix),
+    getTurnLimits: () => deps.turnLimits,
+    ...(deps.sdkStreamLimits
+      ? { getSdkStreamLimits: () => deps.sdkStreamLimits }
+      : {}),
     ...(deps.pathToClaudeCodeExecutable
       ? { pathToClaudeCodeExecutable: deps.pathToClaudeCodeExecutable }
       : {})

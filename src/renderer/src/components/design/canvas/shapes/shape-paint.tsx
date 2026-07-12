@@ -4,7 +4,7 @@
  * color or a `url(#…)` gradient reference. Keeping this in one place means every
  * shape (rect/ellipse/frame) renders gradients and shadows the same way.
  */
-import type { CanvasShape, GradientFill } from '../../../../design/canvas/canvas-types'
+import type { CanvasShape, GradientFill, StrokeDash } from '../../../../design/canvas/canvas-types'
 import { isGradientFill } from '../../../../design/canvas/canvas-types'
 
 export function fillDefId(shapeId: string): string {
@@ -38,6 +38,12 @@ export function primaryFillPaint(shape: CanvasShape): { fill: string; fillOpacit
     return { fill: `url(#${fillDefId(shape.id)})`, fillOpacity: fill.opacity }
   }
   return { fill: fill.color, fillOpacity: fill.opacity }
+}
+
+export function strokeDasharray(dash: StrokeDash | undefined, width: number): string | undefined {
+  if (dash === 'dashed') return `${width * 3.5} ${width * 2.5}`
+  if (dash === 'dotted') return `${width} ${width * 2}`
+  return undefined
 }
 
 /** Linear-gradient angle (deg, clockwise from +X) → objectBoundingBox vector. */

@@ -26,6 +26,15 @@ const MAX_BASH_YIELD_SECONDS = 60
 const SESSION_EXIT_FLUSH_MS = 50
 const STOP_GRACE_MS = 1000
 const FINISHED_SESSION_RETENTION_MS = 10 * 60 * 1000
+export const DEFAULT_MAX_RUNNING_BACKGROUND_BASH_SESSIONS = 32
+export const DEFAULT_MAX_RUNNING_BACKGROUND_BASH_SESSIONS_PER_THREAD = 4
+export const DEFAULT_MAX_BACKGROUND_BASH_TIMEOUT_SECONDS = 24 * 60 * 60
+
+type BackgroundSessionLimits = {
+  maxRunningSessions: number
+  maxRunningSessionsPerThread: number
+  maxTimeoutSeconds: number
+}
 
 type BashSessionStatus = 'running' | 'completed' | 'stopped' | 'failed'
 
@@ -46,6 +55,8 @@ type BashSession = {
   error?: string
   stopRequested: boolean
   finalized: boolean
+  finalization?: Promise<void>
+  settlement?: Promise<void>
   detached: boolean
   exitWaiters: Set<() => void>
   outputWriter?: BackgroundShellOutputWriter
@@ -78,6 +89,54 @@ type BashPayload = {
 }
 
 const bashSessions = new Map<string, BashSession>()
+const backgroundSessionReservations = new Map<string, number>()
+
+function runningBackgroundSessionCount(threadId?: string): number {
+  let count = 0
+  for (const session of bashSessions.values()) {
+    if (session.status !== 'running') continue
+    if (threadId && session.threadId !== threadId) continue
+    count += 1
+  }
+  return count
+}
+
+function pendingBackgroundSessionCount(threadId?: string): number {
+  if (threadId) return backgroundSessionReservations.get(threadId) ?? 0
+  let count = 0
+  for (const pending of backgroundSessionReservations.values()) count += pending
+  return count
+}
+
+/**
+ * Reserve capacity before the first async startup step. This prevents several
+ * concurrent `bash background=true` requests from all observing spare capacity
+ * and collectively exceeding the process or per-thread cap.
+ */
+function reserveBackgroundSession(
+  threadId: string,
+  limits: Pick<BackgroundSessionLimits, 'maxRunningSessions' | 'maxRunningSessionsPerThread'>
+): () => void {
+  const total = runningBackgroundSessionCount() + pendingBackgroundSessionCount()
+  if (total >= limits.maxRunningSessions) {
+    throw new Error(`background shell capacity reached (${limits.maxRunningSessions} running sessions)`)
+  }
+  const perThread = runningBackgroundSessionCount(threadId) + pendingBackgroundSessionCount(threadId)
+  if (perThread >= limits.maxRunningSessionsPerThread) {
+    throw new Error(
+      `background shell capacity reached for thread ${threadId} (${limits.maxRunningSessionsPerThread} running sessions)`
+    )
+  }
+  backgroundSessionReservations.set(threadId, (backgroundSessionReservations.get(threadId) ?? 0) + 1)
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    const next = (backgroundSessionReservations.get(threadId) ?? 1) - 1
+    if (next > 0) backgroundSessionReservations.set(threadId, next)
+    else backgroundSessionReservations.delete(threadId)
+  }
+}
 
 async function bashExecute(
   command: string,
@@ -243,12 +302,14 @@ function createOutputAccumulator(
   outputLimits: { maxLines: number; maxBytes: number } = {
     maxLines: DEFAULT_MAX_LINES,
     maxBytes: DEFAULT_MAX_BYTES
-  }
+  },
+  options: { persistFullOutput?: boolean } = {}
 ): OutputAccumulator {
   return new OutputAccumulator({
     maxLines: outputLimits.maxLines,
     maxBytes: outputLimits.maxBytes,
-    tempFilePrefix: 'kun-bash'
+    tempFilePrefix: 'kun-bash',
+    ...options
   })
 }
 
@@ -326,11 +387,23 @@ function resultPayload(input: {
 
 async function finalizeSessionOutput(session: BashSession): Promise<void> {
   if (session.finalized) return
-  await sleep(SESSION_EXIT_FLUSH_MS)
-  session.output.finish()
-  await session.output.closeTempFile()
-  await session.outputWriter?.close()
-  session.finalized = true
+  if (session.finalization) return session.finalization
+  const finalization = (async () => {
+    // `exit` can arrive just before the final stdout/stderr data callback.
+    // Retain the small flush grace period, then close both backing writers even
+    // when nobody polls or reads the completed session again.
+    await sleep(SESSION_EXIT_FLUSH_MS)
+    session.output.finish()
+    await session.output.closeTempFile()
+    await session.outputWriter?.close()
+    session.finalized = true
+  })()
+  session.finalization = finalization
+  try {
+    await finalization
+  } finally {
+    if (session.finalization === finalization) session.finalization = undefined
+  }
 }
 
 async function backgroundSessionPayload(
@@ -392,7 +465,12 @@ async function sessionPayload(
 
 function scheduleSessionCleanup(session: BashSession): void {
   const timer = setTimeout(() => {
-    if (session.status !== 'running') bashSessions.delete(session.id)
+    if (session.status === 'running') return
+    // Defensive finalization for a failed exit callback. Do not leave an open
+    // output stream behind merely because no caller subsequently polled it.
+    void finalizeSessionOutput(session)
+      .catch(() => undefined)
+      .finally(() => bashSessions.delete(session.id))
   }, FINISHED_SESSION_RETENTION_MS)
   timer.unref?.()
 }
@@ -402,8 +480,8 @@ function settleSession(
   status: Exclude<BashSessionStatus, 'running'>,
   exitCode: number | null,
   error?: string
-): void {
-  if (session.status !== 'running') return
+): boolean {
+  if (session.status !== 'running') return false
   session.status = status
   session.exitCode = exitCode
   session.finishedAt = new Date().toISOString()
@@ -411,6 +489,7 @@ function settleSession(
   for (const waiter of session.exitWaiters) waiter()
   session.exitWaiters.clear()
   scheduleSessionCleanup(session)
+  return true
 }
 
 function waitForSessionExitOrDelay(session: BashSession, ms: number): Promise<boolean> {
@@ -500,21 +579,26 @@ async function recordFromBackgroundSession(session: BashSession, detached: boole
   )
 }
 
-function sessionById(sessionId: unknown): BashSession | null {
+function sessionById(sessionId: unknown, threadId?: string): BashSession | null {
   const id = typeof sessionId === 'string' ? sessionId.trim() : ''
-  return id ? bashSessions.get(id) ?? null : null
+  const session = id ? bashSessions.get(id) ?? null : null
+  if (!session) return null
+  if (threadId && session.threadId !== threadId) return null
+  return session
 }
 
-export async function stopBashSessionById(sessionId: string): Promise<boolean> {
-  const session = sessionById(sessionId)
+export async function stopBashSessionById(sessionId: string, threadId?: string): Promise<boolean> {
+  const session = sessionById(sessionId, threadId)
   if (!session || session.status !== 'running') return false
   stopSession(session)
   await waitForSessionExitOrDelay(session, STOP_GRACE_MS)
-  return session.status !== 'running'
+  if (session.status === 'running') return false
+  await session.settlement?.catch(() => undefined)
+  return true
 }
 
-export async function readBashSessionPayload(sessionId: string): Promise<BashPayload | null> {
-  const session = sessionById(sessionId)
+export async function readBashSessionPayload(sessionId: string, threadId?: string): Promise<BashPayload | null> {
+  const session = sessionById(sessionId, threadId)
   if (!session) return null
   return sessionPayload(session)
 }
@@ -528,8 +612,12 @@ export async function listBashSessionRecords(threadId?: string): Promise<Backgro
   return records.sort((a, b) => b.startedAt.localeCompare(a.startedAt))
 }
 
-export async function pollBashSession(sessionId: string, yieldSeconds: number): Promise<BashPayload | null> {
-  const session = sessionById(sessionId)
+export async function pollBashSession(
+  sessionId: string,
+  yieldSeconds: number,
+  threadId?: string
+): Promise<BashPayload | null> {
+  const session = sessionById(sessionId, threadId)
   if (!session) return null
   await waitForSessionExitOrDelay(session, normalizeYieldSeconds(yieldSeconds) * 1000)
   return sessionPayload(session)
@@ -538,9 +626,10 @@ export async function pollBashSession(sessionId: string, yieldSeconds: number): 
 export async function writeBashSessionStdin(
   sessionId: string,
   input: string,
-  yieldSeconds: number
+  yieldSeconds: number,
+  threadId?: string
 ): Promise<BashPayload | null> {
-  const session = sessionById(sessionId)
+  const session = sessionById(sessionId, threadId)
   if (!session) return null
   if (session.status !== 'running') return sessionPayload(session)
   session.child.stdin.write(input)
@@ -559,6 +648,7 @@ async function startBackgroundBashSession(
     detached: boolean
     dataDir?: string
     outputLimits: { maxLines: number; maxBytes: number }
+    backgroundLimits: BackgroundSessionLimits
   },
   hooks: BashLocalToolOptions['backgroundShell'],
   onUpdate?: (update: { output: unknown; isError?: boolean }) => Promise<void> | void
@@ -567,17 +657,33 @@ async function startBackgroundBashSession(
     throw new Error('background shell sessions require runtime dataDir')
   }
   await mkdir(input.cwd, { recursive: true })
+  const releaseReservation = reserveBackgroundSession(input.threadId, input.backgroundLimits)
   const shellRuntime = shellRuntimeInfo()
-  const child = spawn(shellRuntime.shell, shellCommandArgs(shellRuntime, input.command), {
-    cwd: input.cwd,
-    env: shellSpawnEnv(),
-    detached: process.platform !== 'win32',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true
-  })
-  const sessionId = nextSessionId()
-  const outputWriter = new BackgroundShellOutputWriter(input.dataDir, input.threadId, sessionId)
-  await outputWriter.open()
+  let child: ChildProcessWithoutNullStreams | undefined
+  let sessionId = ''
+  let outputWriter: BackgroundShellOutputWriter | undefined
+  try {
+    sessionId = nextSessionId()
+    outputWriter = new BackgroundShellOutputWriter(input.dataDir, input.threadId, sessionId)
+    await outputWriter.open()
+    // Open the bounded log before spawning so a storage failure cannot leave
+    // an untracked detached child behind. No await follows spawn before the
+    // session/listeners are installed below, avoiding a fast-exit race.
+    child = spawn(shellRuntime.shell, shellCommandArgs(shellRuntime, input.command), {
+      cwd: input.cwd,
+      env: shellSpawnEnv(),
+      detached: process.platform !== 'win32',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true
+    })
+  } catch (error) {
+    releaseReservation()
+    if (child) terminateSpawnTree(child)
+    if (outputWriter) await outputWriter.close().catch(() => undefined)
+    throw error
+  }
+  releaseReservation()
+  if (!child || !outputWriter) throw new Error('background shell process failed to start')
   const session: BashSession = {
     id: sessionId,
     threadId: input.threadId,
@@ -586,7 +692,10 @@ async function startBackgroundBashSession(
     cwd: input.cwd,
     shell: shellRuntime.name,
     child,
-    output: createOutputAccumulator(input.outputLimits),
+    // BackgroundShellOutputWriter is the sole durable output path here and
+    // caps storage at 10 MiB. Do not also let OutputAccumulator create an
+    // unbounded /tmp full-output file after the preview truncates.
+    output: createOutputAccumulator(input.outputLimits, { persistFullOutput: false }),
     outputMaxBytes: input.outputLimits.maxBytes,
     outputWriter,
     startedAt: new Date().toISOString(),
@@ -598,12 +707,41 @@ async function startBackgroundBashSession(
     exitWaiters: new Set()
   }
   bashSessions.set(session.id, session)
-
-  const notifyUpdated = async () => {
+  // A fast child may exit while start-hook I/O is still in progress. Every
+  // later lifecycle notification waits for this promise so a terminal record
+  // cannot be observed before its corresponding start record.
+  const startedNotification = (async () => {
     if (!hooks) return
-    await hooks.onSessionUpdated?.(await recordFromBackgroundSession(session, input.detached))
+    await hooks.onSessionStarted?.(await recordFromBackgroundSession(session, input.detached))
+  })()
+  const startedNotificationSettled = startedNotification.catch(() => undefined)
+
+  let updateNotificationDirty = false
+  let updateNotificationInFlight: Promise<void> | undefined
+  const flushUpdatedNotification = (): void => {
+    if (!hooks?.onSessionUpdated || updateNotificationInFlight) return
+    const flush = (async () => {
+      await startedNotificationSettled
+      while (updateNotificationDirty) {
+        updateNotificationDirty = false
+        await hooks.onSessionUpdated?.(await recordFromBackgroundSession(session, input.detached))
+      }
+    })()
+    updateNotificationInFlight = flush
+    void flush
+      .catch(() => undefined)
+      .finally(() => {
+        if (updateNotificationInFlight === flush) updateNotificationInFlight = undefined
+        if (updateNotificationDirty) flushUpdatedNotification()
+      })
+  }
+  const notifyUpdated = (): void => {
+    if (!hooks?.onSessionUpdated) return
+    updateNotificationDirty = true
+    flushUpdatedNotification()
   }
   const notifySettled = async () => {
+    await startedNotificationSettled
     if (!hooks) return
     await hooks.onSessionSettled?.(await recordFromBackgroundSession(session, input.detached))
   }
@@ -612,26 +750,40 @@ async function startBackgroundBashSession(
   let updateTimer: NodeJS.Timeout | undefined
   let lastUpdateAt = 0
   let liveUpdates = true
-  const emitUpdate = async () => {
+  let updateInFlight: Promise<void> | undefined
+  const flushUpdate = async () => {
     if (!liveUpdates || !onUpdate || !updateDirty) return
     updateDirty = false
     lastUpdateAt = Date.now()
     const payload = await sessionPayload(session)
     await onUpdate({ output: payload })
-    void notifyUpdated()
+    // Do not enqueue a stale "running" update after the process has reached
+    // a terminal state and its completion notification is being published.
+    if (liveUpdates) notifyUpdated()
+  }
+  const emitUpdate = (): void => {
+    if (updateInFlight) return
+    const flush = flushUpdate()
+    updateInFlight = flush
+    void flush
+      .catch(() => undefined)
+      .finally(() => {
+        if (updateInFlight === flush) updateInFlight = undefined
+        if (updateDirty && liveUpdates) scheduleUpdate()
+      })
   }
   const scheduleUpdate = () => {
     if (!liveUpdates || !onUpdate) return
     updateDirty = true
     const delay = 100 - (Date.now() - lastUpdateAt)
     if (delay <= 0) {
-      void emitUpdate()
+      emitUpdate()
       return
     }
     if (updateTimer) return
     updateTimer = setTimeout(() => {
       updateTimer = undefined
-      void emitUpdate()
+      emitUpdate()
     }, delay)
   }
   const handleData = (chunk: Buffer | string) => {
@@ -643,17 +795,40 @@ async function startBackgroundBashSession(
   }
   child.stdout.on('data', handleData)
   child.stderr.on('data', handleData)
+  const settleAndNotify = (
+    status: Exclude<BashSessionStatus, 'running'>,
+    exitCode: number | null,
+    error?: string
+  ): Promise<void> => {
+    if (!settleSession(session, status, exitCode, error)) {
+      return session.settlement ?? Promise.resolve()
+    }
+    const settlement = (async () => {
+      liveUpdates = false
+      if (updateTimer) {
+        clearTimeout(updateTimer)
+        updateTimer = undefined
+      }
+      try {
+        await finalizeSessionOutput(session)
+      } catch {
+        // The session status is still terminal and must be published even if its
+        // optional output file cannot be closed cleanly.
+      }
+      await notifySettled()
+    })()
+    session.settlement = settlement
+    return settlement
+  }
   child.once('error', (error) => {
-    settleSession(session, 'failed', null, error.message)
-    void notifySettled()
+    void settleAndNotify('failed', null, error.message).catch(() => undefined)
   })
   child.once('exit', (code) => {
-    settleSession(session, session.stopRequested ? 'stopped' : 'completed', code)
-    void notifySettled()
+    void settleAndNotify(session.stopRequested ? 'stopped' : 'completed', code).catch(() => undefined)
   })
 
   const initialPayload = await sessionPayload(session)
-  await hooks?.onSessionStarted?.(await recordFromBackgroundSession(session, input.detached))
+  await startedNotification
 
   if (input.detached) {
     const timeoutMs = input.timeoutSeconds * 1000
@@ -688,6 +863,29 @@ export function createBashLocalTool(options: BashLocalToolOptions = {}): LocalTo
   const bashOps = options.operations
   const shellHooks = options.backgroundShell
   const backgroundShellDataDir = options.backgroundShellDataDir
+  const backgroundLimits: BackgroundSessionLimits = {
+    maxRunningSessions: Math.max(
+      1,
+      normalizePositiveInteger(
+        options.maxBackgroundSessions,
+        DEFAULT_MAX_RUNNING_BACKGROUND_BASH_SESSIONS
+      )
+    ),
+    maxRunningSessionsPerThread: Math.max(
+      1,
+      normalizePositiveInteger(
+        options.maxBackgroundSessionsPerThread,
+        DEFAULT_MAX_RUNNING_BACKGROUND_BASH_SESSIONS_PER_THREAD
+      )
+    ),
+    maxTimeoutSeconds: Math.max(
+      1,
+      normalizePositiveInteger(
+        options.maxBackgroundTimeoutSeconds,
+        DEFAULT_MAX_BACKGROUND_BASH_TIMEOUT_SECONDS
+      )
+    )
+  }
   const outputLimits = {
     maxLines: options.maxLines ?? DEFAULT_MAX_LINES,
     maxBytes: options.maxBytes ?? DEFAULT_MAX_BYTES
@@ -719,6 +917,15 @@ export function createBashLocalTool(options: BashLocalToolOptions = {}): LocalTo
       const cwd = workspaceRoot(context.workspace)
       try {
         if (background) {
+          if (timeout > backgroundLimits.maxTimeoutSeconds) {
+            return {
+              output: {
+                error: `background shell timeout exceeds ${backgroundLimits.maxTimeoutSeconds} seconds`,
+                timeout
+              },
+              isError: true
+            }
+          }
           if (bashOps?.exec) {
             return {
               output: { error: 'background sessions are not supported with custom bash exec operations' },
@@ -735,7 +942,8 @@ export function createBashLocalTool(options: BashLocalToolOptions = {}): LocalTo
               timeoutSeconds: timeout,
               detached: true,
               dataDir: backgroundShellDataDir,
-              outputLimits
+              outputLimits,
+              backgroundLimits
             },
             shellHooks,
             onUpdate

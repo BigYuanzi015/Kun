@@ -66,7 +66,7 @@ export function HtmlFrameQualityControl({
       </button>
       {open ? (
         <div
-          className="absolute right-0 top-full z-30 mt-1.5 rounded-md border border-ds-border bg-white/95 p-2.5 text-left text-[11px] leading-snug text-ds-ink shadow-[0_16px_40px_rgba(20,47,95,0.18)] backdrop-blur-md dark:bg-ds-card/95"
+          className="absolute right-0 top-full z-30 mt-1.5 rounded-md border border-ds-border bg-white/95 p-2.5 text-left text-[11px] leading-snug text-ds-ink shadow-[0_16px_40px_rgba(20,47,95,0.18)] backdrop-blur-md dark:border-white/15 dark:bg-[#20252e] dark:text-white/90"
           style={{ width: qualityPanelWidth }}
           onPointerDown={(e) => e.stopPropagation()}
           onDoubleClick={(e) => e.stopPropagation()}

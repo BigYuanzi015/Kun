@@ -28,6 +28,7 @@ import {
   writeSddChatTranscriptForThread
 } from '../../sdd/sdd-chat-transcript'
 import type { RightPanelMode } from '../chat/WorkbenchTopBar'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../../extensions/contribution-ids'
 
 const SDD_ASSISTANT_TITLE_SYNC_DELAY_MS = 900
 
@@ -251,7 +252,7 @@ export function useWorkbenchSddThreadController({
       setRightSidebarWidth((width) => Math.max(width, 420))
       const sddThreadId = await ensureSddAssistantThreadForDraft(draft)
       if (sddThreadId) {
-        setRightPanelMode('sdd-ai')
+        setRightPanelMode(BUILTIN_RIGHT_PANEL_IDS.sddAi)
       } else {
         setRightPanelMode(null)
       }
@@ -277,7 +278,7 @@ export function useWorkbenchSddThreadController({
       void saveActiveSddDraftToDisk()
       useSddDraftStore.getState().clearActiveDraft()
     }
-    if (options.closeAssistant && rightPanelMode === 'sdd-ai') setRightPanelMode(null)
+    if (options.closeAssistant && rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.sddAi) setRightPanelMode(null)
   }, [rightPanelMode, setRightPanelMode])
 
   const openSddAssistantPanel = useCallback(async (): Promise<void> => {
@@ -286,11 +287,11 @@ export function useWorkbenchSddThreadController({
     setRightSidebarWidth((width) => Math.max(width, 420))
     const threadId = await ensureSddAssistantThreadForDraft(draft)
     if (!threadId) return
-    setRightPanelMode('sdd-ai')
+    setRightPanelMode(BUILTIN_RIGHT_PANEL_IDS.sddAi)
   }, [ensureSddAssistantThreadForDraft, setRightPanelMode, setRightSidebarWidth])
 
   const toggleSddAssistantPanel = useCallback(async (): Promise<void> => {
-    if (rightPanelMode === 'sdd-ai') {
+    if (rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.sddAi) {
       setRightPanelMode(null)
       return
     }

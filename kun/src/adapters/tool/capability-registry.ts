@@ -35,6 +35,10 @@ const PLAN_MODE_ALLOWED_TOOL_NAMES = new Set([
   'request_user_input'
 ])
 
+const MANAGED_SKILL_BLOCKED_TOOL_NAMES: Readonly<Record<string, ReadonlySet<string>>> = {
+  'ppt-master': new Set(['bash', 'background_shell'])
+}
+
 export class CapabilityRegistry {
   private readonly providers = new Map<string, CapabilityToolProvider>()
   private readonly tools = new Map<string, CapabilityToolRecord>()
@@ -55,7 +59,7 @@ export class CapabilityRegistry {
     this.replaceProviders(providers)
   }
 
-  registerProvider(provider: CapabilityToolProvider): void {
+  registerProvider(provider: CapabilityToolProvider): () => void {
     if (this.providers.has(provider.id)) {
       throw new Error(`duplicate tool provider: ${provider.id}`)
     }
@@ -66,6 +70,18 @@ export class CapabilityRegistry {
       }
       this.tools.set(tool.name, { provider: providerPolicy(provider), tool })
     }
+    return () => this.unregisterProvider(provider.id)
+  }
+
+  replaceProvider(provider: CapabilityToolProvider): void {
+    const providers = [...this.providers.values()].filter((candidate) => candidate.id !== provider.id)
+    this.replaceProviders([...providers, provider])
+  }
+
+  unregisterProvider(providerId: string): boolean {
+    if (!this.providers.has(providerId)) return false
+    this.replaceProviders([...this.providers.values()].filter((provider) => provider.id !== providerId))
+    return true
   }
 
   replaceProviders(providers: readonly CapabilityToolProvider[]): void {
@@ -147,6 +163,9 @@ export class CapabilityRegistry {
       return false
     }
     if (context?.blockedToolNames?.includes(toolName)) return false
+    for (const skillId of context?.activeSkillIds ?? []) {
+      if (MANAGED_SKILL_BLOCKED_TOOL_NAMES[skillId]?.has(toolName)) return false
+    }
     const allowed = context?.allowedToolNames
     return !allowed || allowed.includes(toolName)
   }

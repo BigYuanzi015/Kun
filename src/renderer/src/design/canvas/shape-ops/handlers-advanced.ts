@@ -1,5 +1,5 @@
 import type { CanvasShape, Rect } from '../canvas-types'
-import { createDefaultShape, shapeBounds, type DevicePreset } from '../canvas-types'
+import { createDefaultShape, isArtifactFrame, shapeBounds, type DevicePreset } from '../canvas-types'
 import { useCanvasShapeStore, withDescendants } from '../canvas-shape-store'
 import { useCanvasViewportStore } from '../canvas-viewport-store'
 import { centerRectInViewport, layoutRectsInViewport, placeRectInViewportAvoiding } from '../canvas-placement'
@@ -198,11 +198,23 @@ export function executeAdvancedShapeOp(
         })
         return true
       }
+      if (members.some(isArtifactFrame)) {
+        errors.push({
+          code: 'INVALID_OP',
+          message: 'HTML and SVG artifact frames cannot be stacked because portal previews must remain root-level.'
+        })
+        return true
+      }
       const parentId = members[0].parentId ?? doc0.rootId
       const bounds = collectiveBounds(
         members.map((s) => ({ id: s.id, x: s.x, y: s.y, width: s.width, height: s.height }))
       )
-      const container = createDefaultShape(op.asFrame ? 'frame' : 'group', bounds.x, bounds.y)
+      const container = createDefaultShape(
+        op.asFrame ? 'frame' : 'group',
+        bounds.x,
+        bounds.y,
+        options.shapePreset
+      )
       container.name = op.name ?? 'Stack'
       container.width = bounds.width
       container.height = bounds.height

@@ -89,7 +89,8 @@ export const ModelContextProfileConfigSchema = z
     // every model would be pinned to chat_completions.
     endpointFormat: z
       .preprocess(normalizeModelEndpointFormat, z.enum(MODEL_ENDPOINT_FORMATS))
-      .optional()
+      .optional(),
+    responsesMode: z.literal('lite').optional()
   })
   .strict()
   .superRefine((profile, ctx) => {
@@ -158,6 +159,22 @@ export const RuntimeTuningConfigSchema = z
         windowSize: PositiveInt.optional(),
         threshold: z.number().int().min(2).optional()
       })
+      .strict()
+      .optional(),
+    /** Hard runtime bounds for native and delegated Agent SDK turns. */
+    turnLimits: z
+      .object({
+        maxSteps: PositiveInt.max(1_000).optional(),
+        maxWallTimeMs: PositiveInt.max(86_400_000).optional(),
+        maxToolCallsPerStep: PositiveInt.max(256).optional(),
+        /** Global in-process admission cap for concurrently active turns. */
+        maxConcurrentTurns: PositiveInt.max(256).optional()
+      })
+      .strict()
+      .optional(),
+    /** Sensitive in-memory request capture; disabled unless explicitly enabled. */
+    llmDebug: z
+      .object({ enabled: z.boolean().default(false) })
       .strict()
       .optional(),
     toolArgumentRepair: z
@@ -234,6 +251,16 @@ export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
   backend: 'hybrid'
 }
 
+export const ObservabilityConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false).optional(),
+    outputPath: z.string().min(1).optional(),
+    // Reserved for future trace payload sampling. The current exporter never
+    // records prompts, tool arguments, tool output, command text, or secrets.
+    includeSensitiveContent: z.boolean().default(false).optional()
+  })
+  .strict()
+
 /**
  * Per-`providerId` HTTP credentials. Lets the runtime route a thread's turns
  * to a non-default provider without restart — the workflow / scheduled task
@@ -251,6 +278,8 @@ export const ServeProviderConfigSchema = z
      */
     kind: z.enum(['http', 'agent-sdk']).default('http').optional(),
     apiKey: z.string().default(''),
+    /** Opaque binding key resolved through the protected account store. */
+    credentialSourceId: z.string().min(1).max(256).optional(),
     baseUrl: z.string().min(1).optional(),
     endpointFormat: z
       .preprocess(normalizeModelEndpointFormat, z.enum(MODEL_ENDPOINT_FORMATS))
@@ -279,6 +308,8 @@ export const KunServeConfigSchema = z
     dataDir: z.string().min(1).optional(),
     runtimeToken: z.string().optional(),
     apiKey: z.string().optional(),
+    /** Opaque binding key resolved through the protected account store. */
+    credentialSourceId: z.string().min(1).max(256).optional(),
     baseUrl: z.string().optional(),
     modelProxyUrl: z.string().optional(),
     endpointFormat: z.preprocess(
@@ -294,6 +325,7 @@ export const KunServeConfigSchema = z
     toolOutputLimits: ToolOutputLimitsConfigSchema.optional(),
     insecure: z.boolean().optional(),
     storage: StorageConfigSchema.optional(),
+    observability: ObservabilityConfigSchema.optional(),
     /**
      * Extra HTTP headers merged into every default-client model request
      * (last, so they win). Used for providers that authenticate with more
@@ -323,12 +355,16 @@ export const RolesConfigSchema = z
   .object({
     smallModel: z.string().min(1).optional(),
     smallModelProviderId: z.string().min(1).optional(),
+    smallModelAccountId: z.string().min(1).optional(),
     titleModel: z.string().min(1).optional(),
     titleProviderId: z.string().min(1).optional(),
+    titleAccountId: z.string().min(1).optional(),
     summaryModel: z.string().min(1).optional(),
     summaryProviderId: z.string().min(1).optional(),
+    summaryAccountId: z.string().min(1).optional(),
     codeReviewModel: z.string().min(1).optional(),
     codeReviewProviderId: z.string().min(1).optional(),
+    codeReviewAccountId: z.string().min(1).optional(),
     // Per-role reasoning depth. Default 'off' (the GUI omits it entirely).
     titleReasoningEffort: ModelReasoningEffort.optional(),
     summaryReasoningEffort: ModelReasoningEffort.optional(),
@@ -360,6 +396,7 @@ export type RuntimeTuningConfig = z.infer<typeof RuntimeTuningConfigSchema>
 export type TokenEconomyConfig = z.infer<typeof TokenEconomyConfigSchema>
 export type ToolOutputLimitsConfig = z.infer<typeof ToolOutputLimitsConfigSchema>
 export type StorageConfig = z.infer<typeof StorageConfigSchema>
+export type ObservabilityConfig = z.infer<typeof ObservabilityConfigSchema>
 
 export type LoadedKunConfig = {
   path: string

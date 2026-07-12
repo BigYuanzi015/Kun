@@ -329,13 +329,14 @@ in-IDE design-to-code advantage:
    side-by-side compare overlay with one live HTML preview column per direction
    and synchronized switching for shared or partially covered screen names.
    Remaining work: pixel/style diff overlays plus richer archive filtering.
-4. **DESIGN.md compatibility**: keep `.kun-design/DESIGN_SYSTEM.md` as the local
-   source of truth. Kun now exports a project-level `.kun-design/DESIGN.md`
-   that summarizes the brief, design context, doc-level tokens/components,
-   screens, and prototype flow for Stitch-style/code-agent handoff. The design
-   context popover can import that file back into guidelines, brand/preset, and
-   simple tokens. Remaining work: support arbitrary external file import and
-   richer component/token reconstruction.
+4. **Google-compatible DESIGN.md**: root `DESIGN.md` is the canonical public
+   project theme. The Design canvas discovers and validates it, projects it as
+   a deterministic specimen board, and maps compatible tokens into native
+   canvas state. Kun-generated project handoff lives at
+   `.kun-design/HANDOFF.md`; legacy `.kun-design/DESIGN.md` and
+   `.kun-design/design-system.json` remain compatibility/migration inputs and
+   never compete as theme sources. Per-artifact `DESIGN.md` files remain local
+   implementation notes rather than project themes.
 5. **Prototype playback**: HTML screen frames now persist planned
    `prototypeLinks[]` from the multi-page planner's `linksTo` metadata, render
    those links as a non-editing flow overlay on the board, and expose a Play

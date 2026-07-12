@@ -4,6 +4,8 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactElement
 } from 'react'
 import { createPortal } from 'react-dom'
@@ -39,6 +41,7 @@ type Props = {
   composerPickList: string[]
   composerModelGroups?: ModelProviderModelGroup[]
   canChangeModel: boolean
+  controlVariant?: 'combined' | 'split'
   stretch?: boolean
   composerReasoningEffort?: string
   lockVisionToTextModelSwitch?: boolean
@@ -71,8 +74,15 @@ type FloatingSubmenuPlacement = {
   maxHeight: number
 }
 
+type FloatingReasoningPopoverPlacement = {
+  left: number
+  top: number
+  width: number
+}
+
 type FloatingMenuAnchorRect = Pick<DOMRect, 'bottom' | 'right' | 'top'>
 type FloatingSubmenuAnchorRect = Pick<DOMRect, 'bottom' | 'left' | 'right' | 'top'>
+type FloatingReasoningPopoverAnchorRect = Pick<DOMRect, 'bottom' | 'left' | 'right' | 'top'>
 
 type ComposerModelMenuGroup = {
   providerId: string
@@ -91,7 +101,30 @@ const FLOATING_SUBMENU_GAP = 6
 const FLOATING_SUBMENU_WIDTH = 232
 const FLOATING_SUBMENU_MIN_HEIGHT = 80
 const FLOATING_SUBMENU_MAX_HEIGHT = 320
+const FLOATING_REASONING_POPOVER_WIDTH = 286
+const FLOATING_REASONING_POPOVER_ESTIMATED_HEIGHT = 110
+const FLOATING_REASONING_POPOVER_GAP = 12
+const REASONING_RAIL_THUMB_RADIUS = 18
 const UNGROUPED_MODEL_PROVIDER_ID = '__composer_models__'
+const REASONING_RAIL_ORDER: ComposerReasoningEffort[] = ['off', 'low', 'medium', 'high', 'max', 'auto']
+const REASONING_PARTICLES = [
+  { x: '6%', y: '61%', size: '5px', delay: '-2.1s', duration: '3.7s', driftX: '7px', driftY: '-7px' },
+  { x: '11%', y: '29%', size: '3px', delay: '-0.4s', duration: '2.9s', driftX: '-5px', driftY: '6px' },
+  { x: '17%', y: '67%', size: '2px', delay: '-1.6s', duration: '4.4s', driftX: '6px', driftY: '-5px' },
+  { x: '23%', y: '37%', size: '4px', delay: '-3.1s', duration: '3.2s', driftX: '-7px', driftY: '-4px' },
+  { x: '29%', y: '72%', size: '3px', delay: '-0.9s', duration: '4.1s', driftX: '5px', driftY: '-8px' },
+  { x: '35%', y: '24%', size: '6px', delay: '-2.8s', duration: '3.8s', driftX: '-4px', driftY: '7px' },
+  { x: '41%', y: '55%', size: '2px', delay: '-1.2s', duration: '2.7s', driftX: '8px', driftY: '-4px' },
+  { x: '47%', y: '31%', size: '4px', delay: '-3.7s', duration: '4.6s', driftX: '-6px', driftY: '5px' },
+  { x: '53%', y: '69%', size: '3px', delay: '-0.2s', duration: '3.4s', driftX: '5px', driftY: '-7px' },
+  { x: '59%', y: '43%', size: '5px', delay: '-2.4s', duration: '4.2s', driftX: '-8px', driftY: '-5px' },
+  { x: '65%', y: '24%', size: '2px', delay: '-1.4s', duration: '3.1s', driftX: '6px', driftY: '8px' },
+  { x: '71%', y: '66%', size: '4px', delay: '-3.4s', duration: '3.9s', driftX: '-5px', driftY: '-7px' },
+  { x: '77%', y: '36%', size: '3px', delay: '-0.7s', duration: '2.8s', driftX: '7px', driftY: '5px' },
+  { x: '83%', y: '71%', size: '5px', delay: '-2.6s', duration: '4.5s', driftX: '-6px', driftY: '-8px' },
+  { x: '89%', y: '27%', size: '3px', delay: '-1.8s', duration: '3.5s', driftX: '5px', driftY: '7px' },
+  { x: '95%', y: '56%', size: '4px', delay: '-3.9s', duration: '4s', driftX: '-7px', driftY: '-5px' }
+] as const
 const DEFAULT_COMPOSER_MODEL_KEYS = new Set(
   DEFAULT_COMPOSER_MODEL_IDS.map((id) => normalizeModelCapabilityKey(id))
 )
@@ -104,6 +137,7 @@ export function FloatingComposerModelPicker({
   composerPickList,
   composerModelGroups = [],
   canChangeModel,
+  controlVariant = 'combined',
   stretch = false,
   composerReasoningEffort = 'max',
   lockVisionToTextModelSwitch = false,
@@ -113,16 +147,22 @@ export function FloatingComposerModelPicker({
 }: Props): ReactElement {
   const { t } = useTranslation('common')
   const pickerRef = useRef<HTMLElement | null>(null)
+  const modelTriggerRef = useRef<HTMLButtonElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const submenuRef = useRef<HTMLDivElement | null>(null)
+  const reasoningTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const reasoningPopoverRef = useRef<HTMLDivElement | null>(null)
+  const reasoningDragPointerRef = useRef<number | null>(null)
   const reasoningRowRef = useRef<HTMLButtonElement | null>(null)
   const providerRowRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
   const [menuOpen, setMenuOpen] = useState(false)
   const [reasoningPanelOpen, setReasoningPanelOpen] = useState(false)
+  const [reasoningPopoverOpen, setReasoningPopoverOpen] = useState(false)
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null)
   const [modelFilter, setModelFilter] = useState('')
   const [menuPlacement, setMenuPlacement] = useState<FloatingMenuPlacement | null>(null)
   const [submenuPlacement, setSubmenuPlacement] = useState<FloatingSubmenuPlacement | null>(null)
+  const [reasoningPopoverPlacement, setReasoningPopoverPlacement] = useState<FloatingReasoningPopoverPlacement | null>(null)
   const modelOptions = useMemo(() => buildComposerModelOptions(composerPickList), [composerPickList])
   const providerMenuGroups = useMemo<ComposerModelMenuGroup[]>(() => {
     return buildComposerModelMenuGroups({
@@ -149,6 +189,17 @@ export function FloatingComposerModelPicker({
     currentModelProfile
   )
   const currentReasoningLabel = t(reasoningLabelKey(currentReasoning))
+  const reasoningRailEfforts = useMemo(
+    () => orderComposerReasoningRailEfforts(reasoningOptions.map((option) => option.id)),
+    [reasoningOptions]
+  )
+  const reasoningRailPosition = composerReasoningRailPosition(reasoningRailEfforts, currentReasoning)
+  const reasoningRailIndex = Math.max(0, reasoningRailEfforts.indexOf(currentReasoning))
+  const reasoningHasEnergyMotion = composerReasoningEffortHasEnergyMotion(currentReasoning)
+  const reasoningParticleCount = reasoningHasEnergyMotion
+    ? Math.round(REASONING_PARTICLES.length * reasoningRailPosition)
+    : 0
+  const reasoningThumbCenter = composerReasoningRailThumbCenter(reasoningRailPosition)
   const canOpenModelControls = canChangeModel || (needsProviderSetup && Boolean(onConfigureProviders))
   const modelLabel = needsProviderSetup
     ? t('composerNoProvidersShort')
@@ -166,6 +217,11 @@ export function FloatingComposerModelPicker({
     : compact
       ? 'w-[184px] max-w-[184px] shrink-0 overflow-hidden'
       : 'w-[248px] max-w-[min(260px,42vw)] shrink-0 overflow-hidden'
+  const splitModelWidthClass = stretch
+    ? 'max-w-[min(284px,45vw)]'
+    : compact
+      ? 'max-w-[184px]'
+      : 'max-w-[min(260px,42vw)]'
 
   useEffect(() => {
     if (!reasoningEnabled) return
@@ -176,18 +232,26 @@ export function FloatingComposerModelPicker({
   }, [composerReasoningEffort, currentReasoning, onComposerReasoningEffortChange, reasoningEnabled])
 
   useEffect(() => {
-    if (!menuOpen) return
+    if (reasoningEnabled) return
+    setReasoningPopoverOpen(false)
+  }, [reasoningEnabled])
+
+  useEffect(() => {
+    if (!menuOpen && !reasoningPopoverOpen) return
     const onPointerDown = (event: PointerEvent): void => {
       const target = event.target
       if (!(target instanceof Node)) return
       if (pickerRef.current?.contains(target)) return
       if (menuRef.current?.contains(target)) return
       if (submenuRef.current?.contains(target)) return
+      if (reasoningTriggerRef.current?.contains(target)) return
+      if (reasoningPopoverRef.current?.contains(target)) return
       setMenuOpen(false)
+      setReasoningPopoverOpen(false)
     }
     window.addEventListener('pointerdown', onPointerDown)
     return () => window.removeEventListener('pointerdown', onPointerDown)
-  }, [menuOpen])
+  }, [menuOpen, reasoningPopoverOpen])
 
   useEffect(() => {
     if (!menuOpen) {
@@ -199,7 +263,9 @@ export function FloatingComposerModelPicker({
     }
 
     const updatePlacement = (): void => {
-      const picker = pickerRef.current
+      const picker = controlVariant === 'split'
+        ? modelTriggerRef.current
+        : pickerRef.current
       if (!picker) return
 
       setMenuPlacement(
@@ -220,7 +286,55 @@ export function FloatingComposerModelPicker({
       window.removeEventListener('resize', updatePlacement)
       window.removeEventListener('scroll', updatePlacement, true)
     }
-  }, [menuOpen])
+  }, [controlVariant, menuOpen])
+
+  useEffect(() => {
+    if (!reasoningPopoverOpen || controlVariant !== 'split') {
+      setReasoningPopoverPlacement(null)
+      return
+    }
+
+    const updatePlacement = (): void => {
+      const trigger = reasoningTriggerRef.current
+      if (!trigger) return
+      setReasoningPopoverPlacement(
+        calculateFloatingReasoningPopoverPlacement({
+          anchorRect: trigger.getBoundingClientRect(),
+          popoverHeight: reasoningPopoverRef.current?.offsetHeight ?? FLOATING_REASONING_POPOVER_ESTIMATED_HEIGHT,
+          viewportHeight: window.innerHeight,
+          viewportWidth: window.innerWidth,
+          coordinateScale: currentBodyZoom()
+        })
+      )
+    }
+
+    updatePlacement()
+    const frame = window.requestAnimationFrame(updatePlacement)
+    window.addEventListener('resize', updatePlacement)
+    window.addEventListener('scroll', updatePlacement, true)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('resize', updatePlacement)
+      window.removeEventListener('scroll', updatePlacement, true)
+    }
+  }, [controlVariant, reasoningPopoverOpen])
+
+  useEffect(() => {
+    if (!reasoningPopoverOpen) return
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setReasoningPopoverOpen(false)
+      window.requestAnimationFrame(() => reasoningTriggerRef.current?.focus())
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [reasoningPopoverOpen])
+
+  useEffect(() => {
+    if (controlVariant === 'split') return
+    setReasoningPopoverOpen(false)
+  }, [controlVariant])
 
   useEffect(() => {
     if (!menuOpen) {
@@ -309,6 +423,152 @@ export function FloatingComposerModelPicker({
         visibility: 'hidden'
       }
 
+  const reasoningPopoverStyle: CSSProperties = reasoningPopoverPlacement
+    ? {
+        left: `${reasoningPopoverPlacement.left}px`,
+        top: `${reasoningPopoverPlacement.top}px`,
+        width: `${reasoningPopoverPlacement.width}px`
+      }
+    : {
+        left: 0,
+        top: 0,
+        width: `${FLOATING_REASONING_POPOVER_WIDTH}px`,
+        visibility: 'hidden'
+      }
+
+  const selectReasoningAtPosition = (position: number): void => {
+    const next = composerReasoningEffortForRailPosition(reasoningRailEfforts, position)
+    if (next && next !== currentReasoning) onComposerReasoningEffortChange?.(next)
+  }
+
+  const selectReasoningAtPointer = (
+    event: ReactPointerEvent<HTMLDivElement>
+  ): void => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    selectReasoningAtPosition(
+      composerReasoningRailPointerPosition(event.clientX, rect.left, rect.width)
+    )
+  }
+
+  const onReasoningRailPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (!canChangeModel) return
+    reasoningDragPointerRef.current = event.pointerId
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      // Keep in-rail dragging functional when synthetic input cannot establish capture.
+    }
+    selectReasoningAtPointer(event)
+  }
+
+  const onReasoningRailPointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (!canChangeModel || reasoningDragPointerRef.current !== event.pointerId) return
+    selectReasoningAtPointer(event)
+  }
+
+  const onReasoningRailPointerUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (reasoningDragPointerRef.current === event.pointerId) {
+      reasoningDragPointerRef.current = null
+    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
+  const onReasoningRailKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (!canChangeModel || reasoningRailEfforts.length === 0) return
+    const next = composerReasoningEffortForRailKey(
+      reasoningRailEfforts,
+      currentReasoning,
+      event.key
+    )
+    if (!next) return
+    event.preventDefault()
+    if (next !== currentReasoning) onComposerReasoningEffortChange?.(next)
+  }
+
+  const renderSplitReasoningPopover = (): ReactElement | null => {
+    if (!reasoningPopoverOpen || controlVariant !== 'split' || !reasoningEnabled) return null
+    const particleCount = Math.max(0, Math.min(REASONING_PARTICLES.length, reasoningParticleCount))
+    const popover = (
+      <div
+        ref={reasoningPopoverRef}
+        role="dialog"
+        aria-label={t('composerReasoning')}
+        style={reasoningPopoverStyle}
+        className="ds-composer-reasoning-popover fixed z-[1001]"
+      >
+        <div className="ds-composer-reasoning-scale" aria-hidden="true">
+          <span>{t('composerReasoningFaster')}</span>
+          <span>{t('composerReasoningSmarter')}</span>
+        </div>
+        <div
+          className={`ds-composer-reasoning-rail${canChangeModel ? '' : ' is-disabled'}`}
+          role="slider"
+          tabIndex={canChangeModel ? 0 : -1}
+          aria-label={t('composerReasoning')}
+          aria-orientation="horizontal"
+          aria-valuemin={0}
+          aria-valuemax={Math.max(0, reasoningRailEfforts.length - 1)}
+          aria-valuenow={reasoningRailIndex}
+          aria-valuetext={currentReasoningLabel}
+          aria-disabled={!canChangeModel}
+          onPointerDown={onReasoningRailPointerDown}
+          onPointerMove={onReasoningRailPointerMove}
+          onPointerUp={onReasoningRailPointerUp}
+          onPointerCancel={onReasoningRailPointerUp}
+          onKeyDown={onReasoningRailKeyDown}
+        >
+          <div className="ds-composer-reasoning-rail-inner">
+            <div className="ds-composer-reasoning-rail-track" aria-hidden="true">
+              <span
+                className={`ds-composer-reasoning-rail-fill${reasoningHasEnergyMotion ? ' is-energized' : ''}`}
+                style={{ width: reasoningThumbCenter }}
+              >
+                {REASONING_PARTICLES.slice(0, particleCount).map((particle, index) => (
+                  <i
+                    key={index}
+                    className="ds-composer-reasoning-particle"
+                    style={{
+                      left: particle.x,
+                      top: particle.y,
+                      width: particle.size,
+                      height: particle.size,
+                      animationDelay: particle.delay,
+                      animationDuration: particle.duration,
+                      '--ds-reasoning-particle-x': particle.driftX,
+                      '--ds-reasoning-particle-y': particle.driftY
+                    } as CSSProperties}
+                  />
+                ))}
+              </span>
+              <span className="ds-composer-reasoning-stops">
+                {reasoningRailEfforts.map((effort, index) => (
+                  <i
+                    key={effort}
+                    className={index <= reasoningRailIndex ? 'is-filled' : ''}
+                    style={{ left: composerReasoningRailThumbCenter(
+                      composerReasoningRailPosition(reasoningRailEfforts, effort)
+                    ) }}
+                  />
+                ))}
+              </span>
+            </div>
+            <span
+              className="ds-composer-reasoning-thumb"
+              style={{ left: reasoningThumbCenter }}
+              aria-hidden="true"
+            >
+              <i key={currentReasoning} className="ds-composer-reasoning-thumb-pulse" />
+            </span>
+          </div>
+        </div>
+      </div>
+    )
+    if (typeof document === 'undefined') return popover
+    return createPortal(popover, document.body)
+  }
+
   const renderMenu = (className: string): ReactElement | null => {
     if (!menuOpen || !canOpenModelControls) return null
     const menu = (
@@ -319,7 +579,7 @@ export function FloatingComposerModelPicker({
           style={menuStyle}
           className={className}
         >
-          {reasoningEnabled && !needsProviderSetup ? (
+          {controlVariant === 'combined' && reasoningEnabled && !needsProviderSetup ? (
             <>
               <SubmenuRow
                 refNode={(node) => {
@@ -400,7 +660,7 @@ export function FloatingComposerModelPicker({
             )}
           </div>
         </div>
-        {reasoningPanelOpen && reasoningEnabled ? (
+        {controlVariant === 'combined' && reasoningPanelOpen && reasoningEnabled ? (
           <div
             ref={submenuRef}
             role="menu"
@@ -484,6 +744,7 @@ export function FloatingComposerModelPicker({
                       if (nextReasoning !== currentReasoning) {
                         onComposerReasoningEffortChange?.(nextReasoning)
                       }
+                      setReasoningPopoverOpen(false)
                       setMenuOpen(false)
                     }}
                   />
@@ -501,6 +762,65 @@ export function FloatingComposerModelPicker({
 
     if (typeof document === 'undefined') return menu
     return createPortal(menu, document.body)
+  }
+
+  if (controlVariant === 'split') {
+    return (
+      <div
+        ref={(node) => {
+          pickerRef.current = node
+        }}
+        className={`ds-composer-model-picker ds-no-drag inline-flex h-9 min-w-0 shrink-0 items-center gap-2 text-ds-muted ${splitModelWidthClass}`}
+      >
+        <button
+          ref={modelTriggerRef}
+          type="button"
+          disabled={!canOpenModelControls}
+          onClick={() => {
+            setReasoningPopoverOpen(false)
+            setMenuOpen((open) => !open)
+          }}
+          className={`inline-flex h-9 min-w-0 max-w-full items-center gap-1 rounded-lg px-1.5 text-[13.5px] font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-accent/25 disabled:cursor-not-allowed ${
+            canOpenModelControls ? 'hover:text-ds-ink' : 'text-ds-faint'
+          }`}
+          aria-expanded={menuOpen}
+          aria-haspopup="menu"
+          aria-label={t('composerModel')}
+          title={modelLabel}
+        >
+          <span className="min-w-0 truncate">{modelLabel}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
+        </button>
+
+        {reasoningEnabled ? (
+          <button
+            ref={reasoningTriggerRef}
+            type="button"
+            disabled={!canChangeModel}
+            onClick={() => {
+              setMenuOpen(false)
+              setActiveProviderId(null)
+              setReasoningPanelOpen(false)
+              setReasoningPopoverOpen((open) => !open)
+            }}
+            className={`inline-flex h-9 shrink-0 items-center gap-1 rounded-lg px-1.5 text-[13.5px] font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-accent/25 disabled:cursor-not-allowed ${
+              canChangeModel ? 'text-ds-muted hover:text-ds-ink' : 'text-ds-faint'
+            }`}
+            aria-expanded={reasoningPopoverOpen}
+            aria-haspopup="dialog"
+            aria-label={`${t('composerReasoning')}: ${currentReasoningLabel}`}
+            title={`${t('composerReasoning')}: ${currentReasoningLabel}`}
+          >
+            <span>{t('composerReasoning')} · </span>
+            <span className="text-accent">{currentReasoningLabel}</span>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-ds-faint" strokeWidth={1.8} />
+          </button>
+        ) : null}
+
+        {renderMenu('fixed z-[1000] overflow-x-hidden overflow-y-auto rounded-xl border border-ds-border bg-white p-1.5 text-[13px] text-ds-muted shadow-[0_22px_64px_rgba(20,47,95,0.18)] dark:bg-ds-card')}
+        {renderSplitReasoningPopover()}
+      </div>
+    )
   }
 
   if (mode === 'combobox') {
@@ -674,12 +994,11 @@ export function normalizeComposerReasoningEffort(
   profile?: Pick<ModelProviderModelProfileV1, 'reasoning'>
 ): ComposerReasoningEffort {
   const normalized = normalizeComposerReasoningEffortValue(value)
-  if (!profile?.reasoning) return normalized ?? 'max'
+  if (!profile?.reasoning) {
+    return normalized && LEGACY_REASONING_EFFORTS.includes(normalized) ? normalized : 'max'
+  }
   const supported = profile.reasoning.supportedEfforts
   if (normalized && supported.includes(normalized)) return normalized
-  if (normalized === 'low' && supported.includes('off') && !supported.includes('low')) {
-    return 'off'
-  }
   return profile.reasoning.defaultEffort
 }
 
@@ -696,6 +1015,73 @@ export function composerReasoningEffortRequestValue(
   value: ComposerReasoningEffort
 ): string | undefined {
   return value
+}
+
+export function composerReasoningEffortHasEnergyMotion(
+  effort: ComposerReasoningEffort
+): boolean {
+  return effort === 'high' || effort === 'max' || effort === 'auto'
+}
+
+export function orderComposerReasoningRailEfforts(
+  efforts: readonly ComposerReasoningEffort[]
+): ComposerReasoningEffort[] {
+  const supported = new Set(efforts)
+  return REASONING_RAIL_ORDER.filter((effort) => supported.has(effort))
+}
+
+export function composerReasoningRailPosition(
+  efforts: readonly ComposerReasoningEffort[],
+  current: ComposerReasoningEffort
+): number {
+  if (efforts.length === 0) return 0
+  if (efforts.length === 1) return efforts[0] === 'auto' ? 1 : 0
+  const index = Math.max(0, efforts.indexOf(current))
+  return index / (efforts.length - 1)
+}
+
+export function composerReasoningEffortForRailPosition(
+  efforts: readonly ComposerReasoningEffort[],
+  position: number
+): ComposerReasoningEffort | undefined {
+  if (efforts.length === 0) return undefined
+  const normalized = Math.min(1, Math.max(0, Number.isFinite(position) ? position : 0))
+  const index = efforts.length === 1 ? 0 : Math.round(normalized * (efforts.length - 1))
+  return efforts[index]
+}
+
+export function composerReasoningRailPointerPosition(
+  clientX: number,
+  railLeft: number,
+  railWidth: number
+): number {
+  const usableWidth = railWidth - REASONING_RAIL_THUMB_RADIUS * 2
+  if (!Number.isFinite(clientX) || !Number.isFinite(railLeft) || usableWidth <= 0) return 0
+  return Math.min(1, Math.max(
+    0,
+    (clientX - railLeft - REASONING_RAIL_THUMB_RADIUS) / usableWidth
+  ))
+}
+
+export function composerReasoningEffortForRailKey(
+  efforts: readonly ComposerReasoningEffort[],
+  current: ComposerReasoningEffort,
+  key: string
+): ComposerReasoningEffort | undefined {
+  if (efforts.length === 0) return undefined
+  const currentIndex = Math.max(0, efforts.indexOf(current))
+  const lastIndex = efforts.length - 1
+  if (key === 'ArrowLeft') return efforts[Math.max(0, currentIndex - 1)]
+  if (key === 'ArrowRight') return efforts[Math.min(lastIndex, currentIndex + 1)]
+  if (key === 'Home') return efforts[0]
+  if (key === 'End') return efforts[lastIndex]
+  return undefined
+}
+
+function composerReasoningRailThumbCenter(position: number): string {
+  const normalized = Math.min(1, Math.max(0, Number.isFinite(position) ? position : 0))
+  const pixelOffset = REASONING_RAIL_THUMB_RADIUS * (1 - normalized * 2)
+  return `calc(${normalized * 100}% + ${pixelOffset}px)`
 }
 
 export function calculateFloatingMenuPlacement({
@@ -750,6 +1136,58 @@ export function calculateFloatingMenuPlacement({
   )
 
   return { left, top, width, maxHeight }
+}
+
+export function calculateFloatingReasoningPopoverPlacement({
+  anchorRect,
+  popoverHeight,
+  viewportHeight,
+  viewportWidth,
+  coordinateScale = 1
+}: {
+  anchorRect: FloatingReasoningPopoverAnchorRect
+  popoverHeight: number
+  viewportHeight: number
+  viewportWidth: number
+  coordinateScale?: number
+}): FloatingReasoningPopoverPlacement {
+  const scale = Number.isFinite(coordinateScale) && coordinateScale > 0 ? coordinateScale : 1
+  const normalizedAnchorRect = {
+    bottom: anchorRect.bottom / scale,
+    left: anchorRect.left / scale,
+    right: anchorRect.right / scale,
+    top: anchorRect.top / scale
+  }
+  const normalizedViewportHeight = viewportHeight / scale
+  const normalizedViewportWidth = viewportWidth / scale
+  const width = Math.min(
+    FLOATING_REASONING_POPOVER_WIDTH,
+    Math.max(FLOATING_MENU_MIN_WIDTH, normalizedViewportWidth - FLOATING_MENU_MARGIN * 2)
+  )
+  const height = Math.max(0, popoverHeight)
+  const spaceAbove = Math.max(
+    0,
+    normalizedAnchorRect.top - FLOATING_MENU_MARGIN - FLOATING_REASONING_POPOVER_GAP
+  )
+  const spaceBelow = Math.max(
+    0,
+    normalizedViewportHeight - normalizedAnchorRect.bottom - FLOATING_MENU_MARGIN - FLOATING_REASONING_POPOVER_GAP
+  )
+  const openAbove = spaceAbove >= height || spaceAbove >= spaceBelow
+  const preferredTop = openAbove
+    ? normalizedAnchorRect.top - FLOATING_REASONING_POPOVER_GAP - height
+    : normalizedAnchorRect.bottom + FLOATING_REASONING_POPOVER_GAP
+  const top = clamp(
+    preferredTop,
+    FLOATING_MENU_MARGIN,
+    Math.max(FLOATING_MENU_MARGIN, normalizedViewportHeight - FLOATING_MENU_MARGIN - height)
+  )
+  const left = clamp(
+    (normalizedAnchorRect.left + normalizedAnchorRect.right - width) / 2,
+    FLOATING_MENU_MARGIN,
+    normalizedViewportWidth - FLOATING_MENU_MARGIN - width
+  )
+  return { left, top, width }
 }
 
 export function calculateFloatingSubmenuPlacement({

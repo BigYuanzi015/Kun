@@ -213,16 +213,16 @@ export function resolveHtmlFrameMeasurementDecision(value: unknown): HtmlFrameMe
 }
 
 export function qualityBadgeClasses(kind: ReturnType<typeof summarizeDesignHtmlQualityStatus>['kind']): string {
-  if (kind === 'critical') return 'border-red-300/70 bg-red-50/92 text-red-600'
-  if (kind === 'warning') return 'border-amber-300/70 bg-amber-50/92 text-amber-700'
-  if (kind === 'passed') return 'border-emerald-300/70 bg-emerald-50/92 text-emerald-700'
-  return 'border-ds-border bg-white/88 text-ds-muted'
+  if (kind === 'critical') return 'border-red-300/70 bg-red-50/92 text-red-700 dark:border-red-400/35 dark:bg-red-950/80 dark:text-red-200'
+  if (kind === 'warning') return 'border-amber-300/70 bg-amber-50/92 text-amber-800 dark:border-amber-400/35 dark:bg-amber-950/80 dark:text-amber-200'
+  if (kind === 'passed') return 'border-emerald-300/70 bg-emerald-50/92 text-emerald-800 dark:border-emerald-400/35 dark:bg-emerald-950/80 dark:text-emerald-200'
+  return 'border-ds-border bg-white/88 text-[#526070] dark:border-white/15 dark:bg-[#20252e] dark:text-white/70'
 }
 
 export function qualityFindingClasses(severity: DesignHtmlQualityFinding['severity']): string {
-  if (severity === 'critical') return 'border-red-200 bg-red-50/75 text-red-700'
-  if (severity === 'warning') return 'border-amber-200 bg-amber-50/75 text-amber-800'
-  return 'border-sky-200 bg-sky-50/75 text-sky-700'
+  if (severity === 'critical') return 'border-red-200 bg-red-50/75 text-red-700 dark:border-red-400/30 dark:bg-red-950/70 dark:text-red-200'
+  if (severity === 'warning') return 'border-amber-200 bg-amber-50/75 text-amber-800 dark:border-amber-400/30 dark:bg-amber-950/70 dark:text-amber-200'
+  return 'border-sky-200 bg-sky-50/75 text-sky-700 dark:border-sky-400/30 dark:bg-sky-950/70 dark:text-sky-200'
 }
 
 export function qualityFindingLabel(severity: DesignHtmlQualityFinding['severity']): string {
@@ -257,12 +257,14 @@ export function htmlFrameShouldShowGeneratingCanvas({
   webviewMounted,
   hasArtifact,
   transparentGeneratingSurface,
+  drawingActive,
   previewError,
   failedMessage
 }: {
   webviewMounted: boolean
   hasArtifact: boolean
   transparentGeneratingSurface: boolean
+  drawingActive: boolean
   previewError: string
   failedMessage: string
 }): boolean {
@@ -270,6 +272,7 @@ export function htmlFrameShouldShowGeneratingCanvas({
     !webviewMounted &&
     hasArtifact &&
     transparentGeneratingSurface &&
+    drawingActive &&
     !previewError &&
     !failedMessage
   )

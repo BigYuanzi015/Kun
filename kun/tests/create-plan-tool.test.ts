@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -18,6 +19,7 @@ function buildContext(overrides: Partial<ToolHostContext> = {}): ToolHostContext
     turnId: 'turn_1',
     workspace: '/tmp/ws',
     approvalPolicy: 'on-request',
+    sandboxMode: 'danger-full-access',
     abortSignal: new AbortController().signal,
     awaitApproval: async () => 'allow',
     ...overrides
@@ -377,6 +379,37 @@ describe('create_plan tool: success and atomic write', () => {
     expect(output.absolute_path).toBe(join(workspace, '.kunsdd/plan/login.md'))
     const persisted = await readFile(output.absolute_path, 'utf8')
     expect(persisted).toBe('# Login plan\n\n- step 1')
+  })
+
+  it('rejects a reserved plan directory symlink that escapes the workspace', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'kun-plan-outside-'))
+    try {
+      await rm(join(workspace, '.kunsdd'), { recursive: true, force: true })
+      await symlink(outside, join(workspace, '.kunsdd'), process.platform === 'win32' ? 'junction' : 'dir')
+
+      const result = await executeCreatePlanTool(
+        {
+          markdown: '# escape attempt',
+          operation: 'draft'
+        },
+        buildContext({
+          threadMode: 'plan',
+          workspace,
+          sandboxMode: 'workspace-write',
+          guiPlan: {
+            operation: 'draft',
+            workspaceRoot: workspace,
+            relativePath: '.kunsdd/plan/escape.md',
+            planId: 'plan_escape'
+          }
+        })
+      )
+
+      expect(result).toMatchObject({ isError: true, output: { code: 'workspace_path_escape' } })
+      expect(existsSync(join(outside, 'plan', 'escape.md'))).toBe(false)
+    } finally {
+      await rm(outside, { recursive: true, force: true })
+    }
   })
 
   it('rejects a legacy reserved path when drafting a new plan', async () => {

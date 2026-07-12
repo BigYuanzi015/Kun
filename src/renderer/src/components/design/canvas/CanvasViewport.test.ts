@@ -9,6 +9,7 @@ import {
   mergeLoadedCanvasDocumentWithLiveChanges,
   resolveCanvasSelectionAfterDocumentSync,
   resolveHtmlFrameOverlayInteractionState,
+  shouldShowCanvasDocumentLoading,
   shouldResetCanvasTransientInteractionAfterDocumentSync,
   shouldSyncCanvasHtmlFrames,
   shouldToggleHtmlFrameInteractiveOnDoubleClick
@@ -16,6 +17,10 @@ import {
 import { createDefaultShape, createEmptyDocument, createHtmlFrameShape } from '../../../design/canvas/canvas-types'
 
 describe('CanvasViewport surface behavior', () => {
+  it('renders the initialized empty canvas while a historical document is still loading', () => {
+    expect(shouldShowCanvasDocumentLoading(createEmptyDocument())).toBe(false)
+  })
+
   it('keeps design artifact overlays out of the code canvas', () => {
     expect(shouldRenderDesignArtifactOverlays('code')).toBe(false)
     expect(shouldRenderDesignArtifactOverlays('design')).toBe(true)
@@ -63,6 +68,31 @@ describe('CanvasViewport surface behavior', () => {
       shapeId: image.id,
       left: 188,
       top: 60,
+      width: 112,
+      height: 30,
+      placement: 'above'
+    })
+  })
+
+  it('keeps the image annotation action attached when the SVG is vertically letterboxed', () => {
+    const doc = createEmptyDocument()
+    const image = createDefaultShape('image', 100, 100)
+    image.width = 200
+    image.height = 120
+    image.imageUrl = 'assets/image.png'
+    doc.objects[image.id] = { ...image, parentId: doc.rootId }
+    doc.objects[doc.rootId]!.children.push(image.id)
+
+    expect(
+      resolveSelectedImageAnnotationAction('design', doc, new Set([image.id]), {
+        vbox: { x: 0, y: 0, width: 500, height: 400 },
+        containerWidth: 500,
+        containerHeight: 700
+      })
+    ).toEqual({
+      shapeId: image.id,
+      left: 188,
+      top: 210,
       width: 112,
       height: 30,
       placement: 'above'

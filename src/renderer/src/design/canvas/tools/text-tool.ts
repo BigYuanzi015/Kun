@@ -1,7 +1,7 @@
 import { useCanvasSelectionStore } from '../canvas-selection-store'
 import { useCanvasShapeStore } from '../canvas-shape-store'
 import { useCanvasViewportStore } from '../canvas-viewport-store'
-import { createDefaultShape } from '../canvas-types'
+import { createDefaultShape, type CanvasShapePreset } from '../canvas-types'
 import type { CanvasPointerEvent, CanvasToolHandler } from './tool-types'
 import { computeSnappedCreateShapeBounds } from './create-shape-bounds'
 import { addShapeForCreation, commitCreatedShapeUndo, type CreatedShapeUndo } from './creation-undo'
@@ -10,7 +10,7 @@ const TEXT_DRAG_THRESHOLD_PX = 3
 const MIN_TEXT_BOX_WIDTH = 24
 const MIN_TEXT_BOX_HEIGHT = 24
 
-export function createTextTool(): CanvasToolHandler {
+export function createTextTool(preset?: CanvasShapePreset): CanvasToolHandler {
   let drawing = false
   let startX = 0
   let startY = 0
@@ -42,7 +42,7 @@ export function createTextTool(): CanvasToolHandler {
     cursor: 'text',
 
     onPointerDown(e: CanvasPointerEvent) {
-      const shape = createDefaultShape('text', e.canvasX, e.canvasY)
+      const shape = createDefaultShape('text', e.canvasX, e.canvasY, preset)
       creationUndo = addShapeForCreation(shape)
       useCanvasSelectionStore.getState().select([shape.id])
       drawing = true

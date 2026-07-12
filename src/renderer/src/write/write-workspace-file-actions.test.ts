@@ -4,6 +4,14 @@ import { createWriteFileActions } from './write-workspace-file-actions'
 import { initialState } from './write-workspace-store-helpers'
 import type { WriteWorkspaceGet, WriteWorkspaceSet, WriteWorkspaceState } from './write-workspace-store-types'
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
+}
+
 function makeBaseState(): WriteWorkspaceState {
   return {
     defaultWorkspaceRoot: '',
@@ -71,8 +79,7 @@ function createHarness(): {
   const actions = createWriteFileActions({
     set,
     get,
-    cancelExternalSyncAnimation: vi.fn(),
-    setLastSavedContent: vi.fn()
+    cancelExternalSyncAnimation: vi.fn()
   })
   state = { ...state, ...actions }
   return { actions, get, set }
@@ -140,6 +147,43 @@ describe('write workspace file actions', () => {
     expect(result).toBeNull()
     expect(get().loadingDirs).toEqual({})
     expect(get().treeError).toBe('bridge down')
+  })
+
+  it('keeps the latest directory listing when responses finish out of order', async () => {
+    const first = deferred<{
+      ok: true
+      root: string
+      entries: Array<{ name: string; path: string; type: 'file'; ext: string }>
+    }>()
+    const second = deferred<{
+      ok: true
+      root: string
+      entries: Array<{ name: string; path: string; type: 'file'; ext: string }>
+    }>()
+    installDsGui({
+      listWorkspaceDirectory: vi.fn()
+        .mockImplementationOnce(() => first.promise)
+        .mockImplementationOnce(() => second.promise)
+    })
+    const { actions, get, set } = createHarness()
+    set({ workspaceRoot: '/tmp/write' })
+
+    const olderLoad = actions.loadDirectory('/tmp/write', '/tmp/write')
+    const latestLoad = actions.loadDirectory('/tmp/write', '/tmp/write')
+    second.resolve({
+      ok: true,
+      root: '/tmp/write',
+      entries: [{ name: 'latest.md', path: '/tmp/write/latest.md', type: 'file', ext: '.md' }]
+    })
+    await latestLoad
+    first.resolve({
+      ok: true,
+      root: '/tmp/write',
+      entries: [{ name: 'stale.md', path: '/tmp/write/stale.md', type: 'file', ext: '.md' }]
+    })
+    await olderLoad
+
+    expect(get().entriesByDir['/tmp/write']?.map((entry) => entry.name)).toEqual(['latest.md'])
   })
 
   it('returns null and reports file errors when create file IPC throws', async () => {
@@ -313,5 +357,54 @@ describe('write workspace file actions', () => {
     expect(get().pdfMtimeMs).toBe(1234)
     expect(get().fileContent).toBe('')
     expect(get().imageDataUrl).toBe('')
+  })
+
+  it('keeps the latest file when earlier and later opens resolve out of order', async () => {
+    const first = deferred<{
+      ok: true
+      path: string
+      content: string
+      size: number
+      truncated: false
+    }>()
+    const second = deferred<{
+      ok: true
+      path: string
+      content: string
+      size: number
+      truncated: false
+    }>()
+    const readWorkspaceFile = vi.fn(({ path }: { path: string }) =>
+      path.endsWith('/a.md') ? first.promise : second.promise
+    )
+    installDsGui({ readWorkspaceFile })
+    const { actions, get, set } = createHarness()
+    set({ workspaceRoot: '/tmp/write' })
+
+    const openA = actions.openFile('/tmp/write', '/tmp/write/a.md')
+    const openB = actions.openFile('/tmp/write', '/tmp/write/b.md')
+    second.resolve({
+      ok: true,
+      path: '/tmp/write/b.md',
+      content: 'content B',
+      size: 9,
+      truncated: false
+    })
+    await openB
+    first.resolve({
+      ok: true,
+      path: '/tmp/write/a.md',
+      content: 'content A',
+      size: 9,
+      truncated: false
+    })
+    await openA
+
+    expect(get()).toMatchObject({
+      activeFilePath: '/tmp/write/b.md',
+      fileContent: 'content B',
+      persistedContent: 'content B',
+      saveStatus: 'saved'
+    })
   })
 })

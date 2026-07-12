@@ -96,7 +96,9 @@ describe('design board helpers', () => {
       x: 40,
       y: 60,
       width: 390,
-      height: 844
+      height: 844,
+      parentId: first.document.rootId,
+      frameId: null
     })
     expect(isHtmlFrame(frame)).toBe(true)
 

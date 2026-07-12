@@ -6,12 +6,14 @@ import type { DesignRuntimeQualityPayload } from '../../design/design-html-quali
 import { setScreenCreationFactory } from '../../design/canvas/screen-artifact-bridge'
 import { ensureDesignBoardArtifact, findDesignBoardArtifact } from '../../design/design-board'
 import { createLinkedHtmlScreen } from '../../design/canvas/screen-lifecycle'
+import { createLinkedSvgArtifact } from '../../design/canvas/svg-artifact-lifecycle'
 import { designThreadBelongsToDocument } from '../../design/design-thread-workbench'
 import { useChatStore } from '../../store/chat-store'
 import { CanvasViewport } from './canvas/CanvasViewport'
 import { PropertiesPanel } from './canvas/PropertiesPanel'
 import { useApplyShapeOpsLive } from '../../design/canvas/use-apply-shape-ops-live'
 import { canvasOpErrorKey } from '../../design/canvas/apply-shape-ops'
+import { useSvgArtifactStatusMonitor } from '../../design/svg/use-svg-artifact-status-monitor'
 
 type CanvasProps = {
   leftSidebarCollapsed: boolean
@@ -20,6 +22,12 @@ type CanvasProps = {
   onOpenAgentSettings?: () => void
   onImplementDesign?: (artifact: DesignArtifact) => void
   onScreenCreated?: (shapeId: string, userPrompt: string, brief?: string) => void
+  onSvgCreated?: (
+    artifactId: string,
+    shapeId: string,
+    userPrompt: string,
+    brief: string
+  ) => boolean | Promise<boolean>
   onUseElementAsContext?: (context: DesignHtmlElementContext | null, promptSeed?: string) => void
   onRuntimeQualityFindings?: (payload: DesignRuntimeQualityPayload) => void
   onRequestQualityRepair?: (payload: DesignRuntimeQualityPayload) => void
@@ -33,6 +41,7 @@ export function DesignCanvas({
   onOpenAgentSettings,
   onImplementDesign,
   onScreenCreated,
+  onSvgCreated,
   onUseElementAsContext,
   onRuntimeQualityFindings,
   onRequestQualityRepair
@@ -53,6 +62,7 @@ export function DesignCanvas({
   })
   const liveOpsThreadId = activeThreadBelongsToDoc ? activeThreadId : null
   const liveOpsErrorKey = canvasOpErrorKey(workspaceRoot, activeDocumentId, boardArtifact?.id)
+  useSvgArtifactStatusMonitor(workspaceRoot, artifacts)
 
   useEffect(() => {
     if (!workspaceRoot || !settingsLoaded) return
@@ -93,7 +103,43 @@ export function DesignCanvas({
     onScreenCreated,
     undefined,
     liveOpsErrorKey,
-    liveOpsThreadId
+    liveOpsThreadId,
+    boardArtifact
+      ? async (request, userPrompt) => {
+          try {
+            const created = await createLinkedSvgArtifact({
+              boardArtifactId: boardArtifact.id,
+              artifactId: request.artifactId,
+              name: request.name,
+              brief: request.brief,
+              x: request.x,
+              y: request.y,
+              width: request.width,
+              height: request.height
+            })
+            if (!created) return null
+            const dispatched = onSvgCreated
+              ? await onSvgCreated(
+                  created.artifactId,
+                  created.shape.id,
+                  userPrompt,
+                  request.brief
+                )
+              : true
+            if (!dispatched) return null
+            return {
+              artifactId: created.artifactId,
+              shapeId: created.shape.id,
+              newlyCreated: created.newlyCreated
+            }
+          } catch (error) {
+            useDesignWorkspaceStore.getState().setFileError(
+              error instanceof Error ? error.message : String(error)
+            )
+            return null
+          }
+        }
+      : undefined
   )
 
   if (!boardArtifact) {

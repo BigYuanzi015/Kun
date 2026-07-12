@@ -32,6 +32,7 @@ import {
 } from '@shared/app-settings'
 import type { ChatState, ChatStoreGet, ChatStoreSet } from './chat-store-types'
 import {
+  accountIdForComposerSelection,
   activeClawChannel,
   compactCodeWorkspaceRoots,
   forgetCodeWorkspaceRoot,
@@ -102,6 +103,7 @@ import {
   fallbackComposerProviderIdForSend,
   subscribeThreadEventsWithRecovery
 } from './chat-store-thread-action-helpers'
+import { GitCheckpointAvailabilityCache } from '../lib/git-checkpoint-availability'
 
 type SseAbortRef = { current: AbortController | null }
 
@@ -112,7 +114,7 @@ type StoreActionContext = {
 }
 
 let drainingQueuedMessages = false
-const checkpointGitUnavailableWorkspaces = new Set<string>()
+const checkpointGitAvailability = new GitCheckpointAvailabilityCache()
 
 export function createThreadActions(
   { set, get, sseAbortRef }: StoreActionContext
@@ -633,6 +635,11 @@ export function createThreadActions(
         overrideModel ?? (get().route === 'claw' && clawModel ? clawModel : get().composerModel.trim())
       const composerProviderId =
         overrides?.providerId?.trim() || fallbackComposerProviderIdForSend(get())
+      const composerAccountId = overrides?.accountId?.trim() || accountIdForComposerSelection(
+        get().composerModelGroups,
+        composerProviderId,
+        composerModel
+      )
       const userModelChip =
         overrides?.modelLabel ?? optimisticUserModelLabel(composerModel, threadSnap?.model)
       const displayText = overrides?.displayText?.trim()
@@ -654,10 +661,13 @@ export function createThreadActions(
             ...(mode ? { mode } : {}),
             ...(composerModel ? { model: composerModel } : {}),
             ...(composerProviderId ? { providerId: composerProviderId } : {}),
+            ...(composerAccountId ? { accountId: composerAccountId } : {}),
             ...(userModelChip ? { modelLabel: userModelChip } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(overrides?.guiPlan ? { guiPlan: overrides.guiPlan } : {}),
             ...(overrides?.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
+            ...(overrides?.guiDesignMode ? { guiDesignMode: true } : {}),
+            ...(overrides?.guiDesignArtifact ? { guiDesignArtifact: overrides.guiDesignArtifact } : {}),
             ...(attachmentIds?.length ? { attachmentIds } : {}),
             ...(attachments?.length ? { attachments } : {}),
             ...(fileReferences?.length ? { fileReferences } : {})
@@ -711,7 +721,13 @@ export function createThreadActions(
       queued?.model ?? overrideModel ?? (get().route === 'claw' && clawModel ? clawModel : get().composerModel.trim())
     const composerProviderId =
       queued?.providerId ?? overrides?.providerId?.trim() ?? fallbackComposerProviderIdForSend(get())
+    const composerAccountId =
+      queued?.accountId ??
+      overrides?.accountId?.trim() ??
+      accountIdForComposerSelection(get().composerModelGroups, composerProviderId, composerModel)
     const reasoningEffort = queued?.reasoningEffort ?? overrides?.reasoningEffort?.trim()
+    const guiDesignCanvas = (queued?.guiDesignCanvas ?? overrides?.guiDesignCanvas) === true
+    const guiDesignMode = (queued?.guiDesignMode ?? overrides?.guiDesignMode) === true
     const userModelChip =
       queued?.modelLabel ?? overrides?.modelLabel ?? optimisticUserModelLabel(composerModel, threadSnap?.model)
     const previousBlocks = get().blocks
@@ -735,10 +751,12 @@ export function createThreadActions(
           createdAt: new Date(now).toISOString(),
           text: displayText,
           ...(userModelChip ? { modelLabel: userModelChip } : {}),
-          ...(userDisplayText || attachmentIds.length || attachments.length || fileReferences.length
+          ...(userDisplayText || guiDesignCanvas || guiDesignMode || attachmentIds.length || attachments.length || fileReferences.length
             ? {
                 meta: {
                   ...(userDisplayText ? { displayText: userDisplayText } : {}),
+                  ...(guiDesignCanvas ? { guiDesignCanvas: true } : {}),
+                  ...(guiDesignMode ? { guiDesignMode: true } : {}),
                   ...(attachmentIds.length ? { attachmentIds } : {}),
                   ...(attachments.length ? { attachments } : {}),
                   ...(fileReferences.length ? { fileReferences } : {})
@@ -796,6 +814,7 @@ export function createThreadActions(
                 titleAuto: true,
                 ...(composerModel ? { model: composerModel } : {}),
                 ...(composerProviderId ? { providerId: composerProviderId } : {}),
+                ...(composerAccountId ? { accountId: composerAccountId } : {}),
                 mode: mode ?? 'agent'
               })
             : null
@@ -866,7 +885,7 @@ export function createThreadActions(
       const checkpointWorkspaceKey = checkpointWorkspaceRoot.replaceAll('\\', '/').toLowerCase()
       if (
         checkpointWorkspaceRoot &&
-        !checkpointGitUnavailableWorkspaces.has(checkpointWorkspaceKey) &&
+        checkpointGitAvailability.canAttempt(checkpointWorkspaceKey) &&
         typeof window.kunGui.createGitCheckpoint === 'function'
       ) {
         const checkpoint = await window.kunGui.createGitCheckpoint({
@@ -881,7 +900,7 @@ export function createThreadActions(
           workspaceCheckpointId = checkpoint.checkpointId
         } else if (checkpoint.reason !== 'not_git_repo' && checkpoint.reason !== 'no_workspace') {
           if (checkpoint.reason === 'git_unavailable') {
-            checkpointGitUnavailableWorkspaces.add(checkpointWorkspaceKey)
+            checkpointGitAvailability.markUnavailable(checkpointWorkspaceKey)
           }
           void window.kunGui.logError(
             'git-checkpoint',
@@ -907,10 +926,15 @@ export function createThreadActions(
         mode,
         ...(composerModel ? { model: composerModel } : {}),
         ...(!channel && composerProviderId ? { providerId: composerProviderId } : {}),
+        ...(!channel && composerAccountId ? { accountId: composerAccountId } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(runtimeDisplayText ? { displayText: runtimeDisplayText } : {}),
         ...((queued?.guiPlan ?? overrides?.guiPlan) ? { guiPlan: queued?.guiPlan ?? overrides?.guiPlan } : {}),
-        ...((queued?.guiDesignCanvas ?? overrides?.guiDesignCanvas) ? { guiDesignCanvas: true } : {}),
+        ...(guiDesignCanvas ? { guiDesignCanvas: true } : {}),
+        ...(guiDesignMode ? { guiDesignMode: true } : {}),
+        ...((queued?.guiDesignArtifact ?? overrides?.guiDesignArtifact)
+          ? { guiDesignArtifact: queued?.guiDesignArtifact ?? overrides?.guiDesignArtifact }
+          : {}),
         ...(attachmentIds.length ? { attachmentIds } : {}),
         ...(workspaceCheckpointId ? { workspaceCheckpointId } : {}),
         ...(fileReferences.length ? { fileReferences } : {})
@@ -1069,6 +1093,11 @@ export function createThreadActions(
     }
     const composerModel = get().composerModel.trim()
     const composerProviderId = get().composerProviderId.trim()
+    const composerAccountId = accountIdForComposerSelection(
+      get().composerModelGroups,
+      composerProviderId,
+      composerModel
+    )
     let activeThreadId = get().activeThreadId
     try {
       if (!activeThreadId) {
@@ -1093,6 +1122,7 @@ export function createThreadActions(
                 title: i18n.t('common:slashCommandReviewTitle'),
                 ...(composerModel ? { model: composerModel } : {}),
                 ...(composerProviderId ? { providerId: composerProviderId } : {}),
+                ...(composerAccountId ? { accountId: composerAccountId } : {}),
                 mode: 'agent'
               })
             : null
@@ -1130,7 +1160,8 @@ export function createThreadActions(
       })
       const { turnId, userMessageItemId } = await p.reviewThread(activeThreadId, target, {
         ...(composerModel ? { model: composerModel } : {}),
-        ...(composerProviderId ? { providerId: composerProviderId } : {})
+        ...(composerProviderId ? { providerId: composerProviderId } : {}),
+        ...(composerAccountId ? { accountId: composerAccountId } : {})
       })
       if (userMessageItemId && userModelChip) {
         rememberTurnModel(activeThreadId, userMessageItemId, userModelChip)

@@ -26,21 +26,35 @@ const TITLE_SYSTEM_PROMPT = [
 export function resolveRoleModel(input: {
   roleModel?: string
   roleProviderId?: string
+  roleAccountId?: string
   roles?: RolesConfig
   mainModel?: string
   mainProviderId?: string
-}): { model: string; providerId?: string } | undefined {
+  mainAccountId?: string
+}): { model: string; providerId?: string; accountId?: string } | undefined {
   const role = trim(input.roleModel)
   if (role) {
-    return { model: role, ...(trim(input.roleProviderId) ? { providerId: trim(input.roleProviderId) } : {}) }
+    return {
+      model: role,
+      ...(trim(input.roleProviderId) ? { providerId: trim(input.roleProviderId) } : {}),
+      ...(trim(input.roleAccountId) ? { accountId: trim(input.roleAccountId) } : {})
+    }
   }
   const small = trim(input.roles?.smallModel)
   if (small) {
-    return { model: small, ...(trim(input.roles?.smallModelProviderId) ? { providerId: trim(input.roles?.smallModelProviderId) } : {}) }
+    return {
+      model: small,
+      ...(trim(input.roles?.smallModelProviderId) ? { providerId: trim(input.roles?.smallModelProviderId) } : {}),
+      ...(trim(input.roles?.smallModelAccountId) ? { accountId: trim(input.roles?.smallModelAccountId) } : {})
+    }
   }
   const main = trim(input.mainModel)
   if (main) {
-    return { model: main, ...(trim(input.mainProviderId) ? { providerId: trim(input.mainProviderId) } : {}) }
+    return {
+      model: main,
+      ...(trim(input.mainProviderId) ? { providerId: trim(input.mainProviderId) } : {}),
+      ...(trim(input.mainAccountId) ? { accountId: trim(input.mainAccountId) } : {})
+    }
   }
   return undefined
 }
@@ -59,6 +73,7 @@ export async function generateThreadTitle(input: {
   model: string
   /** Optional per-provider routing id. */
   providerId?: string
+  accountId?: string
   systemPrompt?: string
   /** First user message text (intent). Required for a meaningful title. */
   userText: string
@@ -97,6 +112,7 @@ export async function generateThreadTitle(input: {
       turnId: `${input.turnId}_title`,
       model: input.model,
       ...(input.providerId ? { providerId: input.providerId } : {}),
+      ...(input.accountId ? { accountId: input.accountId } : {}),
       ...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
       contextInstructions: [TITLE_SYSTEM_PROMPT],
       prefix: [],

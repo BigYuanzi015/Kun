@@ -11,6 +11,7 @@ import {
   buildDesignCodeSyncViewModel,
   type DesignCodeSyncDisabledReason
 } from '../../design/code-binding/design-code-sync-view-model'
+import { writeDesignWorkspaceFile } from '../../design/design-persistence-coordinator'
 import {
   SidebarCommandRow,
   SidebarIconButton,
@@ -97,7 +98,7 @@ export function DesignCodeSyncPanel({ workspaceRoot, onSeedPrompt, canvasDocumen
         document: useCanvasShapeStore.getState().document,
         adapter: {
           readWorkspaceFile: window.kunGui.readWorkspaceFile,
-          writeWorkspaceFile: window.kunGui.writeWorkspaceFile
+          writeWorkspaceFile: (payload) => writeDesignWorkspaceFile(payload)
         }
       })
     } catch (error) {

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -212,6 +212,79 @@ describe('DelegationRuntime', () => {
     expect(result.item).toMatchObject({ kind: 'tool_result', isError: false })
     expect(seen).toEqual(['opencode-go'])
     expect((await runtime.diagnostics('thr_provider')).childRuns[0]?.providerId).toBe('opencode-go')
+  })
+
+  it('rejects a user-facing delegate_task model override without its provider pair', async () => {
+    const runtime = createRuntime()
+    const host = new LocalToolHost({
+      registry: new CapabilityRegistry(buildDelegationToolProviders(runtime))
+    })
+
+    const result = await host.execute({
+      callId: 'call_partial_model',
+      toolName: 'delegate_task',
+      arguments: { prompt: 'Check routing', model: 'gpt-5.3-codex-spark' }
+    }, {
+      threadId: 'thr_partial_model',
+      turnId: 'turn_partial_model',
+      workspace: '/tmp/ws',
+      model: {
+        id: 'deepseek-v4-pro',
+        inputModalities: ['text'],
+        outputModalities: ['text'],
+        supportsToolCalling: true,
+        contextWindowTokens: 128000,
+        messageParts: ['text']
+      },
+      modelProviderId: 'deepseek',
+      approvalPolicy: 'auto',
+      abortSignal: new AbortController().signal,
+      awaitApproval: async () => 'allow'
+    })
+
+    expect(result.item).toMatchObject({ kind: 'tool_result', isError: true })
+    if (result.item.kind === 'tool_result') {
+      expect(result.item.output).toMatchObject({
+        error: 'model and providerId overrides must be supplied together'
+      })
+    }
+    expect((await runtime.diagnostics('thr_partial_model')).childRuns).toEqual([])
+  })
+
+  it('preserves the delegating turn approval and sandbox policies', async () => {
+    const seen: Array<{ approvalPolicy: string | undefined; sandboxMode: string | undefined }> = []
+    const runtime = createRuntime({
+      executor: async (input) => {
+        seen.push({
+          approvalPolicy: input.approvalPolicy,
+          sandboxMode: input.sandboxMode
+        })
+        return { summary: 'done' }
+      }
+    })
+    const host = new LocalToolHost({
+      registry: new CapabilityRegistry(buildDelegationToolProviders(runtime))
+    })
+
+    await host.execute({
+      callId: 'call_policy',
+      toolName: 'delegate_task',
+      arguments: { label: 'Policy', prompt: 'Inspect without changing files' }
+    }, {
+      threadId: 'thr_policy',
+      turnId: 'turn_policy',
+      workspace: '/tmp/ws',
+      approvalPolicy: 'on-request',
+      sandboxMode: 'read-only',
+      abortSignal: new AbortController().signal,
+      awaitApproval: async () => 'allow'
+    })
+
+    expect(seen).toEqual([{ approvalPolicy: 'on-request', sandboxMode: 'read-only' }])
+    expect((await runtime.diagnostics('thr_policy')).childRuns[0]).toMatchObject({
+      approvalPolicy: 'on-request',
+      sandboxMode: 'read-only'
+    })
   })
 
   it('keeps a subagent profile providerId ahead of the inherited parent provider', async () => {
@@ -655,6 +728,8 @@ describe('DelegationRuntime', () => {
     await store.upsert(ChildRunRecord.parse({ ...base, id: 'child_run', status: 'running' }))
     await store.upsert(ChildRunRecord.parse({ ...base, id: 'child_queued', status: 'queued' }))
     await store.upsert(ChildRunRecord.parse({ ...base, id: 'child_done', status: 'completed' }))
+    expect((await stat(join(dir, 'children'))).mode & 0o777).toBe(0o700)
+    expect((await stat(join(dir, 'children', 'child_run.json'))).mode & 0o777).toBe(0o600)
 
     const runtime = createRuntime({})
     const reconciled = await runtime.reconcileOrphanedChildRuns()

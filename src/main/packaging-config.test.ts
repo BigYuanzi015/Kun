@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 const require = createRequire(import.meta.url)
 const builderConfig = require('../../electron-builder.config.cjs')
 const afterPack = require('../../scripts/after-pack.cjs')
+const nativeBuildEnv = require('../../scripts/electron-native-build-env.cjs')
 const macNotarize = require('../../scripts/mac-notarize.cjs')
 
 const tempRoots: string[] = []
@@ -96,6 +97,25 @@ afterEach(() => {
 })
 
 describe('electron-builder Kun packaging', () => {
+  it('keeps Linux Electron native-addon rebuilds on the external V8 header path', () => {
+    const linuxEnv: Record<string, string> = { CXXFLAGS: '-O2' }
+
+    expect(nativeBuildEnv.configureElectronNativeBuildEnvironment('linux', linuxEnv)).toBe(linuxEnv)
+    expect(linuxEnv.CXXFLAGS).toBe('-O2 -UV8_DEPRECATION_WARNINGS')
+
+    nativeBuildEnv.configureElectronNativeBuildEnvironment('linux', linuxEnv)
+    expect(linuxEnv.CXXFLAGS).toBe('-O2 -UV8_DEPRECATION_WARNINGS')
+
+    const macEnv: Record<string, string> = {}
+    nativeBuildEnv.configureElectronNativeBuildEnvironment('darwin', macEnv)
+    expect(macEnv.CXXFLAGS).toBeUndefined()
+
+    const configSource = readFileSync(join(process.cwd(), 'electron-builder.config.cjs'), 'utf8')
+    expect(configSource).toContain(
+      'configureElectronNativeBuildEnvironment(process.platform, process.env)'
+    )
+  })
+
   it('includes Kun runtime dependencies in the packaged app', () => {
     expect(builderConfig.files).toEqual(expect.arrayContaining([
       'kun/dist/**/*',

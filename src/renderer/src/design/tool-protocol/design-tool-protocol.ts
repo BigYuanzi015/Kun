@@ -80,6 +80,41 @@ export const DESIGN_TOOL_PROTOCOL_TOOLS: DesignToolProtocolTool[] = [
     outputs: ['direction frames', 'rationale', 'direction scorecards']
   },
   {
+    id: 'design_svg_create',
+    category: 'generation',
+    purpose: 'Reserve a standalone SVG artifact and place its first-class frame on the active whiteboard.',
+    inputs: ['name', 'brief', 'frame geometry'],
+    outputs: ['deterministic artifact id', 'SVG artifact', 'SVG frame', 'reserved v1.svg']
+  },
+  {
+    id: 'design_svg_inspect',
+    category: 'operations',
+    purpose: 'Inspect SVG structure, editable ids, definitions, and declarative animation without inlining raw XML.',
+    inputs: ['active SVG artifact context'],
+    outputs: ['element inventory', 'animation inventory', 'SVG diagnostics']
+  },
+  {
+    id: 'design_svg_edit',
+    category: 'operations',
+    purpose: 'Apply structured vector element, definition, hierarchy, and document edits to the active SVG version.',
+    inputs: ['active SVG artifact context', 'structured SVG edit operations'],
+    outputs: ['updated SVG file', 'affected element ids']
+  },
+  {
+    id: 'design_svg_animate',
+    category: 'operations',
+    purpose: 'Add or update declarative attribute, transform, motion-path, and path-draw animation.',
+    inputs: ['active SVG artifact context', 'target element id', 'animation timing and values'],
+    outputs: ['updated SVG file', 'animation id']
+  },
+  {
+    id: 'design_svg_validate',
+    category: 'review',
+    purpose: 'Validate SVG safety, references, accessibility, stable ids, and declarative animation readiness.',
+    inputs: ['active SVG artifact context'],
+    outputs: ['validation status', 'errors', 'warnings']
+  },
+  {
     id: 'design.critique',
     category: 'review',
     purpose: 'Evaluate selected frames or flows for layout, hierarchy, tokens, accessibility, and code readiness.',

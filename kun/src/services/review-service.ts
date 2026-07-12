@@ -42,6 +42,9 @@ export type ReviewServiceDeps = {
   modelCapabilities?: (model: string) => ModelCapabilityMetadata
   /** Reasoning depth for the code-review model call. Invalid/missing => 'off'. */
   reasoningEffort?: string
+  roleModel?: string
+  roleProviderId?: string
+  roleAccountId?: string
 }
 
 export class ReviewService {
@@ -52,7 +55,7 @@ export class ReviewService {
   }
 
   updateRuntimeConfig(
-    patch: Partial<Pick<ReviewServiceDeps, 'defaultModel' | 'models' | 'contextCompaction' | 'tokenEconomy' | 'runtime' | 'reasoningEffort'>>
+    patch: Partial<Pick<ReviewServiceDeps, 'defaultModel' | 'models' | 'contextCompaction' | 'tokenEconomy' | 'runtime' | 'reasoningEffort' | 'roleModel' | 'roleProviderId' | 'roleAccountId'>>
   ): void {
     this.deps = {
       ...this.deps,
@@ -67,6 +70,7 @@ export class ReviewService {
     target: ReviewTarget
     model?: string
     providerId?: string
+    accountId?: string
   }): Promise<'completed' | 'failed' | 'aborted'> {
     const signal = this.deps.turns.getAbortController(input.turnId)
     if (!signal) {
@@ -91,8 +95,9 @@ export class ReviewService {
       const rawReviewText = await this.runIsolatedReviewer({
         prompt: resolved.prompt,
         workspace: thread.workspace ?? '',
-        model: input.model?.trim() || thread.model || this.deps.defaultModel,
-        providerId: input.providerId?.trim() || thread.providerId?.trim(),
+        model: input.model?.trim() || this.deps.roleModel?.trim() || thread.model || this.deps.defaultModel,
+        providerId: input.providerId?.trim() || this.deps.roleProviderId?.trim() || thread.providerId?.trim(),
+        accountId: input.accountId?.trim() || this.deps.roleAccountId?.trim() || thread.accountId?.trim(),
         signal
       })
       if (signal.aborted) {
@@ -130,6 +135,7 @@ export class ReviewService {
     workspace: string
     model: string
     providerId?: string
+    accountId?: string
     signal: AbortSignal
   }): Promise<string> {
     const nowIso = this.deps.nowIso
@@ -202,8 +208,14 @@ export class ReviewService {
       workspace: input.workspace || '~',
       model: input.model,
       ...(input.providerId?.trim() ? { providerId: input.providerId.trim() } : {}),
+      ...(input.accountId?.trim() ? { accountId: input.accountId.trim() } : {}),
       mode: 'agent',
-      approvalPolicy: 'auto'
+      approvalPolicy: 'auto',
+      // The reviewer receives untrusted diff and workspace content in its
+      // prompt. Its deliberately read-only tool set must be paired with the
+      // read-only sandbox, otherwise its child thread defaults to full access
+      // and can read files outside the reviewed workspace.
+      sandboxMode: 'read-only'
     })
     const started = await turns.startTurn({
       threadId: childThread.id,

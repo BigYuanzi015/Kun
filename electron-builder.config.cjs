@@ -1,5 +1,8 @@
 const { existsSync, readFileSync } = require('node:fs')
 const { join } = require('node:path')
+const {
+  configureElectronNativeBuildEnvironment
+} = require('./scripts/electron-native-build-env.cjs')
 
 // 品牌升级后构建环境变量改用 KUN_* 前缀;旧的 DEEPSEEK_GUI_* 仍然
 // 兼容读取,避免 CI / 本地发布脚本一刀切失效。
@@ -37,6 +40,7 @@ function loadLocalReleaseEnv() {
 }
 
 loadLocalReleaseEnv()
+configureElectronNativeBuildEnvironment(process.platform, process.env)
 
 const hasExplicitMacSigningIdentity = Boolean(
   process.env.CSC_LINK ||
@@ -106,6 +110,8 @@ module.exports = {
     '**/kun/dist/**/*',
     '**/kun/package*.json',
     '**/kun/node_modules/**/*',
+    '**/packages/extension-api/**/*',
+    '**/packages/create-kun-extension/**/*',
     '**/node_modules/better-sqlite3/**/*',
     '**/node_modules/node-pty/**/*',
     '**/node_modules/bindings/**/*',
@@ -113,7 +119,23 @@ module.exports = {
     // Computer-use native automation (@computer-use/nut-js + its libnut
     // binding + node-mac-permissions) ships prebuilt .node files that must
     // live outside the asar archive to load.
-    '**/node_modules/@computer-use/**/*'
+    '**/node_modules/@computer-use/**/*',
+    // OCR fallback loads native canvas bindings plus Tesseract worker/core
+    // wasm and language data by filesystem path at runtime.
+    '**/node_modules/@napi-rs/canvas*/**/*',
+    '**/node_modules/tesseract.js/**/*',
+    '**/node_modules/tesseract.js-core/**/*',
+    '**/node_modules/@tesseract.js-data/**/*',
+    '**/node_modules/bmp-js/**/*',
+    '**/node_modules/idb-keyval/**/*',
+    '**/node_modules/is-url/**/*',
+    '**/node_modules/node-fetch/**/*',
+    '**/node_modules/whatwg-url/**/*',
+    '**/node_modules/tr46/**/*',
+    '**/node_modules/webidl-conversions/**/*',
+    '**/node_modules/regenerator-runtime/**/*',
+    '**/node_modules/wasm-feature-detect/**/*',
+    '**/node_modules/zlibjs/**/*'
   ],
   npmRebuild: true,
   directories: {
@@ -126,6 +148,12 @@ module.exports = {
     'kun/package.json',
     'kun/package-lock.json',
     'kun/node_modules/**/*',
+    'packages/extension-api/package.json',
+    'packages/extension-api/dist/**/*',
+    'packages/extension-api/schema/**/*',
+    'packages/extension-api/fixtures/**/*',
+    'packages/create-kun-extension/package.json',
+    'packages/create-kun-extension/src/**/*',
     // The Agent SDK ships a ~222MB per-platform Claude Code binary as an optional
     // dep; do NOT bundle it into the installer. It's downloaded on demand into the
     // user-data dir (see src/main/agent-sdk-installer.ts). The small SDK JS stays.
@@ -135,7 +163,8 @@ module.exports = {
     '!**/*.ts',
     '!**/tsconfig*.json',
     '!**/README*',
-    '!**/CHANGELOG*'
+    '!**/CHANGELOG*',
+    'packages/create-kun-extension/templates/**/*'
     // node_modules/openclaw (the vendor/openclaw-shim file: dep) must ship:
     // the WeChat bridge imports @tencent-weixin/openclaw-weixin/dist at
     // runtime to send media, and that chain resolves openclaw/plugin-sdk/*.
@@ -210,6 +239,11 @@ module.exports = {
     category: 'Development',
     icon: './src/asset/img/kun.png',
     target: [{ target: 'AppImage', arch: ['x64'] }]
+  },
+  // Override electron-builder's sandbox-disabling default desktop argument.
+  // Linux uses user namespaces and seccomp; only the legacy SUID helper is disabled.
+  appImage: {
+    executableArgs: ['--disable-setuid-sandbox', '--no-first-run']
   },
   extraMetadata: {
     ...(releaseAppVersion ? { version: releaseAppVersion } : {}),

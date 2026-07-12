@@ -12,15 +12,12 @@ import { loadWorkspaceImageDataUrl } from '../../../design/canvas/canvas-image-s
  */
 
 type AnnotationTool = 'pen' | 'arrow' | 'rect' | 'text'
-
 type Point = { x: number; y: number }
-
 type AnnotationOp =
   | { kind: 'pen'; color: string; width: number; points: Point[] }
   | { kind: 'arrow'; color: string; width: number; from: Point; to: Point }
   | { kind: 'rect'; color: string; width: number; from: Point; to: Point }
   | { kind: 'text'; color: string; x: number; y: number; text: string; fontSize: number }
-
 export type ImageAnnotationTextDraft = {
   cssX: number
   cssY: number
@@ -102,31 +99,45 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
 
-export function createImageAnnotationTextDraftAtCssPoint(input: {
+export function createImageAnnotationTextDraftAtRenderedPoint(input: {
   canvasWidth: number
   canvasHeight: number
-  cssWidth: number
-  cssHeight: number
-  cssX: number
-  cssY: number
+  layoutWidth: number
+  layoutHeight: number
+  renderedWidth: number
+  renderedHeight: number
+  renderedX: number
+  renderedY: number
   canvasFontSize: number
 }): ImageAnnotationTextDraft | null {
-  if (input.canvasWidth <= 0 || input.canvasHeight <= 0 || input.cssWidth <= 0 || input.cssHeight <= 0) {
+  if (
+    input.canvasWidth <= 0 ||
+    input.canvasHeight <= 0 ||
+    input.layoutWidth <= 0 ||
+    input.layoutHeight <= 0 ||
+    input.renderedWidth <= 0 ||
+    input.renderedHeight <= 0
+  ) {
     return null
   }
-  const cssX = clamp(input.cssX, 0, input.cssWidth)
-  const cssY = clamp(input.cssY, 0, input.cssHeight)
-  const sx = input.canvasWidth / input.cssWidth
-  const sy = input.canvasHeight / input.cssHeight
+  const renderedX = clamp(input.renderedX, 0, input.renderedWidth)
+  const renderedY = clamp(input.renderedY, 0, input.renderedHeight)
+  // The app applies UI scaling with CSS `zoom` on <body>. DOMRect/event values
+  // are rendered viewport pixels, while absolute left/top and font-size values
+  // use the canvas's unzoomed layout coordinate system.
+  const cssX = renderedX * (input.layoutWidth / input.renderedWidth)
+  const cssY = renderedY * (input.layoutHeight / input.renderedHeight)
+  const sx = input.canvasWidth / input.layoutWidth
+  const sy = input.canvasHeight / input.layoutHeight
   const cssFontSize = Math.max(16, input.canvasFontSize / Math.max(sx, sy))
   return {
     cssX,
     cssY,
-    x: cssX * sx,
-    y: cssY * sy,
+    x: renderedX * (input.canvasWidth / input.renderedWidth),
+    y: renderedY * (input.canvasHeight / input.renderedHeight),
     cssFontSize,
     cssLineHeight: cssFontSize * TEXT_LINE_HEIGHT,
-    maxCssWidth: Math.max(TEXT_EDITOR_MIN_WIDTH, input.cssWidth - cssX - TEXT_EDITOR_MARGIN)
+    maxCssWidth: Math.max(TEXT_EDITOR_MIN_WIDTH, input.layoutWidth - cssX - TEXT_EDITOR_MARGIN)
   }
 }
 
@@ -394,13 +405,15 @@ export function ImageAnnotationEditor({
           return
         }
         const rect = e.currentTarget.getBoundingClientRect()
-        const draft = createImageAnnotationTextDraftAtCssPoint({
+        const draft = createImageAnnotationTextDraftAtRenderedPoint({
           canvasWidth: e.currentTarget.width,
           canvasHeight: e.currentTarget.height,
-          cssWidth: rect.width,
-          cssHeight: rect.height,
-          cssX: e.clientX - rect.left,
-          cssY: e.clientY - rect.top,
+          layoutWidth: e.currentTarget.offsetWidth,
+          layoutHeight: e.currentTarget.offsetHeight,
+          renderedWidth: rect.width,
+          renderedHeight: rect.height,
+          renderedX: e.clientX - rect.left,
+          renderedY: e.clientY - rect.top,
           canvasFontSize: fontSize
         })
         if (draft) openTextDraft(draft)

@@ -114,6 +114,14 @@ describe('shouldRouteCodePromptToCanvas', () => {
       whiteboardOpen: true,
       hasSelection: true
     })).toBe(true)
+    expect(shouldSendPromptToCodeCanvas({
+      text: 'Export this as a PNG',
+      whiteboardOpen: true
+    })).toBe(true)
+    expect(shouldSendPromptToCodeCanvas({
+      text: '\u628a\u5b83\u8f6c\u6210\u56fe\u7247',
+      whiteboardOpen: true
+    })).toBe(true)
   })
 
   it('does not treat open-whiteboard references as active when the whiteboard is closed', () => {
@@ -128,6 +136,10 @@ describe('shouldRouteCodePromptToCanvas', () => {
     })).toBe(false)
     expect(shouldSendPromptToCodeCanvas({
       text: '\u5e2e\u6211\u653e\u5230\u753b\u5e03\u4e0a',
+      whiteboardOpen: false
+    })).toBe(false)
+    expect(shouldSendPromptToCodeCanvas({
+      text: 'Export this as a PNG',
       whiteboardOpen: false
     })).toBe(false)
     expect(shouldRouteOpenCodeWhiteboardPrompt('Move this node to the right')).toBe(true)

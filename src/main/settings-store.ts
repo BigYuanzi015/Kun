@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { atomicWriteFile } from '../../kun/src/adapters/file/atomic-write.js'
@@ -46,6 +46,22 @@ import {
 
 export type { AppSettingsV1 }
 
+export type SettingsCredentialMigrationResult = {
+  runtimeSettings: AppSettingsV1
+  persistedSettings: AppSettingsV1
+  sourceIdsToCommit: string[]
+  removedPlaintext: boolean
+  rollback: () => Promise<void>
+  commit: () => Promise<void>
+}
+
+export type SettingsCredentialMigration = {
+  prepare: (
+    settings: AppSettingsV1,
+    options?: { replaceCommitted?: boolean }
+  ) => Promise<SettingsCredentialMigrationResult>
+}
+
 // 数据默认根目录从 ~/.deepseekgui 升级为 ~/.kun。老安装的既有目录由
 // legacy-data-migration.ts 在启动期搬迁并留兼容链接;settings 里存的旧
 // 绝对路径也在那里按迁移结果重写,这里只负责“新值”。
@@ -67,6 +83,7 @@ const LEGACY_SETTINGS_FILE_NAME = 'deepseek-gui-settings.json'
 // 正常情况下迁移模块已把它们 rename 走,这里是迁移失败/被跳过时的
 // 跨目录兜底。
 const COMPATIBLE_USER_DATA_DIR_NAMES = ['deepseek-gui', 'DeepSeek GUI'] as const
+const RECOVERABLE_WORKSPACE_ROOT_ERROR_CODES = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'])
 const WELCOME_MARKDOWN = `# Welcome to Write
 
 This is your default writing workspace.
@@ -184,10 +201,39 @@ function serializeSettingsForDisk(settings: AppSettingsV1): string {
   return JSON.stringify(normalizeStoredSettings(settings), null, 2)
 }
 
+function errnoCode(error: unknown): string {
+  return isErrnoException(error) && typeof error.code === 'string' ? error.code : ''
+}
+
+function isRecoverableWorkspaceRootError(error: unknown): boolean {
+  return RECOVERABLE_WORKSPACE_ROOT_ERROR_CODES.has(errnoCode(error))
+}
+
 export async function ensureWorkspaceRootExists(workspaceRoot: string): Promise<string> {
   const normalized = normalizeWorkspaceRoot(workspaceRoot)
   await mkdir(normalized, { recursive: true })
   return normalized
+}
+
+async function ensureSettingsWorkspaceRoot(settings: AppSettingsV1): Promise<AppSettingsV1> {
+  const workspaceRoot = normalizeWorkspaceRoot(settings.workspaceRoot)
+  try {
+    await ensureWorkspaceRootExists(workspaceRoot)
+    return settings.workspaceRoot === workspaceRoot ? settings : { ...settings, workspaceRoot }
+  } catch (error) {
+    const defaultWorkspaceRoot = normalizeWorkspaceRoot(DEFAULT_WORKSPACE_ROOT)
+    if (workspaceRoot === defaultWorkspaceRoot || !isRecoverableWorkspaceRootError(error)) throw error
+
+    console.warn('[kun-gui] Workspace root is unavailable; falling back to default workspace.', {
+      workspaceRoot,
+      defaultWorkspaceRoot,
+      code: errnoCode(error),
+      message: error instanceof Error ? error.message : String(error)
+    })
+
+    await ensureWorkspaceRootExists(defaultWorkspaceRoot)
+    return { ...settings, workspaceRoot: defaultWorkspaceRoot }
+  }
 }
 
 async function ensureWriteWorkspaceRootsExist(settings: AppSettingsV1): Promise<void> {
@@ -221,6 +267,14 @@ async function ensureClawChannelWorkspaceRootsExist(settings: AppSettingsV1): Pr
       await mkdir(conversationWorkspaceRoot, { recursive: true })
     }
   }
+}
+
+async function prepareSettingsDirectories(settings: AppSettingsV1): Promise<AppSettingsV1> {
+  const prepared = await ensureSettingsWorkspaceRoot(settings)
+  await ensureWriteWorkspaceRootsExist(prepared)
+  await ensureConversationWorkspaceRootExists(prepared)
+  await ensureClawChannelWorkspaceRootsExist(prepared)
+  return prepared
 }
 
 const defaultSettings = (): AppSettingsV1 => ({
@@ -303,6 +357,13 @@ function normalizeDisabledSkillIds(value: unknown): string[] {
     .filter(Boolean))]
 }
 
+function hasLegacyProviderPlaintext(settings: AppSettingsV1): boolean {
+  const provider = settings.provider
+  if (provider.apiKey.trim()) return true
+  if (provider.providers.some((entry) => entry.apiKey.trim())) return true
+  return getKunRuntimeSettings(settings).apiKey.trim().length > 0
+}
+
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === 'object' && error !== null
 }
@@ -313,11 +374,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 async function loadDefaultSettings(): Promise<AppSettingsV1> {
   const defaults = normalizeStoredSettings(defaultSettings())
-  await ensureWorkspaceRootExists(defaults.workspaceRoot)
-  await ensureWriteWorkspaceRootsExist(defaults)
-  await ensureConversationWorkspaceRootExists(defaults)
-  await ensureClawChannelWorkspaceRootsExist(defaults)
-  return defaults
+  return prepareSettingsDirectories(defaults)
 }
 
 async function writeInvalidSettingsBackup(path: string, raw: string): Promise<string | null> {
@@ -330,6 +387,27 @@ async function writeInvalidSettingsBackup(path: string, raw: string): Promise<st
     await writeFile(backupPath, raw, 'utf8')
     return backupPath
   } catch {
+    return null
+  }
+}
+
+async function writeLegacyCredentialSettingsBackup(path: string, raw: string): Promise<string | null> {
+  const backupPath = join(dirname(path), `${basename(path, '.json')}.pre-extension-credential-migration.json`)
+  try {
+    await writeFile(backupPath, raw, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    await chmod(backupPath, 0o600).catch(() => undefined)
+    return backupPath
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'EEXIST') {
+      try {
+        const metadata = await lstat(backupPath)
+        if (!metadata.isFile() || metadata.isSymbolicLink()) return null
+        await chmod(backupPath, 0o600)
+        return backupPath
+      } catch {
+        return null
+      }
+    }
     return null
   }
 }
@@ -401,7 +479,10 @@ export class JsonSettingsStore {
   private path: string
   private cache: AppSettingsV1 | null = null
 
-  constructor(userDataPath: string) {
+  constructor(
+    userDataPath: string,
+    private readonly options: { credentialMigration?: SettingsCredentialMigration } = {}
+  ) {
     this.path = join(userDataPath, SETTINGS_FILE_NAME)
   }
 
@@ -439,26 +520,84 @@ export class JsonSettingsStore {
     }
 
     const normalized = normalizeStoredSettings(buildMergedSettings(parsed as Partial<AppSettingsV1>))
-    await ensureWorkspaceRootExists(normalized.workspaceRoot)
-    await ensureWriteWorkspaceRootsExist(normalized)
-    await ensureConversationWorkspaceRootExists(normalized)
-    await ensureClawChannelWorkspaceRootsExist(normalized)
-    this.cache = normalized
-    if (sourcePath !== this.path) {
-      await this.save(normalized)
+    const prepared = await prepareSettingsDirectories(normalized)
+    if (this.options.credentialMigration && hasLegacyProviderPlaintext(prepared)) {
+      const backupPath = await writeLegacyCredentialSettingsBackup(sourcePath, raw)
+      if (!backupPath) {
+        console.warn('[kun-gui] Legacy credential migration deferred because the settings backup could not be written.')
+        this.cache = prepared
+        return this.cache
+      }
     }
+    const migration = await this.prepareCredentialMigration(prepared, false)
+    if (migration === undefined) {
+      this.cache = prepared
+      if (sourcePath !== this.path || prepared.workspaceRoot !== normalized.workspaceRoot) {
+        await this.save(prepared)
+      }
+      return this.cache
+    }
+    if (migration === null) {
+      this.cache = prepared
+      return this.cache
+    }
+
+    const shouldPersist = sourcePath !== this.path ||
+      prepared.workspaceRoot !== normalized.workspaceRoot ||
+      migration.removedPlaintext
+    if (shouldPersist) {
+      try {
+        await this.persistSettings(migration.persistedSettings)
+      } catch (error) {
+        await migration.rollback().catch(() => undefined)
+        console.warn('[kun-gui] Legacy credential migration settings commit failed; plaintext settings remain authoritative.', {
+          message: error instanceof Error ? error.message : String(error)
+        })
+        this.cache = prepared
+        return this.cache
+      }
+    }
+    await migration.commit().catch((error) => {
+      console.warn('[kun-gui] Legacy credential migration commit marker is pending recovery.', {
+        message: error instanceof Error ? error.message : String(error)
+      })
+    })
+    this.cache = migration.runtimeSettings
     return this.cache
   }
 
   async save(data: AppSettingsV1): Promise<void> {
     const normalized = normalizeStoredSettings(data)
-    await ensureWorkspaceRootExists(normalized.workspaceRoot)
-    await ensureWriteWorkspaceRootsExist(normalized)
-    await ensureConversationWorkspaceRootExists(normalized)
-    await ensureClawChannelWorkspaceRootsExist(normalized)
-    this.cache = normalized
-    await mkdir(dirname(this.path), { recursive: true })
-    await atomicWriteFile(this.path, serializeSettingsForDisk(normalized))
+    const prepared = await prepareSettingsDirectories(normalized)
+    if (this.options.credentialMigration && hasLegacyProviderPlaintext(prepared)) {
+      const currentRaw = await readFile(this.path, 'utf8').catch((error) => {
+        if (isErrnoException(error) && error.code === 'ENOENT') return serializeSettingsForDisk(prepared)
+        throw error
+      })
+      const backupPath = await writeLegacyCredentialSettingsBackup(this.path, currentRaw)
+      if (!backupPath) {
+        throw new Error('Failed to create the pre-migration settings backup; ordinary settings were not changed')
+      }
+    }
+    const migration = await this.prepareCredentialMigration(prepared, true)
+    if (migration === undefined) {
+      await this.persistSettings(prepared)
+      this.cache = prepared
+      return
+    }
+    if (migration === null) throw new Error('Legacy credential migration is unavailable')
+    try {
+      await this.persistSettings(migration.persistedSettings)
+    } catch (error) {
+      await migration.rollback().catch(() => undefined)
+      throw error
+    }
+    await migration.commit().catch((error) => {
+      console.warn('[kun-gui] Legacy credential migration commit marker is pending recovery.', {
+        message: error instanceof Error ? error.message : String(error)
+      })
+    })
+    this.cache = migration.runtimeSettings
   }
 
   async patch(partial: AppSettingsPatch): Promise<AppSettingsV1> {
@@ -490,7 +629,28 @@ export class JsonSettingsStore {
       guiUpdate: { ...cur.guiUpdate, ...(partial.guiUpdate ?? {}) }
     })
     await this.save(next)
-    return next
+    return this.cache ?? next
+  }
+
+  private async prepareCredentialMigration(
+    settings: AppSettingsV1,
+    replaceCommitted: boolean
+  ): Promise<SettingsCredentialMigrationResult | null | undefined> {
+    if (!this.options.credentialMigration) return undefined
+    try {
+      return await this.options.credentialMigration.prepare(settings, { replaceCommitted })
+    } catch (error) {
+      if (replaceCommitted) throw error
+      console.warn('[kun-gui] Legacy credential migration is unavailable; retaining compatibility settings.', {
+        message: error instanceof Error ? error.message : String(error)
+      })
+      return null
+    }
+  }
+
+  private async persistSettings(settings: AppSettingsV1): Promise<void> {
+    await mkdir(dirname(this.path), { recursive: true })
+    await atomicWriteFile(this.path, serializeSettingsForDisk(settings))
   }
 }
 

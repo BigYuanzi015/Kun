@@ -30,6 +30,19 @@ function artifact(): DesignArtifact {
   }
 }
 
+function svgArtifact(): DesignArtifact {
+  return {
+    id: 'motion',
+    kind: 'svg',
+    title: 'Orbit loader',
+    relativePath: '.kun-design/doc/motion/v1.svg',
+    designMdPath: '.kun-design/doc/motion/DESIGN.md',
+    createdAt: now,
+    updatedAt: now,
+    versions: [{ id: 'motion-v1', relativePath: '.kun-design/doc/motion/v1.svg', createdAt: now, summary: '' }]
+  }
+}
+
 function documentWithArtifacts(artifacts: DesignArtifact[]): DesignDocument {
   return {
     id: 'doc',
@@ -132,6 +145,7 @@ describe('design mode surface manifest', () => {
       document: { id: 'doc', title: 'Ops app' },
       counts: {
         screenCount: 1,
+        svgArtifactCount: 0,
         directionCount: 1,
         objectCount: 3,
         tokenCount: 1,
@@ -169,6 +183,29 @@ describe('design mode surface manifest', () => {
     expect(designModeSurfaceSummaryLines(manifest)).toContain(
       '- code-bridge (active): 78/100; tools design.bind_code, design.implement; 1 active binding(s); 0 running app frame(s)'
     )
+  })
+
+  it('treats SVG artifacts as first-class design-mode content and advertises their tools', () => {
+    const artifacts = [svgArtifact()]
+    const manifest = buildDesignModeSurfaceManifest({
+      document: documentWithArtifacts(artifacts),
+      canvasDocument: createEmptyDocument(),
+      designSystem: { tokens: {}, components: {} },
+      artifacts
+    })
+
+    expect(manifest.counts).toMatchObject({ screenCount: 0, svgArtifactCount: 1 })
+    expect(manifest.surfaces).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'agent', status: 'ready', toolIds: expect.arrayContaining(['design_svg_create']) }),
+      expect.objectContaining({ id: 'design-tools', status: 'active', toolIds: expect.arrayContaining([
+        'design_svg_inspect',
+        'design_svg_edit',
+        'design_svg_animate',
+        'design_svg_validate'
+      ]) }),
+      expect.objectContaining({ id: 'whiteboard', status: 'ready' }),
+      expect.objectContaining({ id: 'handoff', status: 'ready', resourceKinds: expect.arrayContaining(['svg']) })
+    ]))
   })
 
   it('recommends code binding after the first generated screen has no bridge yet', () => {

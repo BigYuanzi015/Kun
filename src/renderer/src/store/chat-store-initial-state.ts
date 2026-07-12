@@ -3,14 +3,16 @@ import {
   readStoredComposerMode
 } from './chat-store-helpers'
 import { defaultConversationWorkspaceRoot } from '../lib/workspace-path'
+import { readProtectedSurfaceRestore } from '../extensions/protected-surface-session'
 
 export function createInitialChatStoreState(workingDirectoryLabel: string) {
+  const protectedSurfaceRestore = readProtectedSurfaceRestore()
   return {
-    route: 'chat' as const,
+    route: (protectedSurfaceRestore === 'settings' ? 'settings' : 'chat') as 'settings' | 'chat',
     settingsReturnRoute: 'chat' as const,
     pluginHostRoute: 'chat' as const,
     settingsSection: 'general' as const,
-    initialSetupOpen: false,
+    initialSetupOpen: protectedSurfaceRestore === 'initial-setup',
     initialSetupMode: 'required' as const,
     workspaceRoot: '',
     conversationWorkspaceRoot: defaultConversationWorkspaceRoot(),

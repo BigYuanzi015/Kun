@@ -63,7 +63,7 @@ type SkillRootCandidate = {
 
 /**
  * Enabled, on-disk skill roots passed to the Kun runtime. Builds the common
- * directory conventions (.agents/.claude/.codex/skills + global equivalents)
+ * directory conventions (.agents/.claude/.codex/.kun/skills + global equivalents)
  * plus configured extra dirs, drops any the user toggled off, and appends
  * enabled Codex plugin caches. Precedence (earlier wins on duplicate skill
  * id): project commons → global commons → plugin caches → extra dirs.

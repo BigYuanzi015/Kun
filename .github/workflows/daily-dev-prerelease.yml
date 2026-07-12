@@ -61,6 +61,7 @@ jobs:
   build-macos:
     name: Build macOS
     runs-on: macos-latest
+    timeout-minutes: 90
     needs: prepare
     env:
       KUN_APP_VERSION: ${{ needs.prepare.outputs.app_version }}
@@ -86,8 +87,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check Extension public release gate
+        run: npm run check:extension-release-gate
+
       - name: Build macOS packages
         run: npm run dist:mac
+
+      - name: Smoke packaged Extension Node runtime (macOS x64)
+        run: npm run smoke:packaged-extensions -- --resources dist/mac/Kun.app/Contents/Resources
+
+      - name: Smoke packaged Extension Node runtime (macOS arm64)
+        run: npm run smoke:packaged-extensions -- --resources dist/mac-arm64/Kun.app/Contents/Resources
+
+      - name: Smoke packaged Extension desktop Chromium (host-native macOS)
+        run: npm run smoke:packaged-extension-desktop
+
+      - name: Record commit-bound macOS artifact evidence
+        run: npm run evidence:extension-native
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -100,10 +116,12 @@ jobs:
             dist/Kun-*-mac-*.zip
             dist/Kun-*-mac-*.blockmap
             dist/latest-mac.yml
+            dist/extension-native-evidence-darwin.json
 
   build-windows:
     name: Build Windows
     runs-on: windows-latest
+    timeout-minutes: 90
     needs: prepare
     env:
       KUN_APP_VERSION: ${{ needs.prepare.outputs.app_version }}
@@ -130,8 +148,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check Extension public release gate
+        run: npm run check:extension-release-gate
+
       - name: Build Windows installer
         run: npm run dist:win
+
+      - name: Smoke packaged Extension Node runtime
+        run: npm run smoke:packaged-extensions -- --resources dist/win-unpacked/resources
+
+      - name: Smoke packaged Extension desktop Chromium
+        run: npm run smoke:packaged-extension-desktop
+
+      - name: Record commit-bound Windows artifact evidence
+        run: npm run evidence:extension-native
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -143,10 +173,12 @@ jobs:
             dist/Kun-*-win-x64.exe
             dist/Kun-*-win-x64.exe.blockmap
             dist/latest.yml
+            dist/extension-native-evidence-win32.json
 
   build-linux:
     name: Build Linux
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     needs: prepare
     env:
       KUN_APP_VERSION: ${{ needs.prepare.outputs.app_version }}
@@ -173,13 +205,39 @@ jobs:
       - name: Install Linux packaging dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libarchive-tools rpm build-essential python3
+          sudo apt-get install -y --no-install-recommends libarchive-tools rpm build-essential python3 xvfb xauth util-linux
 
       - name: Install dependencies
         run: npm ci
 
+      - name: Check Extension public release gate
+        run: npm run check:extension-release-gate
+
       - name: Build Linux AppImage
         run: npm run dist:linux
+
+      - name: Smoke packaged Extension Node runtime
+        run: npm run smoke:packaged-extensions -- --resources dist/linux-unpacked/resources
+
+      - name: Prepare and verify Linux user namespace sandbox
+        run: |
+          if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user /bin/true
+
+      - name: Smoke packaged Extension desktop Chromium
+        run: npm run smoke:packaged-extension-desktop
+
+      - name: Smoke final Linux AppImage desktop Chromium
+        timeout-minutes: 10
+        run: npm run smoke:packaged-extension-appimage
+
+      - name: Record commit-bound Linux artifact evidence
+        run: npm run evidence:extension-native
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -191,6 +249,7 @@ jobs:
             dist/Kun-*-linux-x86_64.AppImage
             dist/Kun-*-linux-x86_64.AppImage.blockmap
             dist/latest-linux.yml
+            dist/extension-native-evidence-linux.json
 
   publish:
     name: Publish prerelease
@@ -230,6 +289,9 @@ jobs:
             "Kun-${DEV_VERSION}-mac-x64.zip"
             "Kun-${DEV_VERSION}-win-x64.exe"
             "Kun-${DEV_VERSION}-linux-x86_64.AppImage"
+            "extension-native-evidence-darwin.json"
+            "extension-native-evidence-win32.json"
+            "extension-native-evidence-linux.json"
           )
 
           for file in "${required[@]}"; do

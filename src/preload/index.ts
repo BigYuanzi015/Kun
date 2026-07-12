@@ -1,5 +1,8 @@
-import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 import type { KunGuiApi } from '../shared/kun-gui-api'
+import { registerExtensionContentScriptPreload } from './extension-content-script'
+
+registerExtensionContentScriptPreload({ contextBridge, ipcRenderer, webFrame })
 
 // The preload runs sandboxed (webPreferences.sandbox = true), so it cannot
 // require node built-ins like node:os. The home dir is passed in from the main
@@ -31,6 +34,7 @@ const api = {
     ipcRenderer.invoke('settings:save-silent', partial),
   runtimeRequest: (path, method, body) =>
     ipcRenderer.invoke('runtime:request', { path, method, body }),
+  resolveKunApproval: (request) => ipcRenderer.invoke('approval:decide', request),
   restartRuntime: () => ipcRenderer.invoke('runtime:restart'),
   fetchUpstreamModels: () => ipcRenderer.invoke('upstream:models'),
   probeModelProvider: (payload) => ipcRenderer.invoke('provider:probe', payload),
@@ -85,6 +89,7 @@ const api = {
     ipcRenderer.invoke('skill:save-file', { rootPath, skillName, content, manifestContent }),
   importSkillsFromGitHub: (rootPath, url) =>
     ipcRenderer.invoke('skill:import-github', { rootPath, url }),
+  ensurePptMaster: () => ipcRenderer.invoke('ppt-master:ensure'),
   openSkillRoot: (rootPath) =>
     ipcRenderer.invoke('skill:open-root', rootPath),
   listUiPlugins: () =>
@@ -154,6 +159,8 @@ const api = {
     ipcRenderer.invoke('file:resolve-workspace', options),
   readWorkspaceFile: (options) =>
     ipcRenderer.invoke('file:read-workspace', options),
+  lintProjectDesignMd: (content) =>
+    ipcRenderer.invoke('design:lint-project-design-md', { content }),
   readWorkspaceImage: (options) =>
     ipcRenderer.invoke('file:read-workspace-image', options),
   readWorkspacePdf: (options) =>
@@ -236,9 +243,10 @@ const api = {
     ipcRenderer.invoke('write:inline-completion-debug:list'),
   clearWriteInlineCompletionDebugEntries: () =>
     ipcRenderer.invoke('write:inline-completion-debug:clear'),
-  startSse: (threadId, sinceSeq, streamId) =>
-    ipcRenderer.invoke('runtime:sse:start', { threadId, sinceSeq, streamId }),
+  startSse: (threadId, sinceSeq, streamId, options) =>
+    ipcRenderer.invoke('runtime:sse:start', { threadId, sinceSeq, streamId, ...options }),
   stopSse: (streamId) => ipcRenderer.invoke('runtime:sse:stop', streamId),
+  ackSse: (streamId, batchId) => ipcRenderer.invoke('runtime:sse:ack', { streamId, batchId }),
   onSseEvent: (handler) => {
     const wrapped = (
       _: Electron.IpcRendererEvent,
@@ -336,6 +344,85 @@ const api = {
     ipcRenderer.invoke('log:error', { category, message, detail }),
   getLogPath: () => ipcRenderer.invoke('log:get-path'),
   openLogDir: () => ipcRenderer.invoke('log:open-dir'),
+  extensionPickPackage: () => ipcRenderer.invoke('extension:pick-package'),
+  extensionPickDevelopmentDirectory: () =>
+    ipcRenderer.invoke('extension:pick-development-directory'),
+  extensionGetWorkbench: (request) =>
+    ipcRenderer.invoke('extension:workbench:get', request),
+  extensionList: (request) => ipcRenderer.invoke('extension:list', request),
+  extensionGet: (extensionId) => ipcRenderer.invoke('extension:get', extensionId),
+  extensionDiagnostics: (extensionId) =>
+    ipcRenderer.invoke('extension:diagnostics', extensionId),
+  extensionInstall: (request) => ipcRenderer.invoke('extension:install', request),
+  extensionEnable: (request) => ipcRenderer.invoke('extension:enable', request),
+  extensionDisable: (request) => ipcRenderer.invoke('extension:disable', request),
+  extensionSetPermissions: (request) =>
+    ipcRenderer.invoke('extension:set-permissions', request),
+  extensionReviewPermissions: (request) =>
+    ipcRenderer.invoke('extension:review-permissions', request),
+  extensionRollback: (request) => ipcRenderer.invoke('extension:rollback', request),
+  extensionUninstall: (request) => ipcRenderer.invoke('extension:uninstall', request),
+  extensionReload: (request) => ipcRenderer.invoke('extension:reload', request),
+  extensionInvokeCommand: (request) =>
+    ipcRenderer.invoke('extension:invoke-command', request),
+  extensionCreateViewSession: (request) =>
+    ipcRenderer.invoke('extension:view-session:create', request),
+  extensionDisposeViewSession: (request) =>
+    ipcRenderer.invoke('extension:view-session:dispose', request),
+  extensionPostViewMessage: (request) =>
+    ipcRenderer.invoke('extension:view-session:message', request),
+  extensionReadViewEvents: (request) =>
+    ipcRenderer.invoke('extension:view-session:events', request),
+  onExtensionViewEvent: (handler) => {
+    const wrapped = (
+      _: Electron.IpcRendererEvent,
+      payload: Parameters<typeof handler>[0]
+    ) => handler(payload)
+    ipcRenderer.on('extension:view-event', wrapped)
+    return () => ipcRenderer.removeListener('extension:view-event', wrapped)
+  },
+  onExtensionNotifications: (handler) => {
+    const wrapped = (
+      _: Electron.IpcRendererEvent,
+      payload: Parameters<typeof handler>[0]
+    ) => handler(payload)
+    ipcRenderer.on('extension:notifications', wrapped)
+    return () => ipcRenderer.removeListener('extension:notifications', wrapped)
+  },
+  extensionRespondNotification: (request) =>
+    ipcRenderer.invoke('extension:notification:respond', request),
+  extensionListAccounts: (request) =>
+    ipcRenderer.invoke('extension:accounts:list', request),
+  extensionListModelProviders: (request) =>
+    ipcRenderer.invoke('extension:model-providers:list', request),
+  extensionListProviderModels: (request) =>
+    ipcRenderer.invoke('extension:model-providers:list-models', request),
+  extensionLoadConfiguration: (request) =>
+    ipcRenderer.invoke('extension:configuration:load', request),
+  extensionUpdateConfiguration: (request) =>
+    ipcRenderer.invoke('extension:configuration:update', request),
+  extensionCreateAccountSession: (request) =>
+    ipcRenderer.invoke('extension:accounts:create-session', request),
+  extensionGetAccountSession: (request) =>
+    ipcRenderer.invoke('extension:accounts:get-session', request),
+  extensionCompleteAccountSession: (request) =>
+    ipcRenderer.invoke('extension:accounts:complete-session', request),
+  extensionCancelAccountSession: (request) =>
+    ipcRenderer.invoke('extension:accounts:cancel-session', request),
+  extensionDeleteAccount: (request) =>
+    ipcRenderer.invoke('extension:accounts:delete', request),
+  extensionRenameAccount: (request) =>
+    ipcRenderer.invoke('extension:accounts:rename', request),
+  extensionReplaceApiKeyAccount: (request) =>
+    ipcRenderer.invoke('extension:accounts:replace-api-key', request),
+  extensionCreateApiKeyAccount: (request) =>
+    ipcRenderer.invoke('extension:accounts:create-api-key', request),
+  extensionSetProviderBinding: (request) =>
+    ipcRenderer.invoke('extension:providers:set-binding', request),
+  extensionRequestConsent: (request) =>
+    ipcRenderer.invoke('extension:consent:request', request),
+  extensionSyncHostContentScripts: (request) =>
+    ipcRenderer.invoke('extension:sync-host-content-scripts', request),
   createTerminal: (payload) => ipcRenderer.invoke('terminal:create', payload),
   writeToTerminal: (payload) => ipcRenderer.invoke('terminal:write', payload),
   resizeTerminal: (payload) => ipcRenderer.invoke('terminal:resize', payload),

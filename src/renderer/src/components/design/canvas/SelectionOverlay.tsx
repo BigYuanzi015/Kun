@@ -25,13 +25,10 @@ import type { DesignArtifact } from '../../../design/design-types'
 import { LinearPointEditor } from './LinearPointEditor'
 
 const HANDLE_SIZE = 7
-const ROTATE_HANDLE_SIZE = 20
-const ROTATE_HANDLE_OFFSET = 16
+const ROTATE_HANDLE_SIZE = 24
+const ROTATE_HANDLE_OFFSET = 28
 const ROTATE_HANDLE_DOT_RADIUS = 5
 const SELECTION_COLOR = '#6557ff'
-
-type RotateCorner = 'nw' | 'ne' | 'se' | 'sw'
-const ROTATE_CORNERS: RotateCorner[] = ['nw', 'ne', 'se', 'sw']
 
 type ResizeDragState = {
   handle: ResizeHandle
@@ -302,7 +299,7 @@ function SelectionOverlayInner({
       if (!selBounds) return
 
       // Pivot in CLIENT coordinates so atan2 works directly off ev.clientX/Y.
-      const targetEl = e.currentTarget as SVGRectElement
+      const targetEl = e.currentTarget as SVGGraphicsElement
       const svg = targetEl.ownerSVGElement
       if (!svg) return
       const svgRect = svg.getBoundingClientRect()
@@ -377,28 +374,14 @@ function SelectionOverlayInner({
   const resizeHandles: { pos: ResizeHandle; cx: number; cy: number }[] = bounds
     ? [
         { pos: 'nw', cx: bounds.x, cy: bounds.y },
-        { pos: 'n', cx: bounds.x + bounds.width / 2, cy: bounds.y },
         { pos: 'ne', cx: bounds.x + bounds.width, cy: bounds.y },
-        { pos: 'e', cx: bounds.x + bounds.width, cy: bounds.y + bounds.height / 2 },
         { pos: 'se', cx: bounds.x + bounds.width, cy: bounds.y + bounds.height },
-        { pos: 's', cx: bounds.x + bounds.width / 2, cy: bounds.y + bounds.height },
-        { pos: 'sw', cx: bounds.x, cy: bounds.y + bounds.height },
-        { pos: 'w', cx: bounds.x, cy: bounds.y + bounds.height / 2 }
+        { pos: 'sw', cx: bounds.x, cy: bounds.y + bounds.height }
       ]
     : []
-
-  const rotateHandles: { corner: RotateCorner; cx: number; cy: number }[] = bounds
-    ? ROTATE_CORNERS.map((corner) => {
-        let cx = 0, cy = 0
-        switch (corner) {
-          case 'nw': cx = bounds.x - ro; cy = bounds.y - ro; break
-          case 'ne': cx = bounds.x + bounds.width + ro; cy = bounds.y - ro; break
-          case 'se': cx = bounds.x + bounds.width + ro; cy = bounds.y + bounds.height + ro; break
-          case 'sw': cx = bounds.x - ro; cy = bounds.y + bounds.height + ro; break
-        }
-        return { corner, cx, cy }
-      })
-    : []
+  const rotateHandle = bounds
+    ? { cx: bounds.x + bounds.width / 2, cy: bounds.y - ro }
+    : null
 
   return (
     <>
@@ -429,43 +412,45 @@ function SelectionOverlayInner({
         />
       )}
 
-      {showBoxHandles &&
-        rotateHandles.map(({ corner, cx, cy }) => (
-          <g key={`rot-${corner}`}>
-            <circle
-              cx={cx}
-              cy={cy}
-              r={rr}
-              fill="#ffffff"
-              stroke={SELECTION_COLOR}
-              strokeWidth={sw}
-              pointerEvents="none"
-            />
-            <path
-              d={rotateHandleGlyphPath(corner, cx, cy, rr * 1.45)}
-              fill="none"
-              stroke={SELECTION_COLOR}
-              strokeWidth={Math.max(1.25 / zoom, sw)}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              pointerEvents="none"
-            />
-            <rect
-              x={cx - rs / 2}
-              y={cy - rs / 2}
-              width={rs}
-              height={rs}
-              fill="transparent"
-              style={{ cursor: 'grab' }}
-              data-rotate={corner}
-              pointerEvents="all"
-              onPointerDown={handleRotatePointerDown}
-              aria-label={t('canvasRotateHandle')}
-            >
-              <title>{t('canvasRotateHandle')}</title>
-            </rect>
-          </g>
-        ))}
+      {showBoxHandles && rotateHandle ? (
+        <g>
+          <line
+            x1={rotateHandle.cx}
+            y1={bounds!.y}
+            x2={rotateHandle.cx}
+            y2={rotateHandle.cy + rr}
+            stroke={SELECTION_COLOR}
+            strokeWidth={sw}
+            strokeOpacity={0.55}
+            pointerEvents="none"
+          />
+          <circle
+            cx={rotateHandle.cx}
+            cy={rotateHandle.cy}
+            r={rr}
+            fill="#ffffff"
+            stroke={SELECTION_COLOR}
+            strokeWidth={sw}
+            style={{ cursor: 'grab' }}
+            data-rotate="rotation"
+            pointerEvents="all"
+            onPointerDown={handleRotatePointerDown}
+            aria-label={t('canvasRotateHandle')}
+          >
+            <title>{t('canvasRotateHandle')}</title>
+          </circle>
+          <circle
+            cx={rotateHandle.cx}
+            cy={rotateHandle.cy}
+            r={rs / 2}
+            fill="transparent"
+            style={{ cursor: 'grab' }}
+            data-rotate-hit="rotation"
+            pointerEvents="all"
+            onPointerDown={handleRotatePointerDown}
+          />
+        </g>
+      ) : null}
 
       {showBoxHandles &&
         resizeHandles.map(({ pos, cx, cy }) => (
@@ -586,19 +571,6 @@ function handleCursor(pos: ResizeHandle): string {
     case 'e':
     case 'w':
       return 'ew-resize'
-  }
-}
-
-function rotateHandleGlyphPath(corner: RotateCorner, cx: number, cy: number, r: number): string {
-  switch (corner) {
-    case 'nw':
-      return `M ${cx + r} ${cy} A ${r} ${r} 0 0 0 ${cx} ${cy + r} M ${cx} ${cy + r} L ${cx + r * 0.15} ${cy + r * 0.45} M ${cx} ${cy + r} L ${cx + r * 0.4} ${cy + r * 0.95}`
-    case 'ne':
-      return `M ${cx} ${cy + r} A ${r} ${r} 0 0 0 ${cx - r} ${cy} M ${cx - r} ${cy} L ${cx - r * 0.45} ${cy + r * 0.15} M ${cx - r} ${cy} L ${cx - r * 0.95} ${cy + r * 0.4}`
-    case 'se':
-      return `M ${cx - r} ${cy} A ${r} ${r} 0 0 0 ${cx} ${cy - r} M ${cx} ${cy - r} L ${cx - r * 0.15} ${cy - r * 0.45} M ${cx} ${cy - r} L ${cx - r * 0.4} ${cy - r * 0.95}`
-    case 'sw':
-      return `M ${cx} ${cy - r} A ${r} ${r} 0 0 0 ${cx + r} ${cy} M ${cx + r} ${cy} L ${cx + r * 0.45} ${cy - r * 0.15} M ${cx + r} ${cy} L ${cx + r * 0.95} ${cy - r * 0.4}`
   }
 }
 

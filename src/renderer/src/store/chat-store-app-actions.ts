@@ -2,6 +2,7 @@ import type i18next from 'i18next'
 import type { AppSettingsV1 } from '@shared/app-settings'
 import type { ModelProviderModelGroup } from '@shared/kun-gui-api'
 import { rendererRuntimeClient } from '../agent/runtime-client'
+import { extensionWorkbenchClient } from '../extensions/extension-workbench-client'
 import type { ChatState, ChatStoreGet, ChatStoreSet, InitialSetupMode, PluginHostRoute, SettingsRouteSection } from './chat-store-types'
 import type { ComposerPlanMode } from './chat-store-helpers'
 import {
@@ -130,8 +131,19 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
       }
       set({ composerModel: modelId, composerProviderId: nextProviderId })
       const trimmed = modelId.trim()
-      if (!activeThreadId && trimmed && trimmed.toLowerCase() !== 'auto' && typeof window.kunGui !== 'undefined') {
-        void window.kunGui.saveSettingsSilent({ agents: { kun: { model: trimmed } } })
+      const extensionProvider = state.composerModelGroups.find(
+        (group) => group.providerId === nextProviderId
+      )?.extensionProvider
+      if (
+        !activeThreadId &&
+        !extensionProvider &&
+        trimmed &&
+        trimmed.toLowerCase() !== 'auto' &&
+        typeof window.kunGui !== 'undefined'
+      ) {
+        void window.kunGui.saveSettingsSilent({
+          agents: { kun: { model: trimmed, providerId: nextProviderId } }
+        })
       }
     },
 
@@ -143,9 +155,59 @@ export function createAppActions(options: CreateAppActionsOptions): Pick<
       if (getComposerModelLoadPromise()) return getComposerModelLoadPromise()!
       if (typeof window.kunGui === 'undefined') return
       const task = (async () => {
-        const res = await window.kunGui.fetchUpstreamModels()
-        const pick = mergeComposerPickList(res.ok, res.ok ? res.modelIds : [])
-        const groups = res.ok ? res.modelGroups ?? [] : []
+        const [res, extensionProviders] = await Promise.all([
+          window.kunGui.fetchUpstreamModels(),
+          extensionWorkbenchClient.listModelProviders(get().workspaceRoot || undefined).catch(() => [])
+        ])
+        const extensionGroups: ModelProviderModelGroup[] = extensionProviders.flatMap((provider) => {
+          if (!provider.binding?.valid) return []
+          const model = provider.models.find((candidate) => candidate.id === provider.binding?.modelId)
+          if (!model) return []
+          const inputModalities = [
+            'text' as const,
+            ...(model.capabilities.input.includes('image') ? ['image' as const] : [])
+          ]
+          return [{
+            providerId: provider.providerId,
+            label: `${provider.displayName} · ${provider.extensionDisplayName}`,
+            modelIds: [model.id],
+            accountId: provider.binding.accountId,
+            extensionProvider: {
+              extensionId: provider.extensionId,
+              extensionVersion: provider.extensionVersion,
+              localProviderId: provider.localProviderId
+            },
+            modelProfiles: {
+              [model.id]: {
+                inputModalities,
+                outputModalities: ['text'],
+                supportsToolCalling: model.capabilities.tools,
+                messageParts: model.capabilities.input.includes('image')
+                  ? ['text', 'image_url', 'input_image']
+                  : ['text'],
+                ...(model.capabilities.maxContextTokens
+                  ? { contextWindowTokens: model.capabilities.maxContextTokens }
+                  : {}),
+                ...(model.capabilities.maxOutputTokens
+                  ? { maxOutputTokens: model.capabilities.maxOutputTokens }
+                  : {}),
+                ...(model.capabilities.reasoning ? {
+                  reasoning: {
+                    supportedEfforts: ['low', 'medium', 'high'],
+                    defaultEffort: 'medium',
+                    requestProtocol: 'none'
+                  }
+                } : {})
+              }
+            }
+          }]
+        })
+        const upstreamGroups = res.ok ? res.modelGroups ?? [] : []
+        const groups = [...upstreamGroups, ...extensionGroups]
+        const pick = mergeComposerPickList(
+          res.ok || extensionGroups.length > 0,
+          [...(res.ok ? res.modelIds : []), ...extensionGroups.flatMap((group) => group.modelIds)]
+        )
         const runtimeDefault = res.ok ? res.defaultModelId?.trim() ?? '' : ''
         set((state) => {
           const isSelectable = (model: string): boolean => composerModelSelectable(pick, groups, model)

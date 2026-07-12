@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildCodeCanvasTurnPrompt,
-  buildDesignFromCodePrompt,
   buildDesignImageNodePrompt,
   buildDesignTurnPrompt,
   buildParallelDesignPagesPrompt,
@@ -425,7 +424,7 @@ describe("design turn prompt HTML, screen, and canvas guidance", () => {
       // The intent-triage lanes are hoisted ABOVE the screen-creation vocabulary so the
       // model commits to the image-edit lane before screen creation can pre-empt it.
       const lanesAt = prompt.indexOf('FIRST classify the request')
-      const createScreenAt = prompt.indexOf('`design_create_screen`')
+      const createScreenAt = prompt.indexOf('Dedicated design tool schemas:')
       expect(lanesAt).toBeGreaterThanOrEqual(0)
       expect(createScreenAt).toBeGreaterThan(lanesAt)
   

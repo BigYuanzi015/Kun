@@ -1,6 +1,6 @@
 import { artifactDirOf } from './design-artifact-persistence'
 import { isDirectImageUrl } from './canvas/canvas-image-source'
-import { isHtmlFrame, type CanvasDocument, type CanvasShape } from './canvas/canvas-types'
+import { embeddedArtifactOf, isHtmlFrame, isSvgFrame, type CanvasDocument, type CanvasShape } from './canvas/canvas-types'
 import {
   defaultFrameSizeForDesignTarget,
   normalizeDesignTarget,
@@ -10,7 +10,7 @@ import type { DesignArtifact } from './design-types'
 
 export type DesignComposerContext = {
   id: string
-  kind: 'design-target' | 'html-artifact' | 'html-screen-frame' | 'html-element' | 'canvas-selection'
+  kind: 'design-target' | 'html-artifact' | 'html-screen-frame' | 'html-element' | 'svg-artifact' | 'svg-artifact-frame' | 'canvas-selection'
   label: string
   detail?: string
   removable?: boolean
@@ -45,6 +45,17 @@ export type DesignComposerContextTarget =
       element: DesignHtmlElementContext
     }
   | {
+      kind: 'svg-artifact'
+      chip: DesignComposerContext
+      artifact: DesignArtifact
+    }
+  | {
+      kind: 'svg-artifact-frame'
+      chip: DesignComposerContext
+      artifact: DesignArtifact
+      shape: CanvasShape
+    }
+  | {
       kind: 'canvas-selection'
       chip: DesignComposerContext
       selectedIds: string[]
@@ -68,6 +79,15 @@ export function resolveDesignComposerContextTargets(input: {
       .filter((shape): shape is CanvasShape => Boolean(shape))
     if (selectedShapes.length === 1 && isHtmlFrame(selectedShapes[0])) {
       const target = resolveDesignComposerScreenFrameTarget({
+        artifacts,
+        canvasDocument,
+        shapeId: selectedShapes[0].id,
+        suppressedIds
+      })
+      if (target) return [target]
+    }
+    if (selectedShapes.length === 1 && isSvgFrame(selectedShapes[0])) {
+      const target = resolveDesignComposerSvgFrameTarget({
         artifacts,
         canvasDocument,
         shapeId: selectedShapes[0].id,
@@ -105,7 +125,43 @@ export function resolveDesignComposerContextTargets(input: {
     return suppressedIds.has(chip.id) ? [] : [{ kind: 'html-artifact', chip, artifact: active }]
   }
 
+  if (active?.kind === 'svg') {
+    const chip = {
+      id: `svg-artifact:${active.id}`,
+      kind: 'svg-artifact' as const,
+      label: active.title,
+      detail: active.relativePath,
+      removable: true
+    }
+    return suppressedIds.has(chip.id) ? [] : [{ kind: 'svg-artifact', chip, artifact: active }]
+  }
+
   return []
+}
+
+export function resolveDesignComposerSvgFrameTarget(input: {
+  artifacts: readonly DesignArtifact[]
+  canvasDocument: CanvasDocument
+  shapeId: string | null | undefined
+  suppressedIds?: ReadonlySet<string>
+}): Extract<DesignComposerContextTarget, { kind: 'svg-artifact-frame' }> | null {
+  const shapeId = input.shapeId?.trim()
+  if (!shapeId) return null
+  const shape = input.canvasDocument.objects[shapeId]
+  const reference = shape ? embeddedArtifactOf(shape) : null
+  if (!shape || !isSvgFrame(shape) || reference?.kind !== 'svg') return null
+  const artifact = input.artifacts.find((item) => item.id === reference.id)
+  if (artifact?.kind !== 'svg') return null
+  const chip = {
+    id: `svg-artifact-frame:${shape.id}:${artifact.id}`,
+    kind: 'svg-artifact-frame' as const,
+    label: artifact.title || shape.name,
+    detail: `${Math.round(shape.width)} x ${Math.round(shape.height)} - ${artifact.relativePath}`,
+    removable: true
+  }
+  return input.suppressedIds?.has(chip.id)
+    ? null
+    : { kind: 'svg-artifact-frame', chip, artifact, shape }
 }
 
 export function resolveDesignComposerScreenFrameTarget(input: {
@@ -278,7 +334,7 @@ export function reconcileDesignHtmlElementContext(input: {
  */
 export type DesignContextLocation = {
   title: string
-  kind: 'html' | 'canvas' | 'image'
+  kind: 'html' | 'svg' | 'canvas' | 'image'
   path: string
   directory: string
 }
@@ -312,6 +368,18 @@ export function designSelectedContextLocations(input: {
         out.push({
           title: target.artifact.title || target.chip.label,
           kind: 'html',
+          path,
+          directory: artifactDirOf(path)
+        })
+      }
+      continue
+    }
+    if (target.kind === 'svg-artifact' || target.kind === 'svg-artifact-frame') {
+      const path = target.artifact.relativePath.trim()
+      if (path) {
+        out.push({
+          title: target.artifact.title || target.chip.label,
+          kind: 'svg',
           path,
           directory: artifactDirOf(path)
         })

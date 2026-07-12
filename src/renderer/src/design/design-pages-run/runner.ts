@@ -4,16 +4,13 @@ import type { ChatBlock, ToolBlock } from "../../agent/types"
 import type { SendMessageOverrides } from "../../store/chat-store-types"
 import {
   defaultPreviewNodeSizeForDesignTarget,
-  formatDesignSystemMarkdown,
   type DesignContext
 } from "../design-context"
 import { buildStitchDesignMarkdown, STITCH_DESIGN_MD_PATH } from "../design-md-compat"
 import {
-  DESIGN_SYSTEM_MD_PATH,
   buildDesignLogoPrompt,
   buildDesignSpecPrompt,
   buildDesignSpecStub,
-  buildDesignSystemBoardPrompt,
   buildFoundationFollowLines,
   designSpecPath,
   findFoundationArtifact,
@@ -39,14 +36,15 @@ import { createDesignArtifactId, defaultDesignArtifactNode, type DesignDirection
 import type { ParallelDesignPageState } from "../design-workspace-store-types"
 import { useDesignWorkspaceStore } from "../design-workspace-store"
 import { useDesignSystemStore } from "../canvas/design-system-store"
+import { PROJECT_DESIGN_MD_PATH } from '../design-md/design-md-paths'
+import { parseProjectDesignMdWithOfficialLint } from '../design-md/design-md-adapter'
 import type { RunDesignPagesDeps } from './orchestration-support'
 import { PAGE_TIMEOUT_MS, PARALLEL_PAGES_TIMEOUT_MS, PLAN_TIMEOUT_MS, assistantTextForLastTurn, beginDesignPagesRun, buildDirectionName, createFoundationCard, delay, finishDesignPagesRun, formatPageFlowLines, formatPageProductBriefLines, runTurn, syncParallelPageStates, waitForTurnComplete, writeWorkspaceTextFile } from './orchestration-support'
 
 /**
- * Stitch-style multi-page run with a foundation-first pipeline: first lay the
- * project `design.md`, a visual design-system style guide (+ DESIGN_SYSTEM.md
- * tokens) and a brand logo, THEN generate every page on its own turn — each one
- * following the established foundation and cohesive with its built siblings.
+ * Stitch-style multi-page run. A project design system is discovered from the
+ * canonical structured JSON file and rendered by the built-in canvas board; the
+ * runner never asks an agent to generate a separate HTML style-guide artifact.
  */
 export async function runDesignPages(deps: RunDesignPagesDeps): Promise<void> {
   const signal = { cancelled: false }
@@ -146,70 +144,16 @@ export async function runDesignPages(deps: RunDesignPagesDeps): Promise<void> {
       plan = [{ title: deps.brief.slice(0, 40) || 'Design', brief: deps.brief }]
     }
 
-    // 2) Foundation artifacts: a visual design-system style guide, then a logo.
+    // 2) Foundation assets. The design system is a project-level structured
+    // file, not an agent-generated HTML artifact. Reuse it when it already exists.
     if (withFoundation) {
       if (signal.cancelled) return
-      const existingSystem = findFoundationArtifact(
-        useDesignWorkspaceStore.getState().artifacts,
-        'design-system'
-      )
-      if (existingSystem) {
-        foundationBuiltIds.add(existingSystem.id)
-        designSystemRef = DESIGN_SYSTEM_MD_PATH
-      } else {
-        store.setPagesRun({
-          phase: 'foundation',
-          step: 'system',
-          total: 0,
-          done: 0,
-          title: deps.labels?.foundationStep?.('system') ?? 'Design system'
-        })
-        const card = await createFoundationCard({
-          docId,
-          workspaceRoot: deps.workspaceRoot,
-          role: 'design-system',
-          title: deps.labels?.systemTitle?.() ?? 'Design system'
-        })
-        if (!card) {
-          store.setFileError('Design preview setup failed for the design system.')
-          return
-        }
-        // Baseline DESIGN_SYSTEM.md from the static context so the file always
-        // exists; the agent enriches it with the real tokens it used.
-        await writeWorkspaceTextFile(
-          deps.workspaceRoot,
-          DESIGN_SYSTEM_MD_PATH,
-          formatDesignSystemMarkdown(deps.designContext)
-        )
-        const systemPrompt = buildDesignSystemBoardPrompt({
-          brief: deps.brief,
-          workspaceRoot: deps.workspaceRoot,
-          artifactRelativePath: card.relativePath,
-          designSystemMdPath: DESIGN_SYSTEM_MD_PATH,
-          ...(designMdRef ? { designMdPath: designMdRef } : {}),
-          ...(deps.designContext ? { designContext: deps.designContext } : {})
-        })
-        const status = await runTurn({
-          sendMessage: deps.sendMessage,
-          prompt: systemPrompt,
-          overrides: overrides(deps.labels?.systemDisplay?.() ?? 'Design the visual system'),
-          signal,
-          timeoutMs: PAGE_TIMEOUT_MS,
-          artifactId: card.id
-        })
-        if (status === 'cancelled') return
-        if (status === 'send-failed') {
-          store.setFileError('Could not start the design-system turn.')
-          return
-        }
-        if (status === 'timeout') {
-          store.setFileError('The design-system step timed out.')
-          return
-        }
-        // Refresh the drift baseline against whatever the agent published.
-        await useDesignWorkspaceStore.getState().refreshDesignSystemHash()
-        foundationBuiltIds.add(card.id)
-        designSystemRef = DESIGN_SYSTEM_MD_PATH
+      const structuredSystem = await window.kunGui?.readWorkspaceFile?.({
+        path: PROJECT_DESIGN_MD_PATH,
+        workspaceRoot: deps.workspaceRoot
+      }).catch(() => null)
+      if (structuredSystem?.ok && (await parseProjectDesignMdWithOfficialLint(structuredSystem.content, { truncated: structuredSystem.truncated })).ok) {
+        designSystemRef = PROJECT_DESIGN_MD_PATH
       }
 
       if (signal.cancelled) return
@@ -440,7 +384,7 @@ export async function runDesignPages(deps: RunDesignPagesDeps): Promise<void> {
           brief: deps.brief,
           ...(deps.designContext ? { designContext: deps.designContext } : {}),
           designSystem: useDesignSystemStore.getState().system,
-          designSystemMdPath: designSystemRef ?? DESIGN_SYSTEM_MD_PATH,
+          designSystemMdPath: designSystemRef ?? PROJECT_DESIGN_MD_PATH,
           ...(designMdRef ? { projectBriefPath: designMdRef } : {}),
           artifacts: state.artifacts
         })

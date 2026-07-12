@@ -20,6 +20,7 @@ import { RuntimeEventRecorder } from '../services/runtime-event-recorder.js'
 import { TurnService } from '../services/turn-service.js'
 import { createChildAgentExecutor } from './child-agent-executor.js'
 import { DelegationRuntime, FileDelegationStore } from './delegation-runtime.js'
+import type { ChildRunExecutor } from './delegation-runtime.js'
 
 class HangingModel implements ModelClient {
   readonly provider = 'test'
@@ -83,6 +84,36 @@ describe('DelegationRuntime abort handling', () => {
     }
   })
 
+  it('aborts detached children when their parent thread is deleted', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kun-delegation-'))
+    try {
+      let childSignal: AbortSignal | undefined
+      const runtime = new DelegationRuntime({
+        config: subagentConfig(),
+        store: new FileDelegationStore(dir),
+        executor: async (input) => {
+          childSignal = input.signal
+          await new Promise<void>((resolve) => input.signal.addEventListener('abort', () => resolve(), { once: true }))
+          throw new Error('aborted')
+        }
+      })
+      await runtime.runChild({
+        parentThreadId: 'thr_delete',
+        parentTurnId: 'turn_delete',
+        prompt: 'background work',
+        detach: true,
+        signal: new AbortController().signal
+      })
+
+      await waitFor(() => childSignal !== undefined)
+      expect(runtime.abortDetachedChildrenForThread('thr_other')).toBe(0)
+      expect(runtime.abortDetachedChildrenForThread('thr_delete')).toBe(1)
+      await waitFor(() => childSignal?.aborted === true)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('wakes the parent thread when a detached child settles after the parent turn was interrupted', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kun-delegation-'))
     try {
@@ -125,6 +156,133 @@ describe('DelegationRuntime abort handling', () => {
         messageSource: 'background_subagent',
         displayText: 'Background subagent research completed'
       })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('DelegationRuntime model provider selection', () => {
+  it('uses a complete profile pair instead of mixing it with the parent pair', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kun-delegation-selection-'))
+    try {
+      let captured: Parameters<ChildRunExecutor>[0] | undefined
+      const runtime = new DelegationRuntime({
+        config: SubagentsCapabilityConfig.parse({
+          enabled: true,
+          maxParallel: 1,
+          maxChildRuns: 10,
+          profiles: {
+            general: {
+              model: 'deepseek-v4-pro',
+              providerId: 'deepseek',
+              toolPolicy: 'inherit'
+            }
+          }
+        }),
+        store: new FileDelegationStore(dir),
+        executor: async (input) => {
+          captured = input
+          return { summary: 'done' }
+        }
+      })
+
+      await runtime.runChild({
+        parentThreadId: 'parent',
+        parentTurnId: 'turn',
+        profile: 'general',
+        prompt: 'work',
+        inheritedModel: 'gpt-5.3-codex-spark',
+        inheritedProviderId: 'codex',
+        signal: new AbortController().signal
+      })
+
+      expect(captured).toMatchObject({
+        model: 'deepseek-v4-pro',
+        providerId: 'deepseek'
+      })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('inherits the complete parent pair when the profile has no model override', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kun-delegation-selection-'))
+    try {
+      let captured: Parameters<ChildRunExecutor>[0] | undefined
+      const runtime = new DelegationRuntime({
+        config: SubagentsCapabilityConfig.parse({
+          enabled: true,
+          maxParallel: 1,
+          maxChildRuns: 10,
+          profiles: { general: { toolPolicy: 'inherit' } }
+        }),
+        store: new FileDelegationStore(dir),
+        executor: async (input) => {
+          captured = input
+          return { summary: 'done' }
+        }
+      })
+
+      await runtime.runChild({
+        parentThreadId: 'parent',
+        parentTurnId: 'turn',
+        profile: 'general',
+        prompt: 'work',
+        inheritedModel: 'gpt-5.3-codex-spark',
+        inheritedProviderId: 'codex',
+        signal: new AbortController().signal
+      })
+
+      expect(captured).toMatchObject({
+        model: 'gpt-5.3-codex-spark',
+        providerId: 'codex'
+      })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves internal partial overrides while filling the other field from inheritance', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kun-delegation-selection-'))
+    try {
+      const seen: Array<{ model?: string; providerId?: string }> = []
+      const executor = vi.fn(async (input: Parameters<ChildRunExecutor>[0]) => {
+        seen.push({ model: input.model, providerId: input.providerId })
+        return { summary: 'done' }
+      })
+      const runtime = new DelegationRuntime({
+        config: SubagentsCapabilityConfig.parse({
+          enabled: true,
+          maxParallel: 1,
+          maxChildRuns: 10,
+          profiles: { partial: { model: 'deepseek-v4-pro' } }
+        }),
+        store: new FileDelegationStore(dir),
+        executor
+      })
+
+      await runtime.runChild({
+        parentThreadId: 'parent',
+        parentTurnId: 'turn',
+        profile: 'partial',
+        prompt: 'work',
+        inheritedProviderId: 'codex',
+        signal: new AbortController().signal
+      })
+
+      await runtime.runChild({
+        parentThreadId: 'parent',
+        parentTurnId: 'turn',
+        model: 'gpt-5.3-codex-spark',
+        prompt: 'work',
+        inheritedProviderId: 'codex',
+        signal: new AbortController().signal
+      })
+      expect(seen).toEqual([
+        { model: 'deepseek-v4-pro', providerId: 'codex' },
+        { model: 'gpt-5.3-codex-spark', providerId: 'codex' }
+      ])
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

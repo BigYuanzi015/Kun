@@ -16,20 +16,28 @@ import {
   parseResearchCommand,
   parseReviewCommand,
   shouldCaptureFileMentionCommitKey,
-  shouldShowGoalFloater
+  shouldShowGoalFloater,
+  shouldSurfaceComposerUserInput
 } from './FloatingComposer'
 import {
   FloatingComposerModelPicker,
   buildComposerModelMenuGroups,
+  calculateFloatingReasoningPopoverPlacement,
   calculateFloatingMenuPlacement,
   calculateFloatingSubmenuPlacement,
+  composerReasoningEffortForRailKey,
+  composerReasoningEffortHasEnergyMotion,
+  composerReasoningEffortForRailPosition,
+  composerReasoningRailPointerPosition,
+  composerReasoningRailPosition,
   composerModelMenuItemSelected,
   composerMenuSupportsModel,
   composerReasoningEffortRequestValue,
   buildComposerModelOptions,
   canSwitchComposerModelFromCurrent,
   filterComposerModelIds,
-  normalizeComposerReasoningEffort
+  normalizeComposerReasoningEffort,
+  orderComposerReasoningRailEfforts
 } from './FloatingComposerModelPicker'
 import {
   FloatingComposerExecutionPicker,
@@ -352,13 +360,83 @@ describe('FloatingComposer model controls', () => {
   })
 
   it('falls back to the model default when the selected model does not support the current effort', () => {
-    expect(normalizeComposerReasoningEffort('max', {
+    const profile = {
       reasoning: {
         supportedEfforts: ['off', 'low', 'medium', 'high'],
         defaultEffort: 'high',
         requestProtocol: 'mimo-chat-completions'
       }
-    })).toBe('high')
+    } satisfies NonNullable<Parameters<typeof normalizeComposerReasoningEffort>[1]>
+
+    expect(normalizeComposerReasoningEffort('max', profile)).toBe('high')
+    expect(normalizeComposerReasoningEffort('auto', profile)).toBe('high')
+    expect(normalizeComposerReasoningEffort('medium', profile)).toBe('medium')
+  })
+
+  it('does not reinterpret an unsupported low effort as off', () => {
+    expect(normalizeComposerReasoningEffort('low', {
+      reasoning: {
+        supportedEfforts: ['off', 'medium', 'auto'],
+        defaultEffort: 'medium',
+        requestProtocol: 'openai-responses'
+      }
+    })).toBe('medium')
+  })
+
+  it('uses the legacy effort set when no model reasoning profile is available', () => {
+    expect(normalizeComposerReasoningEffort('auto')).toBe('max')
+    expect(normalizeComposerReasoningEffort('medium')).toBe('medium')
+  })
+
+  it('enables ambient energy motion only for the deeper semantic efforts', () => {
+    expect(composerReasoningEffortHasEnergyMotion('off')).toBe(false)
+    expect(composerReasoningEffortHasEnergyMotion('low')).toBe(false)
+    expect(composerReasoningEffortHasEnergyMotion('medium')).toBe(false)
+    expect(composerReasoningEffortHasEnergyMotion('high')).toBe(true)
+    expect(composerReasoningEffortHasEnergyMotion('max')).toBe(true)
+    expect(composerReasoningEffortHasEnergyMotion('auto')).toBe(true)
+  })
+
+  it('orders rail efforts canonically and keeps adaptive at the far-right stop', () => {
+    const efforts = orderComposerReasoningRailEfforts(['auto', 'high', 'off', 'high'])
+
+    expect(efforts).toEqual(['off', 'high', 'auto'])
+    expect(composerReasoningRailPosition(efforts, 'off')).toBe(0)
+    expect(composerReasoningRailPosition(efforts, 'high')).toBe(0.5)
+    expect(composerReasoningRailPosition(efforts, 'auto')).toBe(1)
+    expect(composerReasoningRailPosition(['auto'], 'auto')).toBe(1)
+  })
+
+  it('snaps pointer positions to the nearest supported rail effort', () => {
+    const efforts = orderComposerReasoningRailEfforts(['off', 'high', 'max'])
+
+    expect(composerReasoningEffortForRailPosition(efforts, -1)).toBe('off')
+    expect(composerReasoningEffortForRailPosition(efforts, 0.49)).toBe('high')
+    expect(composerReasoningEffortForRailPosition(efforts, 0.8)).toBe('max')
+    expect(composerReasoningEffortForRailPosition(['auto'], 0)).toBe('auto')
+  })
+
+  it('maps pointer dragging across the thumb-safe rail range', () => {
+    expect(composerReasoningRailPointerPosition(118, 100, 250)).toBe(0)
+    expect(composerReasoningRailPointerPosition(225, 100, 250)).toBe(0.5)
+    expect(composerReasoningRailPointerPosition(332, 100, 250)).toBe(1)
+    expect(composerReasoningRailPointerPosition(80, 100, 250)).toBe(0)
+    expect(composerReasoningRailPointerPosition(360, 100, 250)).toBe(1)
+    expect(composerReasoningRailPointerPosition(Number.NaN, 100, 250)).toBe(0)
+    expect(composerReasoningRailPointerPosition(100, 100, 30)).toBe(0)
+  })
+
+  it('moves keyboard input only across supported reasoning stops', () => {
+    const efforts = orderComposerReasoningRailEfforts(['auto', 'high', 'off'])
+
+    expect(composerReasoningEffortForRailKey(efforts, 'off', 'ArrowLeft')).toBe('off')
+    expect(composerReasoningEffortForRailKey(efforts, 'off', 'ArrowRight')).toBe('high')
+    expect(composerReasoningEffortForRailKey(efforts, 'high', 'ArrowRight')).toBe('auto')
+    expect(composerReasoningEffortForRailKey(efforts, 'auto', 'ArrowRight')).toBe('auto')
+    expect(composerReasoningEffortForRailKey(efforts, 'high', 'Home')).toBe('off')
+    expect(composerReasoningEffortForRailKey(efforts, 'off', 'End')).toBe('auto')
+    expect(composerReasoningEffortForRailKey(efforts, 'high', 'Enter')).toBeUndefined()
+    expect(composerReasoningEffortForRailKey([], 'high', 'ArrowRight')).toBeUndefined()
   })
 
   it('anchors the model menu to the trigger using the rendered menu height', () => {
@@ -384,6 +462,17 @@ describe('FloatingComposer model controls', () => {
 
     expect(placement.left).toBe(712)
     expect(placement.top).toBe(633)
+  })
+
+  it('anchors the Code reasoning popover above its own trigger', () => {
+    const placement = calculateFloatingReasoningPopoverPlacement({
+      anchorRect: { top: 700, right: 650, bottom: 736, left: 550 },
+      popoverHeight: 110,
+      viewportHeight: 900,
+      viewportWidth: 1000
+    })
+
+    expect(placement).toEqual({ left: 457, top: 578, width: 286 })
   })
 
   it('keeps the context capacity popover inside the viewport', () => {
@@ -617,6 +706,30 @@ describe('FloatingComposer model controls', () => {
     expect(html).toContain('High')
   })
 
+  it('renders Code split controls as borderless model and reasoning triggers', () => {
+    const html = renderToStaticMarkup(
+      createElement(FloatingComposerModelPicker, {
+        compact: false,
+        mode: 'select',
+        controlVariant: 'split',
+        composerModel: 'deepseek-v4-pro',
+        composerPickList: ['deepseek-v4-pro'],
+        composerModelGroups: [DEEPSEEK_PROVIDER_GROUP],
+        composerReasoningEffort: 'max',
+        canChangeModel: true,
+        onComposerModelChange: () => undefined,
+        onComposerReasoningEffortChange: () => undefined
+      })
+    )
+
+    expect(html).toContain('deepseek-v4-pro')
+    expect(html).toContain('Reasoning')
+    expect(html).toContain('Ultra')
+    expect(html).toContain('aria-label="Model"')
+    expect(html).toContain('aria-label="Reasoning: Ultra"')
+    expect(html).not.toContain('Model and reasoning settings')
+  })
+
   it('keeps provider setup reachable when no chat providers are available', () => {
     const html = renderToStaticMarkup(
       createElement(FloatingComposerModelPicker, {
@@ -797,6 +910,15 @@ describe('FloatingComposer image transfer helpers', () => {
 })
 
 describe('FloatingComposer capability controls', () => {
+  it('surfaces user-input requests in Chat, Design, and the compact Write composer', () => {
+    expect(shouldSurfaceComposerUserInput('chat', false)).toBe(true)
+    expect(shouldSurfaceComposerUserInput('design', false)).toBe(true)
+    expect(shouldSurfaceComposerUserInput('write', false)).toBe(true)
+    expect(shouldSurfaceComposerUserInput('write', true)).toBe(true)
+    expect(shouldSurfaceComposerUserInput('claw', false)).toBe(false)
+    expect(shouldSurfaceComposerUserInput('design', true)).toBe(false)
+  })
+
   it('hides the default slash footer hint but keeps status hints', async () => {
     const previousLanguage = i18n.language
     await i18n.changeLanguage('en')

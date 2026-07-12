@@ -1,6 +1,6 @@
 import type { ApprovalGate } from '../ports/approval-gate.js'
 import type { ApprovalRequest } from '../domain/approval.js'
-import { resolveApprovalRequest } from '../domain/approval.js'
+import { expireApprovalRequest, resolveApprovalRequest } from '../domain/approval.js'
 
 type PendingResolver = {
   resolve: (decision: 'allow' | 'deny') => void
@@ -13,8 +13,13 @@ type PendingResolver = {
  * the user allowed or denied the call.
  */
 export class InMemoryApprovalGate implements ApprovalGate {
+  private readonly resolvedCapacity: number
   private readonly approvals = new Map<string, ApprovalRequest>()
   private readonly resolvers = new Map<string, PendingResolver>()
+
+  constructor(options: { resolvedCapacity?: number } = {}) {
+    this.resolvedCapacity = Math.max(1, Math.floor(options.resolvedCapacity ?? 1_024))
+  }
 
   request(approval: ApprovalRequest): Promise<'allow' | 'deny'> {
     this.approvals.set(approval.id, approval)
@@ -32,6 +37,18 @@ export class InMemoryApprovalGate implements ApprovalGate {
     const resolver = this.resolvers.get(approvalId)
     this.resolvers.delete(approvalId)
     resolver?.resolve(decision)
+    this.trimResolved()
+    return true
+  }
+
+  expire(approvalId: string, reason = 'turn cancelled'): boolean {
+    const approval = this.approvals.get(approvalId)
+    if (!approval || approval.status !== 'pending') return false
+    this.approvals.set(approvalId, { ...expireApprovalRequest(approval), reason })
+    const resolver = this.resolvers.get(approvalId)
+    this.resolvers.delete(approvalId)
+    resolver?.resolve('deny')
+    this.trimResolved()
     return true
   }
 
@@ -49,5 +66,16 @@ export class InMemoryApprovalGate implements ApprovalGate {
   /** Used by tests to simulate an external decision and tear down the promise. */
   resolve(approvalId: string, decision: 'allow' | 'deny', reason?: string): boolean {
     return this.decide(approvalId, decision, reason)
+  }
+
+  private trimResolved(): void {
+    let resolved = [...this.approvals.values()].filter((approval) => approval.status !== 'pending').length
+    if (resolved <= this.resolvedCapacity) return
+    for (const [id, approval] of this.approvals) {
+      if (approval.status === 'pending') continue
+      this.approvals.delete(id)
+      resolved -= 1
+      if (resolved <= this.resolvedCapacity) return
+    }
   }
 }

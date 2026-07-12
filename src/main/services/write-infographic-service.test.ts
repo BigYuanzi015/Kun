@@ -21,6 +21,7 @@ function settingsWithImageGen(overrides: Record<string, unknown> = {}): AppSetti
           baseUrl: 'https://images.example.test/v1',
           apiKey: 'sk-image',
           model: 'test-image-model',
+          defaultResolution: '1K',
           defaultSize: '',
           quality: 'auto',
           timeoutMs: 180000,
@@ -126,6 +127,18 @@ describe('write infographic service', () => {
 
     expect(result.ok).toBe(true)
     expect(client.requests[0].size).toBe('1024x1536')
+  })
+
+  it('uses the configured default resolution when no custom size is set', async () => {
+    const client = fakeClient()
+    const result = await requestWriteInfographic(settingsWithImageGen({ defaultResolution: '2K' }), {
+      text: 'high-resolution infographic content',
+      filePath: join(workspace, 'doc.md'),
+      workspaceRoot: workspace
+    }, { client })
+
+    expect(result.ok).toBe(true)
+    expect(client.requests[0].size).toBe('1536x2048')
   })
 
   it('passes the configured image quality to the provider', async () => {

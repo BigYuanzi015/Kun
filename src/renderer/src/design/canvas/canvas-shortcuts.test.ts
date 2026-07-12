@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createEmptyDocument, createHtmlFrameShape } from './canvas-types'
+import { createEmptyDocument, createHtmlFrameShape, createSvgFrameShape } from './canvas-types'
 import { handleCanvasKeyDown, handleCanvasKeyUp } from './canvas-shortcuts'
 import { useCanvasSelectionStore } from './canvas-selection-store'
 import { useCanvasShapeStore } from './canvas-shape-store'
@@ -414,6 +414,21 @@ describe('canvas keyboard shortcuts', () => {
     doc = useCanvasShapeStore.getState().document
     expect(doc.objects[groupId].type).toBe('group')
     expect(Array.from(useCanvasSelectionStore.getState().selectedIds)).toEqual([groupId])
+  })
+
+  it('cmd+g leaves a selection containing an SVG artifact portal at the root', () => {
+    const svg = createSvgFrameShape('Motion', 0, 0, 'svg-artifact')
+    useCanvasShapeStore.getState().addShape(svg)
+    const rect = addRect(120)
+    useCanvasSelectionStore.getState().select([svg.id, rect])
+    useCanvasUndoStore.getState().clear()
+
+    expect(handleCanvasKeyDown(eventFor('g', { metaKey: true }))).toBe(true)
+
+    const document = useCanvasShapeStore.getState().document
+    expect(document.objects[svg.id].parentId).toBe(document.rootId)
+    expect(Array.from(useCanvasSelectionStore.getState().selectedIds)).toEqual([svg.id, rect])
+    expect(useCanvasUndoStore.getState().undoStack).toHaveLength(0)
   })
 
   it('cmd+shift+g ungroups selected groups and selects their children', () => {

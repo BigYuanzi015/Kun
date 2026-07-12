@@ -189,4 +189,46 @@ describe('runtimeRequestViaHost', () => {
     expect(response.ok).toBe(true)
     expect(JSON.parse(response.body)).toEqual({ ok: true })
   })
+
+  it('does not ensure or send a request when the caller is already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    let ensureCalls = 0
+
+    await expect(runtimeRequestViaHost(
+      settingsForPort(1),
+      '/v1/threads',
+      { method: 'GET', signal: controller.signal },
+      async () => {
+        ensureCalls += 1
+      }
+    )).rejects.toMatchObject({ name: 'AbortError' })
+
+    expect(ensureCalls).toBe(0)
+  })
+
+  it('aborts an in-flight request without invoking runtime recovery', async () => {
+    let requestStarted!: () => void
+    const started = new Promise<void>((resolve) => { requestStarted = resolve })
+    const port = await listen((_req, _res) => {
+      requestStarted()
+      // Keep the response open until the caller aborts.
+    })
+    const controller = new AbortController()
+    let ensureCalls = 0
+    const request = runtimeRequestViaHost(
+      settingsForPort(port),
+      '/v1/threads',
+      { method: 'GET', signal: controller.signal },
+      async () => {
+        ensureCalls += 1
+      }
+    )
+
+    await started
+    controller.abort()
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' })
+    expect(ensureCalls).toBe(1)
+  })
 })

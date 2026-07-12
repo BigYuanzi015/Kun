@@ -7,7 +7,7 @@ import { useCanvasViewportStore } from './canvas-viewport-store'
 import { useDesignSystemStore } from './design-system-store'
 import { useDesignWorkspaceStore } from '../design-workspace-store'
 import { createEmptyDocument, createHtmlFrameShape, type CanvasShape } from './canvas-types'
-import { createDefaultShape, shapeGeometry, type Rect } from './canvas-types'
+import { createDefaultShape } from './canvas-types'
 import { takeLastLintFindings } from './design-lint'
 import { resolveTokenPatch } from './design-system-types'
 
@@ -23,15 +23,6 @@ beforeEach(() => {
 function addRect(): string {
   const r = executeOps([{ op: 'add', shape: { type: 'rect', x: 0, y: 0, width: 50, height: 50 } }])
   return r.affectedIds[0]
-}
-
-function rectsOverlap(a: Rect, b: Rect): boolean {
-  return !(
-    a.x + a.width <= b.x ||
-    b.x + b.width <= a.x ||
-    a.y + a.height <= b.y ||
-    b.y + b.height <= a.y
-  )
 }
 
 describe('define-token', () => {
@@ -78,7 +69,7 @@ describe('define-token', () => {
 })
 
 describe('design-system-template', () => {
-  it('creates a reusable style-kit board with tokens and token-bound shapes', () => {
+  it('creates reusable tokens and component trees without drawing a style-kit board', () => {
     const r = executeOps([
       {
         op: 'design-system-template',
@@ -90,7 +81,7 @@ describe('design-system-template', () => {
       }
     ])
     expect(r.ok).toBe(true)
-    expect(r.affectedIds.length).toBeGreaterThan(20)
+    expect(r.affectedIds).toEqual([])
     expect(useDesignSystemStore.getState().getToken('brand/primary')).toEqual({
       name: 'brand/primary',
       kind: 'color',
@@ -100,11 +91,10 @@ describe('design-system-template', () => {
       { path: 'label', kind: 'text', label: 'Label' }
     ])
     const shapes = Object.values(useCanvasShapeStore.getState().document.objects)
-    expect(shapes.some((shape) => shape.name.includes('IKUN World Style Kit'))).toBe(true)
-    expect(shapes.some((shape) => shape.tokenBindings?.fill === 'brand/primary')).toBe(true)
+    expect(shapes).toHaveLength(1)
   })
 
-  it('auto-places a style-kit board away from an existing image when coordinates are omitted', () => {
+  it('leaves existing canvas content untouched when creating the structured system', () => {
     useCanvasViewportStore.getState().setVbox({ x: 0, y: 0, width: 2200, height: 1400 })
     const existing = executeOps([
       {
@@ -132,12 +122,11 @@ describe('design-system-template', () => {
 
     expect(r.ok).toBe(true)
     const objects = useCanvasShapeStore.getState().document.objects
-    const board = Object.values(objects).find((shape) => shape.name === 'Placed Kit Style Kit')
-    expect(board).toBeDefined()
-    expect(rectsOverlap(shapeGeometry(objects[existing]).selrect, shapeGeometry(board!).selrect)).toBe(false)
+    expect(objects[existing]).toBeDefined()
+    expect(useCanvasShapeStore.getState().getAllShapeIds()).toEqual([existing])
   })
 
-  it('creates paired light and dark style-kit boards with namespaced tokens', () => {
+  it('creates paired light and dark namespaced tokens without duplicate boards', () => {
     const r = executeOps([
       {
         op: 'design-system-template',
@@ -154,14 +143,10 @@ describe('design-system-template', () => {
     expect(useDesignSystemStore.getState().getToken('brand/primary')?.value).toBe('#D4AF37')
     expect(useDesignSystemStore.getState().getToken('dark/brand/primary')?.value).toBe('#D4AF37')
     expect(useDesignSystemStore.getState().getToken('light/brand/primary')?.value).toBe('#D4AF37')
-    const shapes = Object.values(useCanvasShapeStore.getState().document.objects)
-    expect(shapes.some((shape) => shape.name.includes('IKUN World Dark Style Kit'))).toBe(true)
-    expect(shapes.some((shape) => shape.name.includes('IKUN World Light Style Kit'))).toBe(true)
-    expect(shapes.some((shape) => shape.tokenBindings?.fill === 'dark/brand/primary')).toBe(true)
-    expect(shapes.some((shape) => shape.tokenBindings?.fill === 'light/brand/primary')).toBe(true)
+    expect(useCanvasShapeStore.getState().getAllShapeIds()).toEqual([])
   })
 
-  it('defaults omitted templates to web style-kit specimens for the web target', () => {
+  it('defaults omitted templates to a structured web design system', () => {
     const r = executeOps([
       {
         op: 'design-system-template',
@@ -172,13 +157,12 @@ describe('design-system-template', () => {
     ])
 
     expect(r.ok).toBe(true)
-    const shapes = Object.values(useCanvasShapeStore.getState().document.objects)
-    expect(shapes.some((shape) => shape.name === 'Top nav surface')).toBe(true)
-    expect(shapes.some((shape) => shape.name === 'Bottom nav surface')).toBe(false)
-    expect(shapes.some((shape) => shape.type === 'text' && shape.textContent === 'Web target - saas kit')).toBe(true)
+    expect(useDesignSystemStore.getState().getToken('brand/primary')?.value).toBe('#2563EB')
+    expect(useDesignSystemStore.getState().getComponent('Button')).toBeDefined()
+    expect(useCanvasShapeStore.getState().getAllShapeIds()).toEqual([])
   })
 
-  it('defaults omitted templates to mobile style-kit specimens for the app target', () => {
+  it('defaults omitted templates to a structured app design system', () => {
     useDesignWorkspaceStore.setState({ designContext: { designTarget: 'app' } })
 
     const r = executeOps([
@@ -191,10 +175,9 @@ describe('design-system-template', () => {
     ])
 
     expect(r.ok).toBe(true)
-    const shapes = Object.values(useCanvasShapeStore.getState().document.objects)
-    expect(shapes.some((shape) => shape.name === 'Bottom nav surface')).toBe(true)
-    expect(shapes.some((shape) => shape.name === 'Top nav surface')).toBe(false)
-    expect(shapes.some((shape) => shape.type === 'text' && shape.textContent === 'App target - mobile kit')).toBe(true)
+    expect(useDesignSystemStore.getState().getToken('brand/primary')?.value).toBe('#2563EB')
+    expect(useDesignSystemStore.getState().getComponent('Button')).toBeDefined()
+    expect(useCanvasShapeStore.getState().getAllShapeIds()).toEqual([])
   })
 
   it('apply operation reflows existing token-bound shapes without creating a new board', () => {
@@ -214,6 +197,55 @@ describe('design-system-template', () => {
       color: '#D4AF37',
       opacity: 1
     })
+  })
+
+  it('stores component variants as overrides and materializes the selected variant', () => {
+    const source = addRect()
+    useCanvasShapeStore.getState().updateShape(source, { name: 'Button', width: 140, height: 48 })
+    expect(executeOps([{ op: 'define-component', name: 'Button', fromId: source, slots: [] }]).ok).toBe(true)
+    const component = useDesignSystemStore.getState().getComponent('Button')!
+    const rootLayerId = component.tree[0].id
+
+    const variant = executeOps([{
+      op: 'set-component-variant',
+      name: 'Button',
+      key: 'size=small',
+      selection: { size: 'small' },
+      overrides: { [rootLayerId]: { width: 96, height: 36 } }
+    }])
+    expect(variant.ok).toBe(true)
+    expect(useDesignSystemStore.getState().getComponent('Button')?.variantAxes).toEqual({
+      size: { values: ['small'], defaultValue: 'small' }
+    })
+
+    const instance = executeOps([{
+      op: 'instantiate',
+      name: 'Button',
+      variant: 'size=small',
+      at: { x: 200, y: 100 }
+    }])
+    expect(instance.ok).toBe(true)
+    expect(useCanvasShapeStore.getState().getShape(instance.affectedIds[0])).toMatchObject({
+      width: 96,
+      height: 36,
+      componentVariant: 'size=small'
+    })
+  })
+
+  it('deletes definitions without deleting already materialized component content', () => {
+    executeOps([{ op: 'define-token', name: 'brand/old', kind: 'color', value: '#111111' }])
+    const source = addRect()
+    executeOps([{ op: 'apply-token', ids: [source], prop: 'fill', token: 'brand/old' }])
+    executeOps([{ op: 'define-component', name: 'Card', fromId: source, slots: [] }])
+    const instance = executeOps([{ op: 'instantiate', name: 'Card', at: { x: 100, y: 100 } }]).affectedIds[0]
+
+    expect(executeOps([
+      { op: 'delete-token', name: 'brand/old' },
+      { op: 'delete-component', name: 'Card' }
+    ]).ok).toBe(true)
+    expect(useDesignSystemStore.getState().getToken('brand/old')).toBeUndefined()
+    expect(useDesignSystemStore.getState().getComponent('Card')).toBeUndefined()
+    expect(useCanvasShapeStore.getState().getShape(instance)).toMatchObject({ componentId: undefined })
   })
 
   it('accepts validate as a direct design-system-template op for legacy canvas calls', () => {

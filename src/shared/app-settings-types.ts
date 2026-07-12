@@ -85,6 +85,9 @@ export const CUSTOM_IMAGE_GENERATION_PROVIDER_ID = 'custom'
 export const IMAGE_GENERATION_PROTOCOLS = ['openai-images', 'minimax-image', 'codex-responses-image'] as const
 export type ImageGenerationProtocol = (typeof IMAGE_GENERATION_PROTOCOLS)[number]
 export const DEFAULT_IMAGE_GENERATION_PROTOCOL: ImageGenerationProtocol = 'openai-images'
+export const IMAGE_GENERATION_RESOLUTIONS = ['auto', '1K', '2K'] as const
+export type ImageGenerationResolution = (typeof IMAGE_GENERATION_RESOLUTIONS)[number]
+export const DEFAULT_IMAGE_GENERATION_RESOLUTION: ImageGenerationResolution = '1K'
 export const IMAGE_GENERATION_QUALITIES = ['auto', 'low', 'medium', 'high'] as const
 export type ImageGenerationQuality = (typeof IMAGE_GENERATION_QUALITIES)[number]
 export const CUSTOM_SPEECH_TO_TEXT_PROVIDER_ID = 'custom'
@@ -198,6 +201,11 @@ export type ModelProviderModelProfileV1 = {
   reasoning?: ModelProviderReasoningCapabilityV1
   /** Per-model wire-format override. Omitted means "inherit the provider's endpointFormat". */
   endpointFormat?: ModelEndpointFormat
+  /**
+   * Codex Responses Lite transport. Omitted means the standard Responses
+   * request shape; this is preset metadata rather than a user-facing toggle.
+   */
+  responsesMode?: 'lite'
 }
 export type ModelProviderImageCapabilityV1 = {
   protocol: ImageGenerationProtocol
@@ -314,6 +322,17 @@ export type KunSubagentsSettingsV1 = {
   profiles: KunSubagentProfileV1[]
 }
 
+/**
+ * Partial settings patch for the subagent roster. Scalar fields merge with the
+ * current settings, while an explicitly supplied `profiles` array replaces the
+ * roster as a whole (so deleting a profile can be represented unambiguously).
+ */
+export type KunSubagentsSettingsPatchV1 = Partial<
+  Omit<KunSubagentsSettingsV1, 'profiles'>
+> & {
+  profiles?: KunSubagentProfileV1[]
+}
+
 export type KunRuntimeSettingsV1 = {
   binaryPath: string
   port: number
@@ -377,18 +396,23 @@ export type KunRuntimeSettingsV1 = {
   smallModel?: string
   /** Provider id paired with smallModel for per-provider routing. */
   smallModelProviderId?: string
+  /** Opaque account id paired with smallModelProviderId. */
+  smallModelAccountId?: string
   /** Optional model override for thread title generation. Empty = smallModel || main model. */
   titleModel?: string
   /** Provider id paired with titleModel. */
   titleProviderId?: string
+  titleAccountId?: string
   /** Optional model override for whole-session summary generation. Empty = smallModel || main model. */
   summaryModel?: string
   /** Provider id paired with summaryModel. */
   summaryProviderId?: string
+  summaryAccountId?: string
   /** Optional model override for the code-review subagent. Empty = smallModel || main model. */
   codeReviewModel?: string
   /** Provider id paired with codeReviewModel. */
   codeReviewProviderId?: string
+  codeReviewAccountId?: string
   /** Reasoning depth for thread-title generation. Default 'off'. */
   titleReasoningEffort?: ModelReasoningEffort
   /** Reasoning depth for whole-session summary generation. Default 'off'. */
@@ -482,7 +506,9 @@ export type KunImageGenerationSettingsV1 = {
   /** Custom image API key override. Empty inherits the selected provider API key when providerId is set. */
   apiKey: string
   model: string
-  /** Default "WxH" or "auto" used when the model omits aspect ratio and size. Empty means provider default. */
+  /** Default resolution tier used when the model does not explicitly request one. */
+  defaultResolution: ImageGenerationResolution
+  /** Optional custom "WxH" override used when the model omits a resolution. Empty uses defaultResolution. */
   defaultSize: string
   /** Provider quality/precision hint. "auto" lets the provider decide. */
   quality: ImageGenerationQuality
@@ -665,7 +691,7 @@ export type KunTokenEconomySettingsPatchV1 = Partial<
 export type KunRuntimeSettingsPatchV1 = Partial<
   Omit<
     KunRuntimeSettingsV1,
-    'mcpSearch' | 'storage' | 'contextCompaction' | 'runtimeTuning' | 'tokenEconomy' | 'toolOutputLimits' | 'imageGeneration' | 'speechToText' | 'textToSpeech' | 'promptOptimization' | 'musicGeneration' | 'videoGeneration' | 'instructions' | 'computerUse' | 'quality' | 'modelProfiles'
+    'mcpSearch' | 'storage' | 'contextCompaction' | 'runtimeTuning' | 'tokenEconomy' | 'toolOutputLimits' | 'imageGeneration' | 'speechToText' | 'textToSpeech' | 'promptOptimization' | 'musicGeneration' | 'videoGeneration' | 'instructions' | 'computerUse' | 'quality' | 'modelProfiles' | 'subagents'
   >
 > & {
   mcpSearch?: Partial<KunMcpSearchSettingsV1>
@@ -684,6 +710,7 @@ export type KunRuntimeSettingsPatchV1 = Partial<
   computerUse?: Partial<KunComputerUseSettingsV1>
   quality?: Partial<KunDesignQualitySettingsV1>
   modelProfiles?: Record<string, ModelProviderModelProfilePatchV1 | null>
+  subagents?: KunSubagentsSettingsPatchV1
 }
 
 export type KunSettingsEnvelopePatchV1 = {

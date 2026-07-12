@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { ReadTracker, normalizeReadTrackerOptions } from './read-tracker.js'
+import {
+  MAX_READ_TRACKER_FILES_PER_THREAD,
+  ReadTracker,
+  normalizeReadTrackerOptions
+} from './read-tracker.js'
 import type { ToolHostContext, ToolCallLike } from '../../ports/tool-host.js'
 
 function context(turnId: string, overrides: Partial<ToolHostContext> = {}): ToolHostContext {
@@ -31,6 +35,20 @@ function editCall(path: string, oldText: string): ToolCallLike {
 }
 
 describe('ReadTracker cross-turn edits (#640)', () => {
+  it('bounds cached read files per thread', () => {
+    const tracker = new ReadTracker(normalizeReadTrackerOptions(true))
+    for (let index = 0; index <= MAX_READ_TRACKER_FILES_PER_THREAD; index += 1) {
+      tracker.observeToolResult(readResult('turn_a', `file_${index}.ts`, `const value = ${index}`))
+    }
+
+    expect(tracker.validateBeforeTool({
+      context: context('turn_b'), call: editCall('file_0.ts', 'const value = 0')
+    }).ok).toBe(false)
+    expect(tracker.validateBeforeTool({
+      context: context('turn_b'), call: editCall(`file_${MAX_READ_TRACKER_FILES_PER_THREAD}.ts`, `const value = ${MAX_READ_TRACKER_FILES_PER_THREAD}`)
+    })).toEqual({ ok: true })
+  })
+
   it('allows an edit in a later turn when the oldText is still present in the cached read', () => {
     const tracker = new ReadTracker(normalizeReadTrackerOptions(true))
     tracker.observeToolResult(readResult('turn_a', 'file.ts', 'const value = 42\n'))

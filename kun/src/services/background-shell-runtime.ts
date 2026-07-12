@@ -17,10 +17,13 @@ export type BackgroundShellRuntimeDeps = {
 
 type RunTurnFn = (threadId: string, turnId: string) => Promise<unknown>
 
+export const MAX_BACKGROUND_SHELL_SESSIONS = 512
+
 export class BackgroundShellRuntime {
   private readonly sessions = new Map<string, BackgroundShellRecord>()
   private readonly detachedIds = new Set<string>()
   private runTurn: RunTurnFn | null = null
+  private shuttingDown = false
 
   constructor(private readonly deps: BackgroundShellRuntimeDeps) {}
 
@@ -58,6 +61,28 @@ export class BackgroundShellRuntime {
     return this.stopHandler(sessionId)
   }
 
+  /**
+   * Stop every live shell owned by one thread. Thread deletion uses this
+   * before its lifecycle fence drains, so a detached command cannot outlive
+   * the conversation that authorized it.
+   */
+  async stopThread(threadId: string): Promise<number> {
+    const runningIds = [...this.sessions.values()]
+      .filter((session) => session.threadId === threadId && session.status === 'running')
+      .map((session) => session.id)
+    await Promise.allSettled(runningIds.map((sessionId) => this.stopSession(sessionId)))
+    return runningIds.length
+  }
+
+  /** Stop this runtime's active shells and prevent completion auto-turns. */
+  async shutdown(): Promise<void> {
+    this.shuttingDown = true
+    const runningIds = [...this.sessions.values()]
+      .filter((session) => session.status === 'running')
+      .map((session) => session.id)
+    await Promise.allSettled(runningIds.map((sessionId) => this.stopSession(sessionId)))
+  }
+
   markDetached(sessionId: string): void {
     this.detachedIds.add(sessionId)
   }
@@ -67,7 +92,7 @@ export class BackgroundShellRuntime {
   }
 
   upsertSession(record: BackgroundShellRecord): void {
-    this.sessions.set(record.id, record)
+    this.rememberSession(record)
   }
 
   removeSession(sessionId: string): void {
@@ -88,7 +113,7 @@ export class BackgroundShellRuntime {
   }
 
   private async handleSessionStarted(record: BackgroundShellRecord): Promise<void> {
-    this.sessions.set(record.id, record)
+    this.rememberSession(record)
     if (record.detached) this.detachedIds.add(record.id)
     await this.deps.events.record({
       kind: 'bash_session_started',
@@ -106,7 +131,7 @@ export class BackgroundShellRuntime {
   }
 
   private async handleSessionUpdated(record: BackgroundShellRecord): Promise<void> {
-    this.sessions.set(record.id, record)
+    this.rememberSession(record)
     await this.deps.events.record({
       kind: 'bash_session_updated',
       threadId: record.threadId,
@@ -126,7 +151,7 @@ export class BackgroundShellRuntime {
   }
 
   private async handleSessionSettled(record: BackgroundShellRecord): Promise<void> {
-    this.sessions.set(record.id, record)
+    this.rememberSession(record)
     await this.deps.events.record({
       kind: 'bash_session_completed',
       threadId: record.threadId,
@@ -143,7 +168,7 @@ export class BackgroundShellRuntime {
       ...this.sessionEventOutput(record),
       ...(record.error ? { error: record.error } : {})
     })
-    if (record.detached && record.status === 'completed' && record.exitCode === 0) {
+    if (!this.shuttingDown && record.detached && record.status === 'completed' && record.exitCode === 0) {
       await this.notifyAgent(record)
     }
     if (record.status !== 'running') {
@@ -152,8 +177,9 @@ export class BackgroundShellRuntime {
   }
 
   private async notifyAgent(record: BackgroundShellRecord): Promise<void> {
+    if (this.shuttingDown) return
     const thread = await this.deps.threadStore.get(record.threadId)
-    if (!thread) return
+    if (!thread || thread.status === 'archived') return
     const notice = formatBackgroundShellCompletionNotice(record)
     const displayText = backgroundShellNoticeDisplayText(record.id)
     const noticeMeta = {
@@ -181,6 +207,19 @@ export class BackgroundShellRuntime {
       }
     })
     void this.runTurn(record.threadId, started.turnId)
+  }
+
+  private rememberSession(record: BackgroundShellRecord): void {
+    this.sessions.delete(record.id)
+    this.sessions.set(record.id, record)
+    let settled = [...this.sessions.values()].filter((session) => session.status !== 'running').length
+    if (settled <= MAX_BACKGROUND_SHELL_SESSIONS) return
+    for (const [id, session] of this.sessions) {
+      if (session.status === 'running') continue
+      this.sessions.delete(id)
+      settled -= 1
+      if (settled <= MAX_BACKGROUND_SHELL_SESSIONS) return
+    }
   }
 }
 

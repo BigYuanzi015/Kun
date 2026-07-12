@@ -7,6 +7,7 @@ import type { ModelProviderModelGroup } from '@shared/kun-gui-api'
 import type { CoreRuntimeInfoJson } from '../../agent/kun-contract'
 import { resolveComposerContextWindowTokens } from '../../store/chat-store-helpers'
 import type { RightPanelMode } from '../chat/WorkbenchTopBar'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../../extensions/contribution-ids'
 
 export type WorkbenchComposerCapabilitiesOptions = {
   route: string
@@ -103,13 +104,13 @@ export function useWorkbenchComposerCapabilities({
       ? activeClawModel ?? 'auto'
       : route === 'design'
         ? designAssistantModel
-        : route === 'write' || rightPanelMode === 'sdd-ai'
+        : route === 'write' || rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.sddAi
           ? writeAssistantModel
           : composerModel
   const selectedComposerProviderId =
     route === 'design'
       ? resolvedDesignAssistantProviderId
-      : route === 'write' || rightPanelMode === 'sdd-ai'
+      : route === 'write' || rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.sddAi
         ? resolvedWriteAssistantProviderId
         : route === 'chat'
           ? composerProviderId

@@ -131,6 +131,8 @@ export type TelegramVerifyResult =
 class TelegramChannel {
   private abort: AbortController | null = null
   private running = false
+  private pollTask: Promise<void> | null = null
+  private readonly inboundTasks = new Set<Promise<void>>()
   private offset = 0
   private consecutiveErrors = 0
 
@@ -149,13 +151,29 @@ class TelegramChannel {
     if (this.running) return
     this.running = true
     this.abort = new AbortController()
-    void this.pollLoop()
+    const task = this.pollLoop().catch((error) => {
+      if (!this.running) return
+      this.deps.logError('claw-telegram', 'Telegram poll loop stopped unexpectedly.', {
+        channelId: this.channelId,
+        message: error instanceof Error ? error.message : String(error)
+      })
+    })
+    this.pollTask = task
+    void task.finally(() => {
+      if (this.pollTask === task) this.pollTask = null
+    })
   }
 
   async stop(): Promise<void> {
     this.running = false
-    this.abort?.abort()
-    this.abort = null
+    const controller = this.abort
+    controller?.abort()
+    const pollTask = this.pollTask
+    if (pollTask) await Promise.allSettled([pollTask])
+    while (this.inboundTasks.size > 0) {
+      await Promise.allSettled([...this.inboundTasks])
+    }
+    if (this.abort === controller) this.abort = null
   }
 
   /**
@@ -229,6 +247,7 @@ class TelegramChannel {
           timeout: POLL_TIMEOUT_SECONDS,
           allowed_updates: ['message']
         }, controller.signal)
+        if (!this.running) break
         if (!response.ok) {
           await this.handlePollError(response)
           continue
@@ -236,6 +255,7 @@ class TelegramChannel {
         this.consecutiveErrors = 0
         const updates = Array.isArray(response.result) ? response.result : []
         for (const update of updates) {
+          if (!this.running) break
           this.offset = update.update_id + 1
           this.dispatchUpdate(update)
         }
@@ -254,6 +274,7 @@ class TelegramChannel {
    * Fire-and-forget: the agent loop runs independently; errors here only log.
    */
   private dispatchUpdate(update: TelegramUpdate): void {
+    if (!this.running) return
     const message = update.message ?? update.edited_message
     if (!message) return
     const chat = message.chat
@@ -280,22 +301,23 @@ class TelegramChannel {
 
     if (!payload.text && !photo) return
 
-    void (async () => {
+    const task = (async () => {
       if (photo) {
         const downloaded = await this.downloadLargestPhoto(photo, chat.id, message.message_id)
         if (downloaded) payload.localFilePath = downloaded
         if (!payload.text) payload.text = '[image]'
       }
-      try {
-        await this.deps.onInbound(payload)
-      } catch (error) {
-        this.deps.logError('claw-telegram', 'Inbound handler threw for a Telegram update.', {
-          channelId: this.channelId,
-          chatId: payload.chatId,
-          message: error instanceof Error ? error.message : String(error)
-        })
-      }
-    })()
+      if (!this.running) return
+      await this.deps.onInbound(payload)
+    })().catch((error) => {
+      this.deps.logError('claw-telegram', 'Inbound handler threw for a Telegram update.', {
+        channelId: this.channelId,
+        chatId: payload.chatId,
+        message: error instanceof Error ? error.message : String(error)
+      })
+    })
+    this.inboundTasks.add(task)
+    void task.finally(() => this.inboundTasks.delete(task))
   }
 
   private isChatAllowed(chatId: number): boolean {
@@ -338,7 +360,11 @@ class TelegramChannel {
         return undefined
       }
       const downloadUrl = `${TELEGRAM_API_BASE}/file/bot${this.token}/${fileMeta.result.file_path}`
-      const res = await telegramFetch(downloadUrl, { signal: AbortSignal.timeout(30_000) })
+      const timeoutSignal = AbortSignal.timeout(30_000)
+      const signal = this.abort
+        ? AbortSignal.any([this.abort.signal, timeoutSignal])
+        : timeoutSignal
+      const res = await telegramFetch(downloadUrl, { signal })
       if (!res.ok) {
         this.deps.logError('claw-telegram', 'Telegram file download returned a non-OK status.', {
           channelId: this.channelId,
@@ -374,17 +400,17 @@ class TelegramChannel {
     }
   }
 
-  private async handlePollError(response: { ok: false; message: string; retryAfter?: number }): Promise<void> {
+  private async handlePollError(response: { ok: false; message: string; retryAfterMs?: number }): Promise<void> {
     this.consecutiveErrors += 1
     this.deps.logError('claw-telegram', 'Telegram getUpdates failed.', {
       channelId: this.channelId,
       message: response.message,
-      retryAfter: response.retryAfter
+      retryAfterMs: response.retryAfterMs
     })
-    const wait = response.retryAfter
-      ? Math.min(MAX_BACKOFF_MS, response.retryAfter * 1000)
+    const wait = response.retryAfterMs
+      ? Math.min(MAX_BACKOFF_MS, response.retryAfterMs)
       : this.nextBackoff()
-    await sleep(wait)
+    await sleep(wait, this.abort?.signal)
   }
 
   private async handlePollException(error: unknown): Promise<void> {
@@ -394,7 +420,7 @@ class TelegramChannel {
       channelId: this.channelId,
       message: error instanceof Error ? error.message : String(error)
     })
-    await sleep(this.nextBackoff())
+    await sleep(this.nextBackoff(), this.abort?.signal)
   }
 
   /** Exponential backoff with jitter, clamped to [1.5s, 30s]. */
@@ -408,7 +434,7 @@ class TelegramChannel {
     method: string,
     body: Record<string, unknown>,
     signal?: AbortSignal
-  ): Promise<{ ok: true; result?: T } | { ok: false; message: string; retryAfter?: number }> {
+  ): Promise<{ ok: true; result?: T } | { ok: false; message: string; retryAfterMs?: number }> {
     const url = `${TELEGRAM_API_BASE}/bot${this.token}/${method}`
     try {
       const res = await telegramFetch(url, {
@@ -426,7 +452,7 @@ class TelegramChannel {
         return {
           ok: false,
           message: data.description || `HTTP ${res.status}`,
-          retryAfter: typeof retryAfter === 'number' ? retryAfter * 1000 : undefined
+          retryAfterMs: typeof retryAfter === 'number' ? retryAfter * 1000 : undefined
         }
       }
       return { ok: true, result: data.result }
@@ -444,7 +470,7 @@ export type TelegramRuntime = {
   /** Reconciles running channels against the current settings. */
   sync(settings: AppSettingsV1): void
   /** Stops every running channel. */
-  stop(): void
+  stop(): Promise<void>
   /** Whether a channel is currently connected and can push outbound messages. */
   has(channelId: string): boolean
   /** Sends a text reply through the channel owning this bot. */
@@ -496,7 +522,10 @@ export async function verifyTelegramBotToken(botToken: string): Promise<Telegram
 export function createTelegramRuntime(deps: TelegramRuntimeDeps): TelegramRuntime {
   const channels = new Map<string, TelegramChannel>()
   const channelKeys = new Map<string, string>()
+  const syncTasks = new Set<Promise<void>>()
   let syncVersion = 0
+  let stopped = false
+  let stopPromise: Promise<void> | null = null
 
   function resolveTargets(settings: AppSettingsV1): Array<{ channel: ClawImChannelV1; token: string; allowed: Set<number> }> {
     if (!settings.claw.enabled || !settings.claw.im.enabled) return []
@@ -529,64 +558,90 @@ export function createTelegramRuntime(deps: TelegramRuntimeDeps): TelegramRuntim
     await channel.stop().catch(() => undefined)
   }
 
+  function trackSyncTask(task: Promise<void>): void {
+    const tracked = task.catch((error) => {
+      deps.logError('claw-telegram', 'Failed to reconcile Telegram channels.', {
+        message: error instanceof Error ? error.message : String(error)
+      })
+    })
+    syncTasks.add(tracked)
+    void tracked.finally(() => syncTasks.delete(tracked))
+  }
+
+  async function reconcile(
+    settings: AppSettingsV1,
+    version: number
+  ): Promise<void> {
+    const targets = resolveTargets(settings)
+    const targetMap = new Map(targets.map((entry) => [entry.channel.id, entry]))
+
+    await Promise.all(
+      [...channels.keys()]
+        .filter((channelId) => !targetMap.has(channelId))
+        .map((channelId) => closeChannel(channelId))
+    )
+    if (stopped || version !== syncVersion) return
+
+    for (const target of targets) {
+      if (stopped || version !== syncVersion) return
+      const nextKey = buildKey(target.channel, target.token, target.allowed)
+      const currentKey = channelKeys.get(target.channel.id)
+      if (channels.has(target.channel.id) && currentKey === nextKey) continue
+      if (channels.has(target.channel.id)) {
+        await closeChannel(target.channel.id)
+        if (stopped || version !== syncVersion) return
+      }
+      const channel = new TelegramChannel(
+        target.channel.id,
+        target.token,
+        target.allowed,
+        {
+          logError: deps.logError,
+          onInbound: (payload) => deps.onInbound(payload)
+        }
+      )
+      try {
+        await channel.start()
+        if (stopped || version !== syncVersion) {
+          await channel.stop().catch(() => undefined)
+          return
+        }
+        channels.set(target.channel.id, channel)
+        channelKeys.set(target.channel.id, nextKey)
+      } catch (error) {
+        deps.logError('claw-telegram', 'Failed to start a Telegram channel.', {
+          channelId: target.channel.id,
+          message: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
+  }
+
   return {
     sync(settings: AppSettingsV1): void {
+      if (stopped) return
       const version = ++syncVersion
-      const targets = resolveTargets(settings)
-      const targetMap = new Map(targets.map((entry) => [entry.channel.id, entry]))
-
-      // Stop channels that were removed or disabled.
-      void Promise.all(
-        [...channels.keys()]
-          .filter((channelId) => !targetMap.has(channelId))
-          .map((channelId) => closeChannel(channelId))
-      )
-
-      // Start or restart channels whose credentials changed.
-      void (async () => {
-        for (const target of targets) {
-          if (version !== syncVersion) return
-          const nextKey = buildKey(target.channel, target.token, target.allowed)
-          const currentKey = channelKeys.get(target.channel.id)
-          if (channels.has(target.channel.id) && currentKey === nextKey) continue
-          if (channels.has(target.channel.id)) {
-            await closeChannel(target.channel.id)
-            if (version !== syncVersion) return
-          }
-          const channel = new TelegramChannel(
-            target.channel.id,
-            target.token,
-            target.allowed,
-            {
-              logError: deps.logError,
-              onInbound: (payload) => deps.onInbound(payload)
-            }
-          )
-          try {
-            await channel.start()
-            if (version !== syncVersion) {
-              await channel.stop().catch(() => undefined)
-              return
-            }
-            channels.set(target.channel.id, channel)
-            channelKeys.set(target.channel.id, nextKey)
-          } catch (error) {
-            deps.logError('claw-telegram', 'Failed to start a Telegram channel.', {
-              channelId: target.channel.id,
-              message: error instanceof Error ? error.message : String(error)
-            })
-          }
-        }
-      })()
+      trackSyncTask(reconcile(settings, version))
     },
 
-    stop(): void {
-      syncVersion += 1 // invalidate any in-flight sync
-      for (const channel of channels.values()) {
-        void channel.stop().catch(() => undefined)
-      }
+    stop(): Promise<void> {
+      if (stopPromise) return stopPromise
+      stopped = true
+      syncVersion += 1
+      const activeChannels = [...channels.values()]
       channels.clear()
       channelKeys.clear()
+      stopPromise = (async () => {
+        await Promise.allSettled(activeChannels.map((channel) => channel.stop()))
+        while (syncTasks.size > 0) {
+          await Promise.allSettled([...syncTasks])
+        }
+        const lateChannels = [...channels.values()]
+        channels.clear()
+        channelKeys.clear()
+        await Promise.allSettled(lateChannels.map((channel) => channel.stop()))
+      })()
+      return stopPromise
     },
 
     has(channelId: string): boolean {
@@ -686,6 +741,16 @@ function splitForTelegram(text: string): string[] {
   return chunks
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(finish, ms)
+    const onAbort = (): void => finish()
+    function finish(): void {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }

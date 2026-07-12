@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { PanelRightClose, Shapes } from 'lucide-react'
 import { CanvasViewport } from './CanvasViewport'
@@ -11,6 +11,10 @@ import {
   codeCanvasErrorKey,
   codeCanvasThreadBaseDir
 } from '../../../design/canvas/code-canvas'
+import {
+  exportActiveCodeCanvasToWorkspace,
+  type CanvasAgentExportRequest
+} from '../../../design/canvas/canvas-export'
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ')
@@ -48,11 +52,27 @@ export function CodeCanvasPanel({ workspaceRoot, activeThreadId, onCollapse, cla
   const executeOptions = useMemo<ExecuteOpsOptions>(
     () => ({
       screenFallback: 'plain-frame',
+      shapePreset: 'diagram',
       ...(feedbackKey ? { lintFeedbackKey: feedbackKey } : {})
     }),
     [feedbackKey]
   )
-  useApplyShapeOpsLive(ready, undefined, executeOptions, feedbackKey, activeThreadId)
+  const exportCanvas = useCallback(
+    (request: CanvasAgentExportRequest) => exportActiveCodeCanvasToWorkspace({
+      request,
+      workspaceRoot
+    }),
+    [workspaceRoot]
+  )
+  useApplyShapeOpsLive(
+    ready,
+    undefined,
+    executeOptions,
+    feedbackKey,
+    activeThreadId,
+    undefined,
+    exportCanvas
+  )
 
   return (
     <aside className={codeCanvasPanelShellClass(className)}>

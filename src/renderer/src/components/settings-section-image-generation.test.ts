@@ -26,14 +26,19 @@ const labels: Record<string, string> = {
   imageGenModelDesc: 'Model id sent to the provider',
   imageGenModelQualityHint: 'Prefer GPT Image or Gemini image models for design drafts and infographics',
   imageGenModelPlaceholder: 'gpt-image-1',
-  imageGenQuality: 'Image precision',
-  imageGenQualityDesc: 'Quality hint sent to supported image APIs',
+  imageGenQuality: 'Generation quality',
+  imageGenQualityDesc: 'Quality hint independent from output resolution',
   imageGenQuality_auto: 'Auto',
   imageGenQuality_low: 'Low',
   imageGenQuality_medium: 'Medium',
   imageGenQuality_high: 'High',
-  imageGenDefaultSize: 'Default size',
-  imageGenDefaultSizeDesc: 'Default size description',
+  imageGenDefaultResolution: 'Default resolution',
+  imageGenDefaultResolutionDesc: 'Used when the assistant does not specify a resolution',
+  imageGenDefaultResolution_auto: 'Auto',
+  imageGenDefaultResolution_1K: '1K',
+  imageGenDefaultResolution_2K: '2K',
+  imageGenDefaultSize: 'Custom default dimensions',
+  imageGenDefaultSizeDesc: 'Overrides the default resolution when set',
   imageGenTimeout: 'Timeout (ms)',
   imageGenTimeoutDesc: 'Timeout description',
   showSecret: 'Show',
@@ -56,6 +61,7 @@ describe('ImageGenerationSettingsSection', () => {
             baseUrl: 'https://images.example.com/v1',
             apiKey: 'sk-image',
             model: 'image-model',
+            defaultResolution: '2K',
             defaultSize: '1536x1024',
             quality: 'high',
             timeoutMs: 240000
@@ -68,12 +74,16 @@ describe('ImageGenerationSettingsSection', () => {
     expect(html).toContain('Image generation')
     expect(html).toContain('Enables agent chats and Write infographics')
     expect(html).toContain('Prefer GPT Image or Gemini image models for design drafts and infographics')
-    expect(html).toContain('Image precision')
-    expect(html).toContain('Quality hint sent to supported image APIs')
+    expect(html).toContain('Generation quality')
+    expect(html).toContain('Quality hint independent from output resolution')
+    expect(html).toContain('Default resolution')
+    expect(html).toContain('Custom default dimensions')
+    expect(html).toContain('Overrides the default resolution when set')
     expect(html).toContain('value="https://images.example.com/v1"')
     expect(html).toContain('value="sk-image"')
     expect(html).toContain('value="image-model"')
     expect(html).toContain('value="high" selected=""')
+    expect(html).toContain('value="2K" selected=""')
     expect(html).toContain('value="1536x1024"')
     expect(html).toContain('value="240000"')
   })

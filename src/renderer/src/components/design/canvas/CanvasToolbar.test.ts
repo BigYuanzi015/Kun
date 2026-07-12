@@ -9,7 +9,8 @@ describe('CanvasToolbar prototype playback', () => {
     const html = renderToStaticMarkup(
       createElement(CanvasToolbar, {
         workspaceRoot: '/workspace',
-        surface: 'code'
+        surface: 'code',
+        onExportCanvas: async () => {}
       })
     )
 
@@ -17,6 +18,7 @@ describe('CanvasToolbar prototype playback', () => {
     expect(html).toContain('aria-label="Frame"')
     expect(html).toContain('aria-label="AI image"')
     expect(html).toContain('aria-label="Upload image to whiteboard"')
+    expect(html).toContain('aria-label="Export whiteboard"')
     expect(html).not.toContain('aria-label="AI image slot"')
     expect(html).not.toContain('aria-label="Upload files to canvas"')
     expect(html).not.toContain('aria-label="Screen"')

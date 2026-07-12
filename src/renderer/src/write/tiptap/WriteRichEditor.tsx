@@ -96,6 +96,7 @@ type Props = {
   value: string
   workspaceRoot?: string | null
   filePath?: string | null
+  documentEpoch?: number
   imageDirectory?: string | null
   readOnly?: boolean
   /** Render SDD requirement headings with status pills (SDD draft editor). */
@@ -250,6 +251,7 @@ export function WriteRichEditor({
   value,
   workspaceRoot,
   filePath,
+  documentEpoch,
   imageDirectory,
   readOnly = false,
   requirementBadges = false,
@@ -276,6 +278,7 @@ export function WriteRichEditor({
   const editorRef = useRef<Editor | null>(null)
   const workspaceRootRef = useRef(workspaceRoot ?? '')
   const filePathRef = useRef(filePath ?? '')
+  const documentEpochRef = useRef(documentEpoch ?? 0)
   const imageDirectoryRef = useRef(imageDirectory ?? '')
   const readOnlyRef = useRef(readOnly)
   const completionModelRef = useRef(completionModel)
@@ -298,6 +301,7 @@ export function WriteRichEditor({
 
   workspaceRootRef.current = workspaceRoot ?? ''
   filePathRef.current = filePath ?? ''
+  documentEpochRef.current = documentEpoch ?? 0
   imageDirectoryRef.current = imageDirectory ?? ''
   readOnlyRef.current = readOnly
   completionModelRef.current = completionModel
@@ -375,6 +379,7 @@ export function WriteRichEditor({
       WritePasteImage.configure({
         getWorkspaceRoot: () => workspaceRootRef.current,
         getFilePath: () => filePathRef.current,
+        getDocumentEpoch: () => documentEpochRef.current,
         getImageDirectory: () => imageDirectoryRef.current,
         isReadOnly: () => readOnlyRef.current,
         onSaved: () => onImagePasteSavedRef.current?.(),

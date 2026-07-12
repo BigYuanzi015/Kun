@@ -194,6 +194,8 @@ export interface AssembleSdkOptionsParams {
   settingSources?: SdkSettingSource[]
   pathToClaudeCodeExecutable?: string
   abortController?: AbortController
+  /** Native Kun maxSteps mapped onto the Agent SDK's loop ceiling. */
+  maxTurns?: number
 }
 
 export function assembleSdkOptions(params: AssembleSdkOptionsParams): SdkQueryOptions {
@@ -202,6 +204,10 @@ export function assembleSdkOptions(params: AssembleSdkOptionsParams): SdkQueryOp
   const options: SdkQueryOptions = {
     cwd: params.cwd,
     systemPrompt: buildClaudeSystemPrompt(params.kunSystemPrompt, params.threadPersona),
+    // `allowedTools` is an auto-approval list, not an availability boundary.
+    // Dedicated artifact turns need `tools: []` so Claude Code cannot expose
+    // native Read/Write/Edit/Bash alongside the structured kun MCP tools.
+    ...(params.allowSdkBuiltins === false ? { tools: [], strictMcpConfig: true } : {}),
     allowedTools,
     disallowedTools: [...DEFAULT_SDK_DISALLOWED_TOOLS],
     permissionMode: mapApprovalPolicyToPermissionMode(
@@ -222,7 +228,12 @@ export function assembleSdkOptions(params: AssembleSdkOptionsParams): SdkQueryOp
     ...(params.pathToClaudeCodeExecutable
       ? { pathToClaudeCodeExecutable: params.pathToClaudeCodeExecutable }
       : {}),
-    ...(params.abortController ? { abortController: params.abortController } : {})
+    ...(params.abortController ? { abortController: params.abortController } : {}),
+    ...(params.maxTurns !== undefined
+      ? { maxTurns: Number.isFinite(params.maxTurns) && params.maxTurns > 0
+          ? Math.max(1, Math.floor(params.maxTurns))
+          : 1 }
+      : {})
   }
   return options
 }

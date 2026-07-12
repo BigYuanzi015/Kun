@@ -6,6 +6,9 @@ export type ReadTrackerOptions = {
   requireOldTextInRead?: boolean
 }
 
+export const MAX_READ_TRACKER_THREADS = 128
+export const MAX_READ_TRACKER_FILES_PER_THREAD = 128
+
 type ReadRecord = {
   absolutePath: string
   relativePath?: string
@@ -39,8 +42,18 @@ export class ReadTracker {
       ...(typeof output.content === 'string' ? { content: output.content } : {})
     }
     const threadRecords = this.records.get(input.context.threadId) ?? new Map<string, ReadRecord>()
+    threadRecords.delete(absolutePath)
     threadRecords.set(absolutePath, record)
+    if (threadRecords.size > MAX_READ_TRACKER_FILES_PER_THREAD) {
+      const oldest = threadRecords.keys().next().value
+      if (oldest !== undefined) threadRecords.delete(oldest)
+    }
+    this.records.delete(input.context.threadId)
     this.records.set(input.context.threadId, threadRecords)
+    if (this.records.size > MAX_READ_TRACKER_THREADS) {
+      const oldest = this.records.keys().next().value
+      if (oldest !== undefined) this.records.delete(oldest)
+    }
   }
 
   validateBeforeTool(input: { context: ToolHostContext; call: ToolCallLike }): { ok: true } | { ok: false; message: string } {

@@ -1,19 +1,27 @@
+import { createHash } from 'node:crypto'
 import { LocalToolHost, type LocalTool } from './local-tool-host.js'
+import { validateStructuredArgumentBudget } from './structured-argument-budget.js'
 
 export const DESIGN_CANVAS_TOOL_NAME = 'design_canvas'
 export const DESIGN_CREATE_SCREEN_TOOL_NAME = 'design_create_screen'
 export const DESIGN_UPDATE_SHAPES_TOOL_NAME = 'design_update_shapes'
 export const DESIGN_ARRANGE_TOOL_NAME = 'design_arrange'
-export const DESIGN_SYSTEM_TEMPLATE_TOOL_NAME = 'design_system_template'
+export const DESIGN_EXPORT_CANVAS_TOOL_NAME = 'design_export_canvas'
+export const DESIGN_SYSTEM_TOOL_NAME = 'design_system'
+/** @deprecated Source-compatible alias; the advertised tool is now `design_system`. */
+export const DESIGN_SYSTEM_TEMPLATE_TOOL_NAME = DESIGN_SYSTEM_TOOL_NAME
 export const DESIGN_VALIDATE_TOOL_NAME = 'design_validate'
+export const DESIGN_SVG_CREATE_TOOL_NAME = 'design_svg_create'
 
 export const DESIGN_CANVAS_MUTATION_TOOL_NAMES = [
   DESIGN_CANVAS_TOOL_NAME,
   DESIGN_CREATE_SCREEN_TOOL_NAME,
   DESIGN_UPDATE_SHAPES_TOOL_NAME,
   DESIGN_ARRANGE_TOOL_NAME,
+  DESIGN_EXPORT_CANVAS_TOOL_NAME,
   DESIGN_SYSTEM_TEMPLATE_TOOL_NAME,
-  DESIGN_VALIDATE_TOOL_NAME
+  DESIGN_VALIDATE_TOOL_NAME,
+  DESIGN_SVG_CREATE_TOOL_NAME
 ] as const
 
 type DesignCanvasAction = 'create_board' | 'add_screen' | 'update_shapes'
@@ -29,6 +37,14 @@ type DesignScreenSpec = {
 
 const SHOULD_ADVERTISE_DESIGN_TOOL = (context: { guiDesignCanvas?: boolean }) =>
   context.guiDesignCanvas === true
+
+export const DESIGN_UPDATE_SHAPES_MAX_OPS = 100
+const DESIGN_UPDATE_SHAPES_MAX_ARGUMENT_BYTES = 512 * 1024
+const DESIGN_UPDATE_SHAPES_MAX_NODES = 2_000
+const DESIGN_UPDATE_SHAPES_MAX_DEPTH = 32
+
+const finiteNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined
 
 const DEVICE_PRESET_DESCRIPTION =
   'Optional explicit screen preset. Omit it unless the user asks for a different device; the renderer follows the current Design target (Web -> desktop 1280x800, App -> mobile 390x844).'
@@ -48,9 +64,71 @@ export function buildDesignCanvasLocalTools(): LocalTool[] {
     createDesignCreateScreenTool(),
     createDesignUpdateShapesTool(),
     createDesignArrangeTool(),
+    createDesignExportCanvasTool(),
     createDesignSystemTemplateTool(),
-    createDesignValidateTool()
+    createDesignValidateTool(),
+    createDesignSvgCreateTool()
   ]
+}
+
+export function createDesignSvgCreateTool(): LocalTool {
+  return LocalToolHost.defineTool({
+    name: DESIGN_SVG_CREATE_TOOL_NAME,
+    description: [
+      'Create a first-class standalone SVG or SVG-motion artifact on the Design whiteboard.',
+      'Use this for vector logos, icons, loaders, illustrations, path animation, and reusable animated assets; do not use it for HTML product screens or raster imagery.',
+      'After this call the renderer reserves and selects the SVG artifact, then starts a dedicated SVG turn with structured edit and animation tools.'
+    ].join(' '),
+    // The renderer reserves an SVG file when it applies this result. Model the
+    // operation as a file mutation so read-only/external sandboxes cannot expose
+    // a tool whose GUI-side continuation would violate the turn policy.
+    toolKind: 'file_change',
+    policy: 'auto',
+    shouldAdvertise: (context) => context.guiDesignCanvas === true && context.guiDesignMode === true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        brief: { type: 'string' },
+        x: { type: 'number', description: CANVAS_SNAPSHOT_PLACEMENT_DESCRIPTION },
+        y: { type: 'number', description: CANVAS_SNAPSHOT_PLACEMENT_DESCRIPTION },
+        width: { type: 'number', minimum: 64, maximum: 4096, description: 'SVG viewBox and whiteboard frame width. Defaults to 640.' },
+        height: { type: 'number', minimum: 64, maximum: 4096, description: 'SVG viewBox and whiteboard frame height. Defaults to 480.' }
+      },
+      required: ['name', 'brief'],
+      additionalProperties: false
+    },
+    execute: async (args, context) => {
+      const name = stringArg(args.name)
+      const brief = stringArg(args.brief)
+      if (!name || !brief) return designToolError('design_svg_create requires name and brief')
+      const width = finiteNumber(args.width)
+      const height = finiteNumber(args.height)
+      if (width !== undefined && (width < 64 || width > 4096)) {
+        return designToolError('design_svg_create width must be between 64 and 4096')
+      }
+      if (height !== undefined && (height < 64 || height > 4096)) {
+        return designToolError('design_svg_create height must be between 64 and 4096')
+      }
+      // Stable across SSE replay, renderer remounts, and app restarts. The
+      // renderer uses this id as the durable exactly-once key for artifact
+      // reservation instead of inventing a new random directory on each replay.
+      const artifactId = `svg-${createHash('sha256')
+        .update(`${context.threadId}\0${context.turnId}\0${name}\0${brief}`)
+        .digest('hex')
+        .slice(0, 12)}`
+      return designToolOutput(DESIGN_SVG_CREATE_TOOL_NAME, 'create_svg', [{
+        op: 'add-svg-artifact',
+        artifactId,
+        name,
+        brief,
+        ...(finiteNumber(args.x) !== undefined ? { x: finiteNumber(args.x) } : {}),
+        ...(finiteNumber(args.y) !== undefined ? { y: finiteNumber(args.y) } : {}),
+        ...(width !== undefined ? { width } : {}),
+        ...(height !== undefined ? { height } : {})
+      }])
+    }
+  })
 }
 
 export function createDesignCanvasTool(): LocalTool {
@@ -95,10 +173,10 @@ export function createDesignCanvasTool(): LocalTool {
         },
         ops: {
           description:
-            'For update_shapes: a ShapeOp object or array of ShapeOps. ShapeOps are validated and applied by the renderer.',
+            'For update_shapes: a ShapeOp object or array of at most 100 ShapeOps. Prefer batches of 20-50 related operations and continue larger work in subsequent calls. ShapeOps are validated and applied by the renderer.',
           anyOf: [
             { type: 'object', additionalProperties: true },
-            { type: 'array', items: { type: 'object', additionalProperties: true } }
+            { type: 'array', maxItems: DESIGN_UPDATE_SHAPES_MAX_OPS, items: { type: 'object', additionalProperties: true } }
           ]
         }
       },
@@ -115,6 +193,10 @@ export function createDesignCanvasTool(): LocalTool {
           },
           isError: true
         }
+      }
+      if (normalized.action === 'update_shapes') {
+        const budgetError = designShapeMutationBudgetError(args, normalized.ops)
+        if (budgetError) return designToolError(budgetError)
       }
       return {
         output: {
@@ -198,7 +280,8 @@ export function createDesignUpdateShapesTool(): LocalTool {
     name: DESIGN_UPDATE_SHAPES_TOOL_NAME,
     description: [
       'Apply validated shape operations to the active design canvas: add, update, delete, move, resize, style, token, component, and image changes.',
-      'Use this for whiteboard/vector edits. Use design_create_screen for new screen frames and design_system_template for style-kit boards. For any add/move/resize coordinates, inspect the current canvas snapshot first and preserve existing object bounds unless the user asked to replace them.'
+      'Use this for whiteboard/vector edits. Prefer batches of 20-50 related operations and continue larger work in subsequent calls; one call accepts at most 100 operations.',
+      'Use design_create_screen for new screen frames and design_system for the project design-system file. For any add/move/resize coordinates, inspect the current canvas snapshot first and preserve existing object bounds unless the user asked to replace them.'
     ].join(' '),
     toolKind: 'tool_call',
     policy: 'auto',
@@ -211,7 +294,11 @@ export function createDesignUpdateShapesTool(): LocalTool {
             'Preferred: a ShapeOp object or array of ShapeOps. The renderer validates and applies each op atomically. If omitted, a direct top-level ShapeOp is also accepted.',
           anyOf: [
             { type: 'object', additionalProperties: true },
-            { type: 'array', items: { type: 'object', additionalProperties: true } }
+            {
+              type: 'array',
+              maxItems: DESIGN_UPDATE_SHAPES_MAX_OPS,
+              items: { type: 'object', additionalProperties: true }
+            }
           ]
         },
         op: {
@@ -224,7 +311,65 @@ export function createDesignUpdateShapesTool(): LocalTool {
     execute: async (args) => {
       const ops = normalizeDesignUpdateShapeOps(args)
       if (!ops) return designToolError('design_update_shapes requires ops as an object or array')
+      const budgetError = designShapeMutationBudgetError(args, ops)
+      if (budgetError) return designToolError(budgetError)
       return designToolOutput(DESIGN_UPDATE_SHAPES_TOOL_NAME, 'update_shapes', ops)
+    }
+  })
+}
+
+export function createDesignExportCanvasTool(): LocalTool {
+  return LocalToolHost.defineTool({
+    name: DESIGN_EXPORT_CANVAS_TOOL_NAME,
+    description: [
+      'Export the current Code sidebar whiteboard as a real PNG or SVG workspace file that the GUI can show in the conversation.',
+      'Use this only when the user explicitly asks for an image, PNG, SVG, export, or file copy of the whiteboard.',
+      'Create or update the editable diagram with design_update_shapes first, then call this tool. Do not replace an editable architecture diagram with generate_image.'
+    ].join(' '),
+    // The tool result is a durable renderer request. The renderer performs the
+    // actual file write after the latest shape operations have painted.
+    toolKind: 'file_change',
+    policy: 'auto',
+    shouldAdvertise: (context) => context.guiDesignCanvas === true && context.guiDesignMode !== true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        format: {
+          type: 'string',
+          enum: ['png', 'svg'],
+          description: 'Export format. Omit it when the user asks for an image; PNG is the default.'
+        },
+        name: {
+          type: 'string',
+          maxLength: 80,
+          description: 'Optional short filename stem. The renderer adds a stable suffix and the selected extension.'
+        }
+      },
+      additionalProperties: false
+    },
+    execute: async (args, context) => {
+      const format = oneOf(args.format, ['png', 'svg']) ?? 'png'
+      const requestedName = stringArg(args.name)?.replace(/\.(?:png|svg)$/i, '')
+      const stem = safeCanvasExportStem(requestedName || 'kun-whiteboard')
+      const suffix = createHash('sha256')
+        .update(`${context.threadId}\0${context.turnId}\0${stem}\0${format}`)
+        .digest('hex')
+        .slice(0, 12)
+      const fileName = `${stem}-${suffix}.${format}`
+      const relativePath = `.deepseekgui-images/${fileName}`
+      const mimeType = format === 'png' ? 'image/png' : 'image/svg+xml'
+
+      return {
+        output: {
+          ok: true,
+          tool: DESIGN_EXPORT_CANVAS_TOOL_NAME,
+          action: 'export_canvas',
+          exportRequest: { format, fileName, relativePath },
+          generatedFiles: [{ name: fileName, relativePath, mimeType }],
+          ops: [],
+          message: `Queued the current whiteboard for ${format.toUpperCase()} export at ${relativePath}.`
+        }
+      }
     }
   })
 }
@@ -277,8 +422,8 @@ export function createDesignSystemTemplateTool(): LocalTool {
   return LocalToolHost.defineTool({
     name: DESIGN_SYSTEM_TEMPLATE_TOOL_NAME,
     description: [
-      'Create, update, apply, or validate a reusable design-system style-kit board.',
-      'The renderer turns this into tokens, reusable component specimens, color/type/spacing samples, and a cohesive template board. Omit x/y unless the current canvas snapshot shows a precise empty slot; omitted coordinates are auto-placed away from existing canvas content.'
+      'Create, structurally update, apply, or validate the Google-compatible project design system at root DESIGN.md with expected-hash conflict protection.',
+      'The Design canvas reads and renders that file with its fixed built-in specimen board. It preserves Markdown prose and unknown extensions and never draws an HTML, SVG, or freeform style-kit board.'
     ].join(' '),
     toolKind: 'tool_call',
     policy: 'auto',
@@ -287,6 +432,7 @@ export function createDesignSystemTemplateTool(): LocalTool {
       type: 'object',
       properties: {
         operation: { type: 'string', enum: ['create', 'update', 'apply', 'validate'] },
+        expectedHash: { type: 'string', description: 'Last observed exact DESIGN.md source hash. Required for conflict-safe updates when known.' },
         name: { type: 'string' },
         seedColor: { type: 'string', description: 'Primary brand color as #RRGGBB. Defaults to a calibrated blue.' },
         mode: { type: 'string', enum: ['light', 'dark', 'both'] },
@@ -304,8 +450,53 @@ export function createDesignSystemTemplateTool(): LocalTool {
           }
         },
         targetIds: { type: 'array', items: { type: 'string' } },
-        x: { type: 'number', description: CANVAS_SNAPSHOT_PLACEMENT_DESCRIPTION },
-        y: { type: 'number', description: CANVAS_SNAPSHOT_PLACEMENT_DESCRIPTION },
+        tokens: {
+          type: 'array',
+          description: 'Exact project tokens to upsert.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              kind: { type: 'string', enum: ['color', 'gradient', 'type', 'space', 'radius', 'shadow'] },
+              value: {}
+            },
+            required: ['name', 'kind', 'value'],
+            additionalProperties: false
+          }
+        },
+        captureComponents: {
+          type: 'array',
+          description: 'Capture existing canvas subtrees as project component definitions.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              fromId: { type: 'string' },
+              slots: { type: 'array', items: { type: 'object', additionalProperties: true } }
+            },
+            required: ['name', 'fromId'],
+            additionalProperties: false
+          }
+        },
+        variants: {
+          type: 'array',
+          description: 'Variant property overrides keyed by stable component-layer ids.',
+          items: {
+            type: 'object',
+            properties: {
+              component: { type: 'string' },
+              key: { type: 'string' },
+              selection: { type: 'object', additionalProperties: { type: 'string' } },
+              overrides: { type: 'object', additionalProperties: { type: 'object', additionalProperties: true } }
+            },
+            required: ['component', 'key', 'selection', 'overrides'],
+            additionalProperties: false
+          }
+        },
+        deleteTokenNames: { type: 'array', items: { type: 'string' } },
+        deleteComponentNames: { type: 'array', items: { type: 'string' } },
+        x: { type: 'number', description: 'Deprecated and ignored; the built-in board owns its placement.' },
+        y: { type: 'number', description: 'Deprecated and ignored; the built-in board owns its placement.' },
         width: { type: 'number' },
         height: { type: 'number' },
         dryRun: { type: 'boolean' }
@@ -320,12 +511,18 @@ export function createDesignSystemTemplateTool(): LocalTool {
             op: 'lint-design-system',
             ...(Array.isArray(args.targetIds) ? { targetIds: args.targetIds.filter((v): v is string => typeof v === 'string') } : {})
           }
-        ])
+        ], { operation: 'validate' })
       }
-      return designToolOutput(DESIGN_SYSTEM_TEMPLATE_TOOL_NAME, 'design_system_template', [
-        {
+      const structuredOps = normalizeStructuredDesignSystemOps(args)
+      const hasFoundationInput = Boolean(
+        stringArg(args.name) || stringArg(args.seedColor) || args.mode || args.template || args.tone
+      )
+      const ops: Record<string, unknown>[] = []
+      if (hasFoundationInput || structuredOps.length === 0) {
+        ops.push({
           op: 'design-system-template',
           operation,
+          ...(stringArg(args.expectedHash) ? { expectedHash: stringArg(args.expectedHash) } : {}),
           ...(stringArg(args.name) ? { name: stringArg(args.name) } : {}),
           ...(stringArg(args.seedColor) ? { seedColor: stringArg(args.seedColor) } : {}),
           ...(oneOf(args.mode, ['light', 'dark', 'both']) ? { mode: oneOf(args.mode, ['light', 'dark', 'both']) } : {}),
@@ -337,13 +534,14 @@ export function createDesignSystemTemplateTool(): LocalTool {
             : {}),
           ...(Array.isArray(args.sections) ? { sections: args.sections.filter((v): v is string => typeof v === 'string') } : {}),
           ...(Array.isArray(args.targetIds) ? { targetIds: args.targetIds.filter((v): v is string => typeof v === 'string') } : {}),
-          ...(numberArg(args.x) !== undefined ? { x: numberArg(args.x) } : {}),
-          ...(numberArg(args.y) !== undefined ? { y: numberArg(args.y) } : {}),
-          ...(numberArg(args.width) !== undefined ? { width: numberArg(args.width) } : {}),
-          ...(numberArg(args.height) !== undefined ? { height: numberArg(args.height) } : {}),
           ...(args.dryRun === true ? { dryRun: true } : {})
-        }
-      ])
+        })
+      }
+      ops.push(...structuredOps)
+      return designToolOutput(DESIGN_SYSTEM_TEMPLATE_TOOL_NAME, 'design_system', ops, {
+        operation,
+        ...(stringArg(args.expectedHash) ? { expectedHash: stringArg(args.expectedHash) } : {})
+      })
     }
   })
 }
@@ -433,6 +631,19 @@ function normalizeDesignUpdateShapeOps(args: Record<string, unknown>): unknown[]
   return update ? [update] : null
 }
 
+function designShapeMutationBudgetError(args: Record<string, unknown>, ops: unknown[]): string | null {
+  if (ops.length > DESIGN_UPDATE_SHAPES_MAX_OPS) {
+    return `design_update_shapes accepts at most ${DESIGN_UPDATE_SHAPES_MAX_OPS} operations; split the work into batches of 20-50`
+  }
+  const budget = validateStructuredArgumentBudget(args, {
+    label: 'design_update_shapes',
+    maxBytes: DESIGN_UPDATE_SHAPES_MAX_ARGUMENT_BYTES,
+    maxNodes: DESIGN_UPDATE_SHAPES_MAX_NODES,
+    maxDepth: DESIGN_UPDATE_SHAPES_MAX_DEPTH
+  })
+  return budget.ok ? null : budget.error
+}
+
 function firstNormalizedOps(...values: unknown[]): unknown[] | null {
   for (const value of values) {
     if (value === undefined) continue
@@ -500,6 +711,48 @@ function normalizeScreenSpec(value: unknown): DesignScreenSpec | null {
   return copyOptionalFields({ name }, source, ['brief', 'x', 'y', 'width', 'height', 'devicePreset']) as DesignScreenSpec
 }
 
+function normalizeStructuredDesignSystemOps(args: Record<string, unknown>): Record<string, unknown>[] {
+  const ops: Record<string, unknown>[] = []
+  if (Array.isArray(args.tokens)) {
+    for (const token of args.tokens) {
+      if (!isRecord(token)) continue
+      const name = stringArg(token.name)
+      const kind = oneOf(token.kind, ['color', 'gradient', 'type', 'space', 'radius', 'shadow'])
+      if (name && kind && Object.hasOwn(token, 'value')) ops.push({ op: 'define-token', name, kind, value: token.value })
+    }
+  }
+  if (Array.isArray(args.captureComponents)) {
+    for (const item of args.captureComponents) {
+      if (!isRecord(item)) continue
+      const name = stringArg(item.name)
+      const fromId = stringArg(item.fromId)
+      if (!name || !fromId) continue
+      ops.push({
+        op: 'define-component',
+        name,
+        fromId,
+        slots: Array.isArray(item.slots) ? item.slots.filter(isRecord) : []
+      })
+    }
+  }
+  if (Array.isArray(args.variants)) {
+    for (const item of args.variants) {
+      if (!isRecord(item)) continue
+      const name = stringArg(item.component)
+      const key = stringArg(item.key)
+      if (!name || !key || !isRecord(item.selection) || !isRecord(item.overrides)) continue
+      ops.push({ op: 'set-component-variant', name, key, selection: item.selection, overrides: item.overrides })
+    }
+  }
+  if (Array.isArray(args.deleteTokenNames)) {
+    for (const name of args.deleteTokenNames) if (stringArg(name)) ops.push({ op: 'delete-token', name: stringArg(name) })
+  }
+  if (Array.isArray(args.deleteComponentNames)) {
+    for (const name of args.deleteComponentNames) if (stringArg(name)) ops.push({ op: 'delete-component', name: stringArg(name) })
+  }
+  return ops
+}
+
 function normalizeArrangeOp(args: Record<string, unknown>):
   | { ok: true; op: Record<string, unknown> }
   | { ok: false; error: string } {
@@ -554,12 +807,13 @@ function normalizeArrangeOp(args: Record<string, unknown>):
   return { ok: false, error: 'operation must be align, distribute, stack, grid, or responsive_reflow' }
 }
 
-function designToolOutput(tool: string, action: string, ops: unknown[]): { output: Record<string, unknown> } {
+function designToolOutput(tool: string, action: string, ops: unknown[], extra: Record<string, unknown> = {}): { output: Record<string, unknown> } {
   return {
     output: {
       ok: true,
       tool,
       action,
+      ...extra,
       ops,
       message: `Queued ${ops.length} design operation${ops.length === 1 ? '' : 's'} for the design canvas.`
     }
@@ -572,6 +826,15 @@ function designToolError(error: string): { output: Record<string, unknown>; isEr
 
 function stringArg(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function safeCanvasExportStem(value: string): string {
+  const normalized = value
+    .normalize('NFKD')
+    .replace(/[^a-z0-9._-]+/gi, '-')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 64)
+  return normalized || 'kun-whiteboard'
 }
 
 function numberArg(value: unknown): number | undefined {

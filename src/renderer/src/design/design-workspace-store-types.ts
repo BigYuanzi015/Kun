@@ -63,7 +63,7 @@ export type DesignWorkspaceState = {
   publishDesignSystem: boolean
   settingsLoaded: boolean
   fileError: string | null
-  /** Hash of the current published .kun-design/DESIGN_SYSTEM.md ('' = none). */
+  /** Hash of the current valid root DESIGN.md ('' = none). */
   designSystemHash: string
   /** When true, the design page shows the in-page code-implement assistant. */
   implementOpen: boolean
@@ -111,7 +111,7 @@ export type DesignWorkspaceState = {
   renameArtifact: (artifactId: string, title: string) => void
   /** Overwrite a version's summary with the agent's actual end-of-turn description. */
   setVersionSummary: (artifactId: string, versionId: string, summary: string) => void
-  /** Update renderer preview lifecycle for an HTML artifact. */
+  /** Update renderer preview lifecycle for an HTML or SVG artifact. */
   setArtifactPreviewStatus: (
     artifactId: string,
     status: NonNullable<DesignArtifact['previewStatus']>
@@ -143,6 +143,27 @@ export type DesignWorkspaceState = {
     brief: string,
     options?: { forceNew?: boolean; artifactId?: string; activate?: boolean; reusePendingInitial?: boolean }
   ) => { artifactId: string; relativePath: string; basePath?: string; designMdPath: string }
+  /** Ensure a first-class SVG artifact exists and advance it to a new turn version. */
+  prepareSvgTurn: (
+    brief: string,
+    options?: {
+      forceNew?: boolean
+      artifactId?: string
+      activate?: boolean
+      reusePendingInitial?: boolean
+      width?: number
+      height?: number
+      title?: string
+    }
+  ) => Promise<{
+    artifactId: string
+    relativePath: string
+    basePath?: string
+    designMdPath: string
+    newlyCreated: boolean
+    versionCreated: boolean
+    rollbackPreparedVersion?: () => Promise<void>
+  }>
   setAiRailCollapsed: (collapsed: boolean) => void
   setCanvasAssistantOpen: (open: boolean) => void
   toggleCanvasAssistantOpen: () => void
@@ -153,7 +174,7 @@ export type DesignWorkspaceState = {
   loadDesignSettings: () => Promise<void>
   /** Rebuild the artifact list from `.kun-design/` on disk (durable list). */
   rehydrateArtifacts: () => Promise<void>
-  /** Re-read DESIGN_SYSTEM.md and refresh designSystemHash (code-drift detection). */
+  /** Re-read design-system.json and refresh designSystemHash (code-drift detection). */
   refreshDesignSystemHash: () => Promise<void>
   resetWorkspace: () => void
 }

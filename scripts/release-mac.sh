@@ -169,6 +169,65 @@ build_macos() {
   build_macos_parallel
 }
 
+resolve_mac_resources() {
+  local arch="$1"
+  local candidates=()
+  local candidate
+
+  case "${arch}" in
+    arm64)
+      candidates=(
+        "${ROOT}/dist/mac-arm64/Kun.app/Contents/Resources"
+        "${ROOT}/dist/.mac-build/arm64/mac-arm64/Kun.app/Contents/Resources"
+      )
+      ;;
+    x64)
+      candidates=(
+        "${ROOT}/dist/mac/Kun.app/Contents/Resources"
+        "${ROOT}/dist/.mac-build/x64/mac/Kun.app/Contents/Resources"
+      )
+      ;;
+    *) die "Unsupported macOS Extension smoke architecture: ${arch}" ;;
+  esac
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -d "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  die "Cannot find packaged macOS ${arch} resources for Extension smoke."
+}
+
+smoke_macos_extensions() {
+  local x64_resources
+  local arm64_resources
+  local host_resources
+  local host_arch
+
+  x64_resources="$(resolve_mac_resources x64)"
+  arm64_resources="$(resolve_mac_resources arm64)"
+
+  cyan "Smoking packaged Extension Node runtime (macOS x64)..."
+  npm run smoke:packaged-extensions -- --resources "${x64_resources}" \
+    || die "macOS x64 packaged Extension Node runtime smoke failed"
+
+  cyan "Smoking packaged Extension Node runtime (macOS arm64)..."
+  npm run smoke:packaged-extensions -- --resources "${arm64_resources}" \
+    || die "macOS arm64 packaged Extension Node runtime smoke failed"
+
+  host_arch="$(node -p 'process.arch')"
+  case "${host_arch}" in
+    arm64) host_resources="${arm64_resources}" ;;
+    x64) host_resources="${x64_resources}" ;;
+    *) die "Unsupported host architecture for desktop Extension smoke: ${host_arch}" ;;
+  esac
+
+  cyan "Smoking packaged Extension desktop Chromium (host-native macOS ${host_arch})..."
+  npm run smoke:packaged-extension-desktop -- --resources "${host_resources}" \
+    || die "macOS packaged Extension desktop Chromium smoke failed"
+}
+
 release_check_prerequisites
 release_apply_signing_env
 release_acquire_lock
@@ -187,10 +246,16 @@ release_export_app_version
 
 release_ensure_tag_available
 release_prepare_builder_cache
+
+cyan "Checking Extension public release gate..."
+npm run check:extension-release-gate || die "Extension public release gate failed"
+
 release_clean_dist_artifacts
 
 cyan "Building macOS..."
 build_macos
+
+smoke_macos_extensions
 
 release_write_meta_file
 

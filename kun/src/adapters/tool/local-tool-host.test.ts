@@ -28,6 +28,28 @@ describe('LocalToolHost approval policy', () => {
     expect(result.approved).toBe(false)
   })
 
+  it('returns a model-visible error tool result when approval is denied', async () => {
+    const host = new LocalToolHost({ tools: [echoTool] })
+    const result = await host.execute(
+      { callId: 'call_denied', toolName: 'echo', arguments: { text: 'hello' } },
+      {
+        threadId: 'thread_1',
+        turnId: 'turn_1',
+        workspace: '/tmp/workspace',
+        approvalPolicy: 'always',
+        sandboxMode: 'danger-full-access',
+        abortSignal: new AbortController().signal,
+        awaitApproval: async () => 'deny'
+      } satisfies ToolHostContext
+    )
+
+    expect(result.item).toMatchObject({
+      kind: 'tool_result',
+      isError: true,
+      output: { code: 'approval_denied' }
+    })
+  })
+
   it('offloads oversized successful tool output to the artifact store', async () => {
     const artifactStore = new InMemoryArtifactStore()
     const host = new LocalToolHost({ tools: [LocalToolHost.defineTool({
@@ -121,5 +143,59 @@ describe('LocalToolHost approval policy', () => {
       isError: true,
       output: { error: 'GUI user input is not available in this runtime context' }
     })
+  })
+
+  it('normalizes structured multi-select user input questions', async () => {
+    const host = new LocalToolHost({ tools: [userInputTool] })
+    const captured: Parameters<NonNullable<ToolHostContext['awaitUserInput']>>[0][] = []
+    const context = {
+      threadId: 'thread_1',
+      turnId: 'turn_1',
+      workspace: '/tmp/workspace',
+      approvalPolicy: 'auto',
+      sandboxMode: 'workspace-write',
+      abortSignal: new AbortController().signal,
+      awaitApproval: vi.fn(async () => 'allow' as const),
+      awaitUserInput: vi.fn(async (input) => {
+        captured.push(input)
+        return { status: 'submitted' as const, answers: [] }
+      })
+    } satisfies ToolHostContext
+
+    await host.execute(
+      {
+        callId: 'call_input_multi',
+        toolName: 'user_input',
+        arguments: {
+          questions: [
+            {
+              id: 'requirements',
+              question: 'Pick requirements',
+              options: ['Keep ratio', 'App icon', 'Redesign outline'],
+              selectionMode: 'multiple',
+              minSelections: 4,
+              maxSelections: 2
+            }
+          ]
+        }
+      },
+      context
+    )
+
+    expect(captured[0]?.questions).toEqual([
+      {
+        header: 'Question 1',
+        id: 'requirements',
+        question: 'Pick requirements',
+        options: [
+          { label: 'Keep ratio', description: '' },
+          { label: 'App icon', description: '' },
+          { label: 'Redesign outline', description: '' }
+        ],
+        selectionMode: 'multiple',
+        minSelections: 2,
+        maxSelections: 2
+      }
+    ])
   })
 })
