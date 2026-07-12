@@ -65,7 +65,9 @@ function executableLauncherFixture(t) {
   return { appOutDir, executable, realExecutable }
 }
 
-test('installs an executable Linux product launcher over a preserved ELF payload', (t) => {
+test('installs an executable Linux product launcher over a preserved ELF payload', {
+  skip: process.platform === 'win32' && 'requires POSIX executable modes'
+}, (t) => {
   const paths = fixture(t)
   installLinuxElectronLauncher(paths.context)
 
@@ -83,7 +85,9 @@ test('installs an executable Linux product launcher over a preserved ELF payload
   assert.deepEqual([...readFileSync(realExecutable).subarray(0, 4)], [0x7f, 0x45, 0x4c, 0x46])
 })
 
-test('GUI prepends the sandbox flag without parsing or swallowing user arguments', (t) => {
+test('GUI prepends the sandbox flag without parsing or swallowing user arguments', {
+  skip: process.platform === 'win32' && 'requires executing a POSIX shell launcher'
+}, (t) => {
   const paths = executableLauncherFixture(t)
   assert.deepEqual(runLauncher(paths.executable, ['--user-argument']).args, [
     LINUX_SANDBOX_LAUNCHER_FLAG,
@@ -100,14 +104,18 @@ test('GUI prepends the sandbox flag without parsing or swallowing user arguments
   ])
 })
 
-test('does not add a Chromium flag to ELECTRON_RUN_AS_NODE commands', (t) => {
+test('does not add a Chromium flag to ELECTRON_RUN_AS_NODE commands', {
+  skip: process.platform === 'win32' && 'requires executing a POSIX shell launcher'
+}, (t) => {
   const paths = executableLauncherFixture(t)
   const result = runLauncher(paths.executable, ['runtime-entry.js', 'extension', 'list'], '1')
   assert.deepEqual(result.args, ['runtime-entry.js', 'extension', 'list'])
   assert.equal(result.runAsNode, '1')
 })
 
-test('fails closed for unsafe names, non-executables, and payload collisions', (t) => {
+test('fails closed for unsafe names, non-executables, and payload collisions', {
+  skip: process.platform === 'win32' && 'requires POSIX executable modes'
+}, (t) => {
   const unsafe = fixture(t)
   unsafe.context.packager.executableName = '../escape'
   assert.throws(() => installLinuxElectronLauncher(unsafe.context), /Unsafe Linux executable name/)

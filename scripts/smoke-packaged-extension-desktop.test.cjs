@@ -65,16 +65,21 @@ test('selects host-native packaged resources and never launches desktop Electron
   assert.deepEqual(desktopResourceCandidates('linux', 'x64'), ['dist/linux-unpacked/resources'])
   assert.deepEqual(packagedResourceCandidates('darwin', 'arm64'), ['dist/mac-arm64/Kun.app/Contents/Resources'])
   assert.deepEqual(packagedResourceCandidates('darwin', 'x64'), ['dist/mac/Kun.app/Contents/Resources'])
-  assert.deepEqual(resolvedPackagedResourceCandidates('darwin', 'arm64', '/workspace'), [
-    '/workspace/dist/mac-arm64/Kun.app/Contents/Resources'
+  const workspaceRoot = resolve('/workspace')
+  const macArm64Resources = resolve(
+    workspaceRoot,
+    'dist/mac-arm64/Kun.app/Contents/Resources'
+  )
+  assert.deepEqual(resolvedPackagedResourceCandidates('darwin', 'arm64', workspaceRoot), [
+    macArm64Resources
   ])
-  assert.deepEqual(resolvedDesktopResourceCandidates('darwin', 'arm64', '/workspace'), [
-    '/workspace/dist/mac-arm64/Kun.app/Contents/Resources'
+  assert.deepEqual(resolvedDesktopResourceCandidates('darwin', 'arm64', workspaceRoot), [
+    macArm64Resources
   ])
   assert.equal(desktopApplicationEntry('/packaged/Resources', '/packaged/Kun', '/packaged/Kun'), undefined)
   assert.equal(
     desktopApplicationEntry('/packaged/Resources', '/host/Electron', '/packaged/Kun'),
-    '/packaged/Resources/app.asar'
+    resolve('/packaged/Resources', 'app.asar')
   )
   assert.equal(
     desktopSmokeSettings(43123, '/isolated-home/.kun/default_workspace').workspaceRoot,
@@ -679,6 +684,7 @@ test('every automated and local release path gates uploads behind packaged Exten
   ])
   assertStepAfter(pr.jobs.package, 'Upload Linux package', nativeEvidenceCommand)
   assertOrderedCommands(pr.jobs['package-macos'], [
+    'npm run check:extension-release-gate',
     'npm run dist:mac',
     'npm run smoke:packaged-extensions -- --resources dist/mac/Kun.app/Contents/Resources',
     'npm run smoke:packaged-extensions -- --resources dist/mac-arm64/Kun.app/Contents/Resources',
@@ -687,6 +693,7 @@ test('every automated and local release path gates uploads behind packaged Exten
   ])
   assertStepAfter(pr.jobs['package-macos'], 'Upload ad-hoc macOS PR packages', nativeEvidenceCommand)
   assertOrderedCommands(pr.jobs['package-windows'], [
+    'npm run check:extension-release-gate',
     'npm run dist:win',
     'npm run smoke:packaged-extensions -- --resources dist/win-unpacked/resources',
     desktopCommand,
@@ -942,6 +949,7 @@ function assertPublishDependencies(workflow, label) {
 }
 
 function assertOrderedSourceMarkers(source, markers) {
+  source = source.replace(/\r\n/gu, '\n')
   let prior = -1
   for (const marker of markers) {
     const index = source.indexOf(marker, prior + 1)
@@ -951,6 +959,7 @@ function assertOrderedSourceMarkers(source, markers) {
 }
 
 function assertSourceMarkersAfter(source, priorMarker, markers) {
+  source = source.replace(/\r\n/gu, '\n')
   const priorIndex = source.indexOf(priorMarker)
   assert.notEqual(priorIndex, -1, `missing prior source marker: ${priorMarker}`)
   for (const marker of markers) {

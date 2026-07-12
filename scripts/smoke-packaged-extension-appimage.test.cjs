@@ -118,7 +118,9 @@ test('builds FUSE-free validation and direct-AppImage desktop invocations', () =
   assert.ok(!smoke.args.some((argument) => argument.endsWith('app.asar')))
 })
 
-test('extracts and validates before launching the final AppImage itself', (t) => {
+test('extracts and validates before launching the final AppImage itself', {
+  skip: process.platform === 'win32' && 'requires POSIX executable modes'
+}, (t) => {
   assert.doesNotThrow(() => assertLinuxX64('linux', 'x64'))
   assert.throws(() => assertLinuxX64('darwin', 'arm64'), /native linux\/x64/)
   assert.throws(() => assertLinuxX64('linux', 'arm64'), /native linux\/x64/)
@@ -229,7 +231,9 @@ test('rejects symlinked extracted resources, app.asar, launcher, payload, and de
   }
 })
 
-test('requires executable AppRun and exact sandbox-safe desktop entry', async (t) => {
+test('requires executable AppRun and exact sandbox-safe desktop entry', {
+  skip: process.platform === 'win32' && 'requires POSIX executable modes'
+}, async (t) => {
   await t.test('executable AppRun', (subtest) => {
     const extraction = temporaryDirectory(subtest)
     const root = writeExtractedBundle(extraction)
