@@ -8,7 +8,13 @@ import {
   writeBrowserStorageItem
 } from '../lib/browser-storage'
 import { WORKSPACE_FILE_PREVIEW_EVENT, type WorkspaceFilePreviewDetail } from '../lib/workspace-file-preview'
-import type { RightPanelMode } from './chat/WorkbenchTopBar'
+import { CODE_CANVAS_OPEN_REQUEST_EVENT } from '../lib/code-canvas-panel-event'
+import {
+  BUILTIN_RIGHT_PANEL_IDS,
+  isRightPanelContributionId,
+  normalizeStoredRightPanelId,
+  type RightPanelMode
+} from '../extensions/contribution-ids'
 
 const LEFT_PANEL_WIDTH_KEY = 'kun.layout.leftSidebarWidth'
 const LEFT_PANEL_COLLAPSED_KEY = 'kun.layout.leftSidebarCollapsed'
@@ -81,11 +87,11 @@ function persistBoolean(key: string, value: boolean): void {
 
 function readStoredRightPanelMode(): RightPanelMode {
   const raw = readBrowserStorageItem(RIGHT_PANEL_MODE_KEY)
-  return raw === 'todo' || raw === 'changes' || raw === 'browser' || raw === 'subagents' ? raw : null
+  return normalizeStoredRightPanelId(raw)
 }
 
 function persistRightPanelMode(mode: RightPanelMode): void {
-  if (mode === 'todo' || mode === 'changes' || mode === 'browser' || mode === 'subagents') {
+  if (mode !== null && isRightPanelContributionId(mode)) {
     writeBrowserStorageItem(RIGHT_PANEL_MODE_KEY, mode)
   } else {
     removeBrowserStorageItem(RIGHT_PANEL_MODE_KEY)
@@ -96,7 +102,7 @@ export function workbenchWidthConstraintsForRightPanel(
   route: AppRoute,
   rightPanelMode: RightPanelMode
 ): WorkbenchWidthConstraints {
-  if (route === 'chat' && rightPanelMode === 'canvas') return CODE_CANVAS_WIDTH_CONSTRAINTS
+  if (route === 'chat' && rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.canvas) return CODE_CANVAS_WIDTH_CONSTRAINTS
   return DEFAULT_WIDTH_CONSTRAINTS
 }
 
@@ -258,7 +264,7 @@ export function useWorkbenchLayout({
         workspaceRoot: detail.workspaceRoot ?? workspaceRoot
       })
       setRightSidebarWidth((width) => Math.max(width, CODE_PANEL_PREFERRED))
-      setRightPanelMode('file')
+      setRightPanelMode(BUILTIN_RIGHT_PANEL_IDS.file)
     }
 
     window.addEventListener(WORKSPACE_FILE_PREVIEW_EVENT, onPreview)
@@ -266,11 +272,21 @@ export function useWorkbenchLayout({
   }, [workspaceRoot])
 
   useEffect(() => {
+    const onCanvasOpenRequest = (): void => {
+      setRightSidebarWidth((width) => Math.max(width, CODE_PANEL_PREFERRED))
+      setRightPanelMode(BUILTIN_RIGHT_PANEL_IDS.canvas)
+    }
+
+    window.addEventListener(CODE_CANVAS_OPEN_REQUEST_EVENT, onCanvasOpenRequest)
+    return () => window.removeEventListener(CODE_CANVAS_OPEN_REQUEST_EVENT, onCanvasOpenRequest)
+  }, [])
+
+  useEffect(() => {
     if (previewThreadId.current === activeThreadId) return
     previewThreadId.current = activeThreadId
     autoOpenedPreviewUrlRef.current = null
-    if (rightPanelMode === 'browser') setRightPanelMode(null)
-    if (rightPanelMode === 'file') {
+    if (rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.browser) setRightPanelMode(null)
+    if (rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.file) {
       setRightPanelMode(null)
       setFilePreviewTarget(null)
     }
@@ -280,7 +296,7 @@ export function useWorkbenchLayout({
     if (!latestAutoOpenDevPreviewUrl || route !== 'chat') return
     if (autoOpenedPreviewUrlRef.current === latestAutoOpenDevPreviewUrl) return
     autoOpenedPreviewUrlRef.current = latestAutoOpenDevPreviewUrl
-    setRightPanelMode('browser')
+    setRightPanelMode(BUILTIN_RIGHT_PANEL_IDS.browser)
   }, [latestAutoOpenDevPreviewUrl, route])
 
   useEffect(() => {
@@ -323,7 +339,7 @@ export function useWorkbenchLayout({
     const willOpen = rightPanelMode !== nextMode
     setRightPanelMode((current) => (current === nextMode ? null : nextMode))
     // The canvas wants room — bump the panel to the wider preview width on open.
-    if (willOpen && nextMode === 'canvas') {
+    if (willOpen && nextMode === BUILTIN_RIGHT_PANEL_IDS.canvas) {
       setRightSidebarWidth((width) => Math.max(width, CODE_PANEL_PREFERRED))
     }
   }
@@ -336,7 +352,7 @@ export function useWorkbenchLayout({
     if (latestDevPreviewUrl) {
       autoOpenedPreviewUrlRef.current = latestDevPreviewUrl
     }
-    setRightPanelMode('browser')
+    setRightPanelMode(BUILTIN_RIGHT_PANEL_IDS.browser)
   }
 
   const beginLeftResize = (event: ReactPointerEvent<HTMLDivElement>): void => {

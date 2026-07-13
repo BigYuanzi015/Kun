@@ -5,7 +5,7 @@ import {
 } from './canvas-editability'
 import { useCanvasSelectionStore } from './canvas-selection-store'
 import { useCanvasShapeStore } from './canvas-shape-store'
-import { createShapeId, type CanvasDocument, type CanvasShape } from './canvas-types'
+import { createShapeId, embeddedArtifactOf, type CanvasDocument, type CanvasShape } from './canvas-types'
 import { useCanvasUndoStore } from './canvas-undo-store'
 
 const PASTE_OFFSET = 24
@@ -77,15 +77,21 @@ function frameIdForParent(doc: CanvasDocument, parentId: string): string | null 
   return parent.frameId ?? null
 }
 
-function documentHasHtmlArtifactId(doc: CanvasDocument, artifactId: string): boolean {
-  return Object.values(doc.objects).some((shape) => shape.htmlArtifactId === artifactId)
+function documentHasArtifactReference(
+  doc: CanvasDocument,
+  reference: NonNullable<CanvasShape['embeddedArtifact']>
+): boolean {
+  return Object.values(doc.objects).some((shape) => {
+    const current = embeddedArtifactOf(shape)
+    return current?.id === reference.id && current.kind === reference.kind
+  })
 }
 
 function addPastedNode(
   node: CanvasClipboardNode,
   parentId: string,
   offset: number,
-  preserveHtmlArtifactLinks: boolean
+  preserveArtifactLinks: boolean
 ): string | null {
   const id = createShapeId()
   const source = node.shape
@@ -100,18 +106,16 @@ function addPastedNode(
     y: source.y + offset,
     children: []
   }
-  if (
-    !shape.htmlArtifactId ||
-    !preserveHtmlArtifactLinks ||
-    documentHasHtmlArtifactId(doc, shape.htmlArtifactId)
-  ) {
+  const reference = embeddedArtifactOf(shape)
+  if (!reference || !preserveArtifactLinks || documentHasArtifactReference(doc, reference)) {
     delete shape.htmlArtifactId
+    delete shape.embeddedArtifact
   }
 
   useCanvasShapeStore.getState().addShape(shape, parentId)
 
   for (const child of node.children) {
-    addPastedNode(child, id, offset, preserveHtmlArtifactLinks)
+    addPastedNode(child, id, offset, preserveArtifactLinks)
   }
 
   return id
@@ -158,13 +162,13 @@ export function pasteCanvasShapeClipboard(): string[] {
   const selectionBefore = Array.from(useCanvasSelectionStore.getState().selectedIds)
   pasteCount += 1
   const offset = pasteCount * PASTE_OFFSET
-  const preserveHtmlArtifactLinks = shapeClipboard.kind === 'cut'
+  const preserveArtifactLinks = shapeClipboard.kind === 'cut'
 
   useCanvasUndoStore.getState().withGroup('paste-shapes', () => {
     const doc = useCanvasShapeStore.getState().document
     for (const root of shapeClipboard?.roots ?? []) {
       const parentId = targetParentId(doc, root.originalParentId)
-      const pastedId = addPastedNode(root.node, parentId, offset, preserveHtmlArtifactLinks)
+      const pastedId = addPastedNode(root.node, parentId, offset, preserveArtifactLinks)
       if (pastedId) pastedRootIds.push(pastedId)
     }
     if (pastedRootIds.length > 0) {

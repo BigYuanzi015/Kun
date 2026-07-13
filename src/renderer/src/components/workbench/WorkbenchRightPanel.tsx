@@ -10,6 +10,12 @@ import {
   type DesignRightPanelContentProps
 } from '../design/DesignRightPanelContent'
 import type { RightPanelMode } from '../chat/WorkbenchTopBar'
+import type { RegisteredContribution } from '../../extensions/contribution-registry'
+import { ExtensionViewOutlet } from '../../extensions/ControlledContributionSurfaces'
+import {
+  BUILTIN_RIGHT_PANEL_IDS,
+  isExtensionContributionId
+} from '../../extensions/contribution-ids'
 
 const ChangeInspector = lazy(() =>
   import('../ChangeInspector').then((module) => ({ default: module.ChangeInspector }))
@@ -64,6 +70,8 @@ export type WorkbenchRightPanelProps = {
   planPanel: ReactElement
   canvas: Omit<CodeCanvasPanelProps, 'className'>
   file: Omit<WorkspaceFilePreviewPanelProps, 'className'>
+  extensionView?: RegisteredContribution<'views.rightSidebar'>
+  workspaceRoot?: string
   onCollapse: () => void
 }
 
@@ -83,6 +91,8 @@ export function WorkbenchRightPanel({
   planPanel,
   canvas,
   file,
+  extensionView,
+  workspaceRoot,
   onCollapse
 }: WorkbenchRightPanelProps): ReactElement | null {
   if (!visible) return null
@@ -100,22 +110,28 @@ export function WorkbenchRightPanel({
             <DesignRightPanelContent {...design} />
           ) : route === 'write' && writeAssistantOpen ? (
             <WriteAssistantPanel {...write} className="h-full max-h-full w-full" />
-          ) : rightPanelMode === 'sdd-ai' && sdd.draft ? (
+          ) : rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.sddAi && sdd.draft ? (
             <SddAssistantPanel {...sdd} draft={sdd.draft} className="h-full max-h-full w-full" />
-          ) : rightPanelMode === 'subagents' ? (
+          ) : rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.subagents ? (
             <SubagentDetailPanel className="h-full max-h-full w-full" onCollapse={onCollapse} />
-          ) : rightPanelMode === 'changes' ? (
+          ) : rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.changes ? (
             <ChangeInspector {...changes} className="h-full max-h-full w-full flex-col" />
-          ) : rightPanelMode === 'todo' ? (
+          ) : rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.todo ? (
             <TodoPanel {...todo} className="h-full max-h-full w-full" />
-          ) : rightPanelMode === 'browser' ? (
+          ) : rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.browser ? (
             <DevBrowserPanel {...browser} className="h-full max-h-full w-full flex-col" />
-          ) : rightPanelMode === 'plan' ? (
+          ) : rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.plan ? (
             planPanel
-          ) : rightPanelMode === 'canvas' ? (
+          ) : rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.canvas ? (
             <CodeCanvasPanel {...canvas} className="h-full max-h-full w-full" />
-          ) : (
+          ) : rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.file ? (
             <WorkspaceFilePreviewPanel {...file} className="h-full max-h-full w-full" />
+          ) : rightPanelMode && isExtensionContributionId(rightPanelMode) && extensionView?.id === rightPanelMode ? (
+            <ExtensionViewOutlet contribution={extensionView} workspaceRoot={workspaceRoot} onClose={onCollapse} />
+          ) : (
+            <div role="alert" className="flex h-full items-center justify-center bg-ds-sidebar px-6 text-center text-[12px] text-ds-muted">
+              This workbench contribution is unavailable.
+            </div>
           )}
         </Suspense>
       </div>

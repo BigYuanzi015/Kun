@@ -18,9 +18,10 @@ import {
   buildScreenTurnPrompt,
   formatFrameContextLines,
   formatHtmlElementContextLines,
-  formatHtmlIterationEditDisciplineLines
+  formatHtmlIterationEditDisciplineLines,
+  formatProjectDesignSystemLines
 } from './html-and-canvas'
-import { formatDesignModeContextLines } from './design-mode-context'
+import { buildSvgTurnPrompt } from './svg'
 
 export function buildParallelDesignPagesPrompt(options: ParallelDesignPagesPromptOptions): string {
   const jobs = options.jobs.filter((job) => job.artifactId.trim() && job.relativePath.trim())
@@ -91,6 +92,9 @@ export function buildDesignTurnPrompt(options: DesignTurnOptions): string {
   if (options.target === 'canvas') {
     return buildCanvasTurnPrompt(options)
   }
+  if (options.target === 'svg') {
+    return buildSvgTurnPrompt(options)
+  }
   if (options.target === 'screen') {
     return buildScreenTurnPrompt(options as ScreenTurnOptions)
   }
@@ -103,6 +107,7 @@ export function buildDesignTurnPrompt(options: DesignTurnOptions): string {
       ? 'Kun is asking you to ITERATE on an existing single-file HTML design.'
       : 'Kun is asking you to design a single-file interactive HTML artifact.',
     `Workspace: ${options.workspaceRoot}`,
+    ...formatProjectDesignSystemLines(options),
     ...formatDesignTargetFrameLines(options.designContext),
     ...formatFrameContextLines(options.frameContext),
     ...(options.basePath
@@ -111,7 +116,6 @@ export function buildDesignTurnPrompt(options: DesignTurnOptions): string {
           'Read it first, reproduce it, then apply ONLY the changes in the brief below — preserve everything else (structure, content, styling).'
         ]
       : []),
-    ...formatDesignModeContextLines(options.designModeManifest),
     `Reserved artifact file: ${options.artifactRelativePath}`,
     ...(options.designNotesPath ? [`Design notes file: ${options.designNotesPath}`] : []),
     '',
@@ -123,7 +127,7 @@ export function buildDesignTurnPrompt(options: DesignTurnOptions): string {
     '- Make the HTML responsive to arbitrary canvas frame sizes: use fluid layout, min/max constraints, media queries, and avoid fixed viewport wrappers unless the brief explicitly asks for one.',
     '- If a canvas frame context is listed above, treat that width/height as the real webview viewport. Lay out the page to that viewport; content may scroll vertically when needed, but do not shrink the design to compensate for overflowing content.',
     ...DESIGN_RESIZE_RESPONSIVE_LINES,
-    '- Build it INCREMENTALLY to stay inside your output limit: use focused `edit` calls or small `write` replacements and keep every tool call payload under ~4000 characters — oversized tool arguments get truncated and fail.',
+    '- Build the complete document efficiently: prefer one coherent `write` when it fits the available tool limits; otherwise use a small bounded number of section-level `edit` calls. Do not fragment the page into dozens of micro-edits.',
     '- Write HTML ONLY through Write/Edit tool calls to the artifact file — never dump HTML into assistant text or into `design_canvas` blocks.',
     ...formatHtmlIterationEditDisciplineLines(options),
     ...(options.designNotesPath

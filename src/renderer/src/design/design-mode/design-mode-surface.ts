@@ -32,6 +32,7 @@ export type DesignModeSurface = {
 
 export type DesignModeSurfaceCounts = {
   screenCount: number
+  svgArtifactCount: number
   directionCount: number
   objectCount: number
   tokenCount: number
@@ -77,6 +78,10 @@ function htmlScreenArtifacts(artifacts: readonly DesignArtifact[]): DesignArtifa
   return artifacts.filter((artifact) => artifact.kind === 'html' && !artifact.role)
 }
 
+function svgArtifacts(artifacts: readonly DesignArtifact[]): DesignArtifact[] {
+  return artifacts.filter((artifact) => artifact.kind === 'svg')
+}
+
 function canvasObjects(document: CanvasDocument): CanvasShape[] {
   return Object.values(document.objects).filter((shape): shape is CanvasShape => Boolean(shape))
 }
@@ -113,6 +118,7 @@ function countsFor(options: BuildDesignModeSurfaceManifestOptions): DesignModeSu
   const bindings = options.canvasDocument.codeBindings ?? []
   return {
     screenCount: Math.max(htmlScreenArtifacts(artifacts).length, countHtmlFrames(options.canvasDocument)),
+    svgArtifactCount: svgArtifacts(artifacts).length,
     directionCount: countDirections(artifacts),
     objectCount: countCanvasObjects(options.canvasDocument),
     tokenCount: Object.keys(options.designSystem.tokens).length,
@@ -152,15 +158,17 @@ function agentSurface(document: DesignDocument | null, counts: DesignModeSurface
   }
   const status: DesignModeSurfaceStatus = counts.directionCount > 0 || counts.operationCount > 0
     ? 'active'
-    : counts.screenCount > 0
+    : counts.screenCount > 0 || counts.svgArtifactCount > 0
       ? 'ready'
       : 'needs-setup'
   return surface('agent', status, 45 + counts.directionCount * 15 + counts.operationCount * 4, [
     'design.plan',
     'design.generate_directions',
-    'design.critique'
+    'design.critique',
+    'design_svg_create'
   ], ['direction', 'tool'], [
     `${counts.directionCount} direction(s)`,
+    `${counts.svgArtifactCount} SVG artifact(s)`,
     `${counts.operationCount} operation journal entry(s)`
   ])
 }
@@ -169,26 +177,33 @@ function canvasSurface(counts: DesignModeSurfaceCounts): DesignModeSurface {
   const status: DesignModeSurfaceStatus = counts.objectCount > 0 ? 'active' : 'needs-setup'
   return surface('canvas', status, counts.objectCount > 0 ? 70 : 20, [
     'design.ops',
-    'design.generate_screen'
-  ], ['board', 'frame', 'asset'], [
+    'design.generate_screen',
+    'design_svg_create'
+  ], ['board', 'frame', 'asset', 'svg'], [
     `${counts.objectCount} object(s)`,
+    `${counts.svgArtifactCount} SVG artifact(s)`,
     `${counts.assetCount} asset(s)`
   ])
 }
 
 function designToolsSurface(counts: DesignModeSurfaceCounts): DesignModeSurface {
   const systemCount = counts.tokenCount + counts.componentCount
-  const status: DesignModeSurfaceStatus = systemCount > 0 || counts.operationCount > 0
+  const status: DesignModeSurfaceStatus = systemCount > 0 || counts.operationCount > 0 || counts.svgArtifactCount > 0
     ? 'active'
     : counts.screenCount > 0
       ? 'ready'
       : 'needs-setup'
   return surface('design-tools', status, 35 + systemCount * 10 + counts.operationCount * 3, [
     'design.system',
-    'design.repair'
-  ], ['token', 'component', 'tool'], [
+    'design.repair',
+    'design_svg_inspect',
+    'design_svg_edit',
+    'design_svg_animate',
+    'design_svg_validate'
+  ], ['token', 'component', 'svg', 'tool'], [
     `${counts.tokenCount} token(s)`,
-    `${counts.componentCount} component(s)`
+    `${counts.componentCount} component(s)`,
+    `${counts.svgArtifactCount} SVG artifact(s)`
   ])
 }
 
@@ -196,15 +211,16 @@ function whiteboardSurface(counts: DesignModeSurfaceCounts): DesignModeSurface {
   const findings = counts.critiqueEntryCount + counts.agentNoteCount
   const status: DesignModeSurfaceStatus = findings > 0
     ? 'active'
-    : counts.screenCount > 0 || counts.objectCount > 0
+    : counts.screenCount > 0 || counts.svgArtifactCount > 0 || counts.objectCount > 0
       ? 'ready'
       : 'needs-setup'
-  return surface('whiteboard', status, 40 + findings * 12 + counts.screenCount * 4, [
+  return surface('whiteboard', status, 40 + findings * 12 + (counts.screenCount + counts.svgArtifactCount) * 4, [
     'design.critique',
     'design.repair'
   ], ['board', 'frame', 'direction'], [
     `${counts.critiqueEntryCount} critique pass(es)`,
-    `${counts.agentNoteCount} open note(s)`
+    `${counts.agentNoteCount} open note(s)`,
+    `${counts.svgArtifactCount} SVG artifact(s)`
   ])
 }
 
@@ -230,16 +246,18 @@ function handoffSurface(document: DesignDocument | null, counts: DesignModeSurfa
   if (!document) {
     return surface('handoff', 'blocked', 0, ['design.export'], ['board'], ['No active design document'])
   }
-  const hasContent = counts.screenCount > 0 || counts.objectCount > 0 || counts.tokenCount > 0 || counts.assetCount > 0
+  const hasContent = counts.screenCount > 0 || counts.svgArtifactCount > 0 || counts.objectCount > 0 || counts.tokenCount > 0 || counts.assetCount > 0
   const status: DesignModeSurfaceStatus = hasContent ? 'ready' : 'needs-setup'
   return surface('handoff', status, hasContent ? 75 : 20, ['design.export'], [
     'board',
     'frame',
+    'svg',
     'direction',
     'asset',
     'tool'
   ], [
     `${counts.screenCount} screen(s)`,
+    `${counts.svgArtifactCount} SVG artifact(s)`,
     `${counts.assetCount} asset(s)`
   ])
 }

@@ -119,6 +119,29 @@ const rehypePlugins = [
   ]
 ] satisfies StreamdownProps['rehypePlugins']
 
+type MarkdownAstNode = {
+  type?: unknown
+  value?: unknown
+  children?: MarkdownAstNode[]
+}
+
+function removeHtmlCommentNodes(node: MarkdownAstNode): void {
+  if (!Array.isArray(node.children)) return
+  node.children = node.children.filter((child) => {
+    return !(
+      child.type === 'html' &&
+      typeof child.value === 'string' &&
+      child.value.trimStart().startsWith('<!--')
+    )
+  })
+  for (const child of node.children) removeHtmlCommentNodes(child)
+}
+
+/** Hide model-supplied HTML comments without touching code/inlineCode AST nodes. */
+export function remarkHideHtmlComments(): (tree: MarkdownAstNode) => void {
+  return removeHtmlCommentNodes
+}
+
 const math = createMathPlugin({
   singleDollarTextMath: false,
   errorColor: 'var(--ds-text-muted)'
@@ -209,11 +232,21 @@ type Props = {
    */
   streaming: boolean
   className?: string
+  /** Hide HTML comment nodes for reasoning-summary presentation. */
+  hideHtmlComments?: boolean
 }
 
-export function StreamdownAssistant({ text, streaming, className }: Props): ReactElement {
+export function StreamdownAssistant({
+  text,
+  streaming,
+  className,
+  hideHtmlComments = false
+}: Props): ReactElement {
   const displayText = sanitizeAssistantCanvasToolDisplay(text)
   const pacedText = useTypewriterText(displayText, streaming)
+  const remarkPlugins = hideHtmlComments
+    ? [remarkGfm, remarkHideHtmlComments]
+    : [remarkGfm]
 
   // While streaming, keep a stable key so the typewriter doesn't tear down
   // mid-stroke. Once settled, key on `text.length` — any subsequent edit
@@ -236,7 +269,7 @@ export function StreamdownAssistant({ text, streaming, className }: Props): Reac
       // next to the repaired block, producing copied DOM text such as
       // "Work Workstreamstream".
       animated={false}
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
       components={components}
       plugins={{ math }}

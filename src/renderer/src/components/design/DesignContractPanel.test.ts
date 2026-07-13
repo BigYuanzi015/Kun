@@ -1,6 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { act, create, type ReactTestRenderer } from 'react-test-renderer'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useCanvasShapeStore } from '../../design/canvas/canvas-shape-store'
 import { createEmptyDocument } from '../../design/canvas/canvas-types'
 import { useDesignSystemStore } from '../../design/canvas/design-system-store'
@@ -29,6 +30,10 @@ describe('DesignContractPanel', () => {
     useDesignWorkspaceStore.setState({ designContext: { designTarget: 'web' } })
   })
 
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it('renders DESIGN.md export and agent handoff actions', () => {
     const html = renderToStaticMarkup(
       createElement(DesignContractPanel, {
@@ -51,5 +56,37 @@ describe('DesignContractPanel', () => {
         document: null
       })
     )).toBe('')
+  })
+
+  it('shows a resolved write failure instead of reporting export success', async () => {
+    ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+    vi.stubGlobal('window', {
+      kunGui: {
+        writeWorkspaceFile: vi.fn(async () => ({ ok: false as const, message: 'disk full' }))
+      }
+    })
+    const activeDocument = document()
+    useDesignWorkspaceStore.setState({
+      workspaceRoot: '/workspace',
+      documents: [activeDocument],
+      activeDocumentId: activeDocument.id,
+      artifacts: [],
+      activeArtifactId: null
+    })
+    let renderer!: ReactTestRenderer
+    await act(async () => {
+      renderer = create(createElement(DesignContractPanel, {
+        workspaceRoot: '/workspace',
+        document: activeDocument
+      }))
+    })
+
+    await act(async () => {
+      renderer.root.findAllByType('button')[0].props.onClick()
+      await Promise.resolve()
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('disk full')
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('Exported to')
   })
 })

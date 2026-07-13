@@ -9,6 +9,8 @@ import {
   type DesignContext
 } from '../../design/design-context'
 import { importStitchDesignMarkdown, STITCH_DESIGN_MD_PATH } from '../../design/design-md-compat'
+import { LEGACY_PROJECT_DESIGN_SYSTEM_PATH } from '../../design/design-md/design-md-paths'
+import { acceptLegacyDesignSystemMigration, createLegacyDesignSystemMigrationDraft } from '../../design/design-md/design-md-legacy-migration'
 import { useDesignSystemStore } from '../../design/canvas/design-system-store'
 import { DesignTargetToggle } from './DesignTargetToggle'
 
@@ -110,8 +112,21 @@ export function DesignContextPopover({
       .readWorkspaceFile({ path: STITCH_DESIGN_MD_PATH, workspaceRoot })
       .then((res) => {
         if (!res.ok) {
-          setFileError(res.message || t('designImportDesignMdFailed'))
-          return
+          return window.kunGui.readWorkspaceFile({ path: LEGACY_PROJECT_DESIGN_SYSTEM_PATH, workspaceRoot }).then(async (legacy) => {
+            const migration = legacy.ok ? createLegacyDesignSystemMigrationDraft(legacy.content) : null
+            if (!legacy.ok || !migration) {
+              setFileError(res.message || t('designImportDesignMdFailed'))
+              return
+            }
+            if (!window.confirm(t('designMigrateLegacyConfirm', { count: migration.tokenCount }))) return
+            const accepted = await acceptLegacyDesignSystemMigration(workspaceRoot, legacy.content)
+            if (!accepted) {
+              setFileError(t('designMigrateLegacyFailed'))
+              return
+            }
+            setFileError(null)
+            onClose()
+          })
         }
         const imported = importStitchDesignMarkdown(res.content)
         if (!imported) {

@@ -17,7 +17,6 @@ import { takeLastLintFindings } from "../canvas/design-lint"
 import type { DerivedTokens } from "../design-token-extract"
 import type { DesignContextLocation, DesignHtmlElementContext } from "../design-composer-context"
 import { formatDesignHtmlQualityFindings, type DesignHtmlQualityFinding } from "../design-html-quality"
-import type { DesignModeSurfaceManifest } from '../design-mode/design-mode-surface'
 
 /**
  * Render the design tokens already extracted from the live design (palette +
@@ -43,7 +42,7 @@ export function formatDerivedTokenLines(tokens: DerivedTokens | undefined): stri
   return lines
 }
 
-export type DesignTurnTarget = 'html' | 'canvas' | 'screen'
+export type DesignTurnTarget = 'html' | 'canvas' | 'screen' | 'svg'
 
 export type DesignFrameContext = {
   name?: string
@@ -113,6 +112,8 @@ export type DesignTurnOptions = {
    * another canvas' global store state.
    */
   canvasDesignSystem?: DesignSystem
+  /** Exact hash of the current valid root DESIGN.md; omitted for missing/invalid/conflicted sources. */
+  projectDesignMdSourceHash?: string
   /**
    * Tokens extracted from the page being iterated (or the project's anchor page)
    * so an HTML/screen turn reuses the real palette/type scale instead of
@@ -124,8 +125,6 @@ export type DesignTurnOptions = {
    * into HTML/screen turns so the agent fixes quality issues during iteration.
    */
   qualityFindings?: DesignHtmlQualityFinding[]
-  /** Design mode surface/workflow contract for choosing agent tool lanes. */
-  designModeManifest?: DesignModeSurfaceManifest
 }
 
 /**

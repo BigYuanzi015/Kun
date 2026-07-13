@@ -13,6 +13,7 @@ import {
   Pencil,
   RotateCcw,
   Settings,
+  Spline,
   Sun,
   Trash2,
   TriangleAlert
@@ -21,12 +22,19 @@ import { useTranslation } from 'react-i18next'
 import type { SettingsRouteSection } from '../../store/chat-store'
 import { WorkspaceModeTabs } from '../chat/WorkspaceModeTabs'
 import { useDesignWorkspaceStore } from '../../design/design-workspace-store'
-import type { DesignArtifact, DesignDocument } from '../../design/design-types'
+import {
+  currentDesignArtifactVersion,
+  designArtifactVersionLabel,
+  designArtifactVersionNumber,
+  isFileDesignArtifactKind,
+  type DesignArtifact,
+  type DesignDocument
+} from '../../design/design-types'
 import { collectAgentDrawingArtifactIds, groupDesignArtifacts } from '../../design/design-artifact-actions'
 import { findDesignBoardArtifact } from '../../design/design-board'
 import { useCanvasShapeStore } from '../../design/canvas/canvas-shape-store'
 import { useCanvasSelectionStore } from '../../design/canvas/canvas-selection-store'
-import { isHtmlFrame, shapeBounds } from '../../design/canvas/canvas-types'
+import { embeddedArtifactOf, isArtifactFrame, isHtmlFrame, shapeBounds } from '../../design/canvas/canvas-types'
 import { useCanvasViewportStore } from '../../design/canvas/canvas-viewport-store'
 import {
   SidebarCommandRow,
@@ -53,8 +61,20 @@ export function getDesignSidebarDocumentScreenCount(doc: Pick<DesignDocument, 'a
   return getDesignSidebarVisibleArtifacts(doc.artifacts).filter((artifact) => artifact.kind === 'html').length
 }
 
+/** Visible first-class HTML/SVG artifacts; excludes the implementation board. */
+export function getDesignSidebarDocumentArtifactCount(doc: Pick<DesignDocument, 'artifacts'>): number {
+  return getDesignSidebarVisibleArtifacts(doc.artifacts).filter((artifact) => isFileDesignArtifactKind(artifact.kind)).length
+}
+
 export function getDesignSidebarDocumentLabel(doc: Pick<DesignDocument, 'id'>): string {
   return doc.id
+}
+
+export function getDesignSidebarArtifactVersionBadge(artifact: DesignArtifact): string | null {
+  const current = currentDesignArtifactVersion(artifact)
+  const versionNumber = current ? designArtifactVersionNumber(current) : null
+  if ((versionNumber ?? artifact.versions.length) <= 1 && artifact.versions.length <= 1) return null
+  return designArtifactVersionLabel(current, Math.max(1, artifact.versions.length))
 }
 
 /**
@@ -122,6 +142,14 @@ export function DesignSidebar({
     for (const id of selectedIds) {
       const shape = canvasObjects[id]
       if (shape && isHtmlFrame(shape) && shape.htmlArtifactId) return shape.htmlArtifactId
+    }
+    return null
+  }, [canvasObjects, selectedIds])
+  const selectedEmbeddedArtifactId = useMemo(() => {
+    for (const id of selectedIds) {
+      const shape = canvasObjects[id]
+      const reference = shape ? embeddedArtifactOf(shape) : null
+      if (reference) return reference.id
     }
     return null
   }, [canvasObjects, selectedIds])
@@ -193,8 +221,8 @@ export function DesignSidebar({
     const boardArtifact = findDesignBoardArtifact(useDesignWorkspaceStore.getState().artifacts)
     if (boardArtifact) setActiveArtifact(boardArtifact.id)
 
-    const frame = Object.values(useCanvasShapeStore.getState().document.objects).find(
-      (shape) => shape && isHtmlFrame(shape) && shape.htmlArtifactId === artifact.id
+    const frame = Object.values(useCanvasShapeStore.getState().document.objects).find((shape) =>
+      shape && isArtifactFrame(shape) && embeddedArtifactOf(shape)?.id === artifact.id
     )
     const viewportStore = useCanvasViewportStore.getState()
     viewportStore.setActiveTool('select')
@@ -251,8 +279,9 @@ export function DesignSidebar({
   const renderArtifactRows = (items: DesignArtifact[]): ReactElement => (
     <ul className="space-y-1">
       {items.map((artifact) => {
-        const active = artifact.id === activeArtifactId
+        const active = artifact.id === activeArtifactId || artifact.id === selectedEmbeddedArtifactId
         const status = renderArtifactStatus(artifact)
+        const versionBadge = getDesignSidebarArtifactVersionBadge(artifact)
         return (
           <li key={artifact.id}>
             {editingId === artifact.id ? (
@@ -272,15 +301,17 @@ export function DesignSidebar({
             ) : (
               <SidebarTreeRow
                 active={active}
-                onClick={() => setActiveArtifact(artifact.id)}
+                onClick={() => artifact.kind === 'svg'
+                  ? handleSelectAgentDrawing(artifact)
+                  : setActiveArtifact(artifact.id)}
                 onDoubleClick={() => beginRename(artifact.id, artifact.title)}
                 title={artifact.title}
                 className="min-h-[34px]"
                 buttonClassName="items-center gap-2 px-2.5 py-2"
                 trailing={
                   <>
-                    {artifact.versions.length > 1 ? (
-                      <span className="text-[11.5px] text-ds-faint">v{artifact.versions.length}</span>
+                    {versionBadge ? (
+                      <span className="text-[11.5px] text-ds-faint">{versionBadge}</span>
                     ) : null}
                     {status}
                   </>
@@ -299,6 +330,8 @@ export function DesignSidebar({
               >
                 {artifact.kind === 'canvas' ? (
                   <Layers className="h-3.5 w-3.5 shrink-0 text-ds-muted" strokeWidth={1.9} />
+                ) : artifact.kind === 'svg' ? (
+                  <Spline className="h-3.5 w-3.5 shrink-0 text-[#6557ff]" strokeWidth={1.9} />
                 ) : (
                   <FileCode2 className="h-3.5 w-3.5 shrink-0 text-ds-muted" strokeWidth={1.9} />
                 )}
@@ -319,6 +352,7 @@ export function DesignSidebar({
           {items.map((artifact) => {
             const active = artifact.id === activeArtifactId || artifact.id === selectedHtmlArtifactId
             const status = renderArtifactStatus(artifact)
+            const versionBadge = getDesignSidebarArtifactVersionBadge(artifact)
             return (
               <li key={artifact.id}>
                 {editingId === artifact.id ? (
@@ -345,8 +379,8 @@ export function DesignSidebar({
                     buttonClassName="items-center gap-2 px-2.5 py-2"
                     trailing={
                       <>
-                        {artifact.versions.length > 1 ? (
-                          <span className="text-[11.5px] text-ds-faint">v{artifact.versions.length}</span>
+                        {versionBadge ? (
+                          <span className="text-[11.5px] text-ds-faint">{versionBadge}</span>
                         ) : null}
                         {status}
                       </>
@@ -402,7 +436,10 @@ export function DesignSidebar({
   // The board canvas is an implementation surface, so keep the tree focused on
   // user-created drafts while exposing board layers below.
   const renderActiveDocBody = (): ReactElement => {
-    const items = grouped.html.filter((artifact) => !agentDrawingArtifactIds.has(artifact.id))
+    const items = [
+      ...grouped.html.filter((artifact) => !agentDrawingArtifactIds.has(artifact.id)),
+      ...grouped.svg
+    ]
     return (
       <div className="ml-3 mt-0.5 space-y-1 border-l border-[var(--ds-sidebar-row-ring)] pl-2">
         {items.length > 0 ? (
@@ -423,7 +460,7 @@ export function DesignSidebar({
 
   const renderDocument = (doc: DesignDocument): ReactElement => {
     const isActive = doc.id === activeDocumentId
-    const screenCount = getDesignSidebarDocumentScreenCount(doc)
+    const artifactCount = getDesignSidebarDocumentArtifactCount(doc)
     const documentLabel = getDesignSidebarDocumentLabel(doc)
     return (
       <li key={doc.id}>
@@ -450,8 +487,8 @@ export function DesignSidebar({
             className="min-h-[34px]"
             buttonClassName="items-center gap-2 px-2.5 py-2"
             trailing={
-              screenCount > 0 ? (
-                <span className="text-[11.5px] text-ds-faint">{screenCount}</span>
+              artifactCount > 0 ? (
+                <span className="text-[11.5px] text-ds-faint">{artifactCount}</span>
               ) : null
             }
             actions={

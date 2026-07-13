@@ -414,7 +414,7 @@ function addUsageCounters(
   const miss = typeof usage.cacheMissTokens === 'number' ? usage.cacheMissTokens : 0
   target.input_tokens += usage.promptTokens
   target.output_tokens += usage.completionTokens
-  target.reasoning_tokens += 0
+  target.reasoning_tokens += usage.reasoningTokens ?? 0
   target.cached_tokens += cached
   target.cache_miss_tokens += miss
   target.total_tokens += usage.totalTokens

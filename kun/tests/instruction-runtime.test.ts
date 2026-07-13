@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -75,6 +75,22 @@ describe('InstructionRuntime', () => {
     expect(runtime.diagnostics().readErrors[0]).toMatchObject({
       path: join(workspace, 'AGENTS.md'),
       message: 'AGENTS.md is not a file'
+    })
+  })
+
+  it('refuses a workspace AGENTS.md symlink to an external file', async () => {
+    const secretPath = join(root, 'outside-secret.txt')
+    await writeFile(secretPath, 'PRIVATE KEY MATERIAL', 'utf8')
+    await symlink(secretPath, join(workspace, 'AGENTS.md'))
+    const runtime = createRuntime()
+
+    const resolution = await runtime.resolveTurn({ workspace })
+
+    expect(resolution.instruction).toBeUndefined()
+    expect(resolution.sources).toEqual([])
+    expect(runtime.diagnostics().readErrors).toContainEqual({
+      path: join(workspace, 'AGENTS.md'),
+      message: 'workspace AGENTS.md must not be a symbolic link'
     })
   })
 

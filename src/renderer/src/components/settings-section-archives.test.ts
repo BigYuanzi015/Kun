@@ -24,6 +24,7 @@ const labels: Record<string, string> = {
   providers: 'Providers',
   write: 'Write',
   agents: 'AI assistant',
+  subagents: 'Subagents',
   archives: 'Archived chats',
   keyboardShortcuts: 'Keyboard shortcuts',
   claw: 'Connect phone',
@@ -99,7 +100,7 @@ describe('ArchivedThreadsSettingsSection', () => {
     expect(html).toContain('Delete archived chat')
   })
 
-  it('keeps archived chats after the AI assistant tab without a standalone permissions tab', () => {
+  it('keeps subagents between the AI assistant and archived chats without a standalone permissions tab', () => {
     const html = renderToStaticMarkup(createElement(SettingsSidebar, {
       category: 'archives',
       goBack: () => undefined,
@@ -108,12 +109,14 @@ describe('ArchivedThreadsSettingsSection', () => {
     }))
 
     const agentsIndex = html.indexOf('AI assistant')
+    const subagentsIndex = html.indexOf('Subagents')
     const archivesIndex = html.indexOf('Archived chats')
     const permissionsIndex = html.indexOf('permissions')
     expect(agentsIndex).toBeGreaterThanOrEqual(0)
+    expect(subagentsIndex).toBeGreaterThan(agentsIndex)
     expect(permissionsIndex).toBe(-1)
-    expect(archivesIndex).toBeGreaterThan(agentsIndex)
-    expect(html.match(/data-cursor-spotlight-target/g)?.length).toBe(17)
+    expect(archivesIndex).toBeGreaterThan(subagentsIndex)
+    expect(html.match(/data-cursor-spotlight-target/g)?.length).toBe(18)
   })
 
   it('keeps settings tabs scrollable without pushing the footer away', () => {

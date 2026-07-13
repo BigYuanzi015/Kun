@@ -229,4 +229,74 @@ describe('runtime-sse-ipc', () => {
       .flatMap((call: any) => call[1].events)
     expect(allEvents.map((event: any) => event.seq)).toEqual([7, 8])
   })
+
+  it('does not advance the reconnect cursor until the renderer acknowledges a batch', async () => {
+    registerRuntimeSseIpc({
+      ipcMain: mockIpcMain,
+      store: mockStore,
+      ensureRuntime: mockEnsureRuntime,
+      logError: mockLogError
+    })
+    const startHandler = handlers.get('runtime:sse:start')
+    const ackHandler = handlers.get('runtime:sse:ack')
+    expect(startHandler).toBeDefined()
+    expect(ackHandler).toBeDefined()
+
+    mockFetch.mockImplementation(async () => {
+      if (mockFetch.mock.calls.length === 1) {
+        return {
+          ok: true,
+          status: 200,
+          body: mockReadableStream(['id: 9\ndata: {"text": "await-ack"}\n\n'])
+        }
+      }
+      return { ok: false, status: 400, body: null }
+    })
+
+    const started = await startHandler!(mockEvent, {
+      threadId: 'thread-ack',
+      sinceSeq: 0,
+      acknowledgedBatches: true
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const batch = mockEvent.sender.send.mock.calls.find((call: any) => call[0] === 'runtime:sse-event')?.[1]
+    expect(batch).toMatchObject({ streamId: started.streamId, events: [{ seq: 9 }] })
+    expect(typeof batch.batchId).toBe('string')
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+
+    await expect(ackHandler!(mockEvent, {
+      streamId: started.streamId,
+      batchId: batch.batchId
+    })).resolves.toBe(true)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(mockFetch.mock.calls[1][0].toString()).toContain('since_seq=9')
+  })
+
+  it('surfaces an id-less server replay error instead of reconnecting into the same cursor', async () => {
+    registerRuntimeSseIpc({
+      ipcMain: mockIpcMain,
+      store: mockStore,
+      ensureRuntime: mockEnsureRuntime,
+      logError: mockLogError
+    })
+    const startHandler = handlers.get('runtime:sse:start')
+    expect(startHandler).toBeDefined()
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: mockReadableStream(['event: error\ndata: {"message": "oversized replay record"}\n\n'])
+    })
+
+    const started = await startHandler!(mockEvent, { threadId: 'thread-server-error', sinceSeq: 0 })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(mockEvent.sender.send).toHaveBeenCalledWith(
+      'runtime:sse-error',
+      expect.objectContaining({ streamId: started.streamId, message: 'oversized replay record' })
+    )
+  })
 })

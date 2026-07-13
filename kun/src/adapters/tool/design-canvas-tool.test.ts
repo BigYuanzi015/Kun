@@ -2,16 +2,22 @@ import { describe, expect, it } from 'vitest'
 import {
   createDesignCanvasTool,
   createDesignCreateScreenTool,
+  createDesignExportCanvasTool,
+  createDesignSvgCreateTool,
   createDesignSystemTemplateTool,
   createDesignUpdateShapesTool,
   createDesignValidateTool,
   DESIGN_CANVAS_TOOL_NAME,
   DESIGN_CREATE_SCREEN_TOOL_NAME,
+  DESIGN_EXPORT_CANVAS_TOOL_NAME,
+  DESIGN_SVG_CREATE_TOOL_NAME,
   DESIGN_SYSTEM_TEMPLATE_TOOL_NAME,
+  DESIGN_UPDATE_SHAPES_MAX_OPS,
   DESIGN_UPDATE_SHAPES_TOOL_NAME,
   DESIGN_VALIDATE_TOOL_NAME
 } from './design-canvas-tool.js'
 import type { ToolHostContext } from '../../ports/tool-host.js'
+import { LocalToolHost } from './local-tool-host.js'
 
 function context(guiDesignCanvas = true): ToolHostContext {
   return {
@@ -91,6 +97,131 @@ describe('design_canvas tool', () => {
 })
 
 describe('dedicated design tools', () => {
+  it('queues a deterministic renderer-backed whiteboard image export only in Code canvas turns', async () => {
+    const tool = createDesignExportCanvasTool()
+    expect(tool.name).toBe(DESIGN_EXPORT_CANVAS_TOOL_NAME)
+    expect(tool.toolKind).toBe('file_change')
+    expect(tool.shouldAdvertise?.(context(true))).toBe(true)
+    expect(tool.shouldAdvertise?.({ ...context(true), guiDesignMode: true })).toBe(false)
+    expect(tool.shouldAdvertise?.(context(false))).toBe(false)
+    expect(tool.description).toContain('design_update_shapes first')
+
+    const result = await tool.execute({ name: '支付架构图' }, context(true))
+    expect(result.isError).toBeUndefined()
+    expect(result.output).toMatchObject({
+      ok: true,
+      tool: DESIGN_EXPORT_CANVAS_TOOL_NAME,
+      action: 'export_canvas',
+      exportRequest: {
+        format: 'png',
+        fileName: expect.stringMatching(/^kun-whiteboard-[a-f0-9]{12}\.png$/),
+        relativePath: expect.stringMatching(/^\.deepseekgui-images\/kun-whiteboard-[a-f0-9]{12}\.png$/)
+      },
+      generatedFiles: [{
+        name: expect.stringMatching(/\.png$/),
+        relativePath: expect.stringMatching(/^\.deepseekgui-images\/.+\.png$/),
+        mimeType: 'image/png'
+      }],
+      ops: []
+    })
+
+    const replay = await tool.execute({ name: '支付架构图' }, context(true))
+    expect((replay.output as { exportRequest: { relativePath: string } }).exportRequest.relativePath)
+      .toBe((result.output as { exportRequest: { relativePath: string } }).exportRequest.relativePath)
+  })
+
+  it('supports SVG export and is hidden by a read-only sandbox', async () => {
+    const tool = createDesignExportCanvasTool()
+    const result = await tool.execute({ format: 'svg', name: 'API map.svg' }, context(true))
+    expect(result.output).toMatchObject({
+      exportRequest: {
+        format: 'svg',
+        fileName: expect.stringMatching(/^API-map-[a-f0-9]{12}\.svg$/)
+      },
+      generatedFiles: [{ mimeType: 'image/svg+xml' }]
+    })
+
+    const host = new LocalToolHost({ tools: [tool] })
+    const names = (await host.listTools({
+      ...context(true),
+      sandboxMode: 'read-only'
+    })).map((candidate) => candidate.name)
+    expect(names).not.toContain(DESIGN_EXPORT_CANVAS_TOOL_NAME)
+  })
+
+  it('executes the export through the real local tool host in workspace-write mode', async () => {
+    const host = new LocalToolHost({ tools: [createDesignExportCanvasTool()] })
+    const toolContext = { ...context(true), sandboxMode: 'workspace-write' as const }
+    const listed = await host.listTools(toolContext)
+    expect(listed.map((tool) => tool.name)).toContain(DESIGN_EXPORT_CANVAS_TOOL_NAME)
+
+    const result = await host.execute({
+      callId: 'call_export_1',
+      toolName: DESIGN_EXPORT_CANVAS_TOOL_NAME,
+      arguments: { format: 'png', name: 'service-map' }
+    }, toolContext)
+    expect(result.item).toMatchObject({
+      kind: 'tool_result',
+      isError: false,
+      output: {
+        ok: true,
+        action: 'export_canvas',
+        generatedFiles: [{
+          relativePath: expect.stringMatching(/^\.deepseekgui-images\/service-map-.+\.png$/),
+          mimeType: 'image/png'
+        }]
+      }
+    })
+  })
+
+  it('creates a first-class SVG handoff only for product Design turns', async () => {
+    const tool = createDesignSvgCreateTool()
+    const designContext = { ...context(true), guiDesignMode: true }
+    expect(tool.name).toBe(DESIGN_SVG_CREATE_TOOL_NAME)
+    expect(tool.toolKind).toBe('file_change')
+    expect(tool.shouldAdvertise?.(designContext)).toBe(true)
+    expect(tool.shouldAdvertise?.(context(true))).toBe(false)
+    expect(tool.shouldAdvertise?.({ ...designContext, guiDesignCanvas: undefined })).toBe(false)
+
+    const result = await tool.execute({
+      name: 'Orbit loader',
+      brief: 'A compact looping vector loader',
+      width: 240,
+      height: 160
+    }, designContext)
+    expect(result.output).toMatchObject({
+      ok: true,
+      tool: DESIGN_SVG_CREATE_TOOL_NAME,
+      ops: [{
+        op: 'add-svg-artifact',
+        artifactId: expect.stringMatching(/^svg-[a-f0-9]{12}$/),
+        name: 'Orbit loader',
+        brief: 'A compact looping vector loader',
+        width: 240,
+        height: 160
+      }]
+    })
+
+    const replay = await tool.execute({
+      name: 'Orbit loader',
+      brief: 'A compact looping vector loader',
+      width: 240,
+      height: 160
+    }, designContext)
+    expect((replay.output as { ops: Array<{ artifactId: string }> }).ops[0]?.artifactId)
+      .toBe((result.output as { ops: Array<{ artifactId: string }> }).ops[0]?.artifactId)
+  })
+
+  it('does not advertise renderer-backed SVG creation in a read-only sandbox', async () => {
+    const host = new LocalToolHost({ tools: [createDesignSvgCreateTool()] })
+    const names = (await host.listTools({
+      ...context(true),
+      guiDesignMode: true,
+      sandboxMode: 'read-only'
+    })).map((tool) => tool.name)
+    expect(names).not.toContain(DESIGN_SVG_CREATE_TOOL_NAME)
+  })
+
   it('normalizes design_create_screen calls to screen ops', async () => {
     const tool = createDesignCreateScreenTool()
     expect(tool.name).toBe(DESIGN_CREATE_SCREEN_TOOL_NAME)
@@ -121,6 +252,8 @@ describe('dedicated design tools', () => {
     expect(tool.name).toBe(DESIGN_UPDATE_SHAPES_TOOL_NAME)
     expect(JSON.stringify(tool.inputSchema)).toContain('direct top-level ShapeOp')
     expect(tool.description).toContain('inspect the current canvas snapshot first')
+    expect(tool.description).toContain('20-50')
+    expect(JSON.stringify(tool.inputSchema)).toContain(`"maxItems":${DESIGN_UPDATE_SHAPES_MAX_OPS}`)
     const op = { op: 'add', shape: { type: 'rect', width: 40, height: 40 } }
     const result = await tool.execute({ ops: op }, context())
     expect(result.output).toMatchObject({
@@ -128,6 +261,39 @@ describe('dedicated design tools', () => {
       tool: DESIGN_UPDATE_SHAPES_TOOL_NAME,
       ops: [op]
     })
+  })
+
+  it('enforces design_update_shapes operation and structural budgets', async () => {
+    const tool = createDesignUpdateShapesTool()
+    const validOps = Array.from({ length: 50 }, (_, index) => ({
+      op: 'add', shape: { id: `shape_${index}`, type: 'rect', width: 10, height: 10 }
+    }))
+    const valid = await tool.execute({ ops: validOps }, context())
+    expect(valid.isError).toBeUndefined()
+    expect(valid.output).toMatchObject({ ok: true, ops: validOps })
+
+    const oversized = await tool.execute({
+      ops: Array.from({ length: DESIGN_UPDATE_SHAPES_MAX_OPS + 1 }, (_, index) => ({
+        op: 'delete', id: `shape_${index}`
+      }))
+    }, context())
+    expect(oversized.isError).toBe(true)
+    expect(oversized.output).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(`at most ${DESIGN_UPDATE_SHAPES_MAX_OPS} operations`)
+    })
+
+    let nested: Record<string, unknown> = { value: true }
+    for (let depth = 0; depth < 40; depth += 1) nested = { child: nested }
+    const tooDeep = await tool.execute({ ops: [{ op: 'add', shape: nested }] }, context())
+    expect(tooDeep.isError).toBe(true)
+    expect(tooDeep.output).toMatchObject({ ok: false, error: expect.stringContaining('nesting depth 32') })
+
+    const tooLarge = await tool.execute({
+      ops: [{ op: 'add', shape: { type: 'text', text: 'x'.repeat(512 * 1024) } }]
+    }, context())
+    expect(tooLarge.isError).toBe(true)
+    expect(tooLarge.output).toMatchObject({ ok: false, error: expect.stringContaining('exceed 524288 bytes') })
   })
 
   it('accepts a direct top-level ShapeOp when the model omits ops', async () => {
@@ -171,13 +337,14 @@ describe('dedicated design tools', () => {
     })
   })
 
-  it('queues a high-level design-system-template op', async () => {
+  it('queues a structured project design-system operation without board placement', async () => {
     const tool = createDesignSystemTemplateTool()
     expect(tool.name).toBe(DESIGN_SYSTEM_TEMPLATE_TOOL_NAME)
     expect(JSON.stringify(tool.inputSchema)).toContain('Web -> saas/web components')
     expect(JSON.stringify(tool.inputSchema)).toContain('App -> mobile/app components')
-    expect(JSON.stringify(tool.inputSchema)).toContain('inspect the current canvas snapshot')
-    expect(tool.description).toContain('auto-placed away from existing canvas content')
+    expect(tool.name).toBe('design_system')
+    expect(tool.description).toContain('root DESIGN.md')
+    expect(tool.description).toContain('never draws an HTML, SVG, or freeform style-kit board')
     const result = await tool.execute(
       { name: 'IKUN World', seedColor: '#D4AF37', mode: 'dark', template: 'game' },
       context()
@@ -196,6 +363,8 @@ describe('dedicated design tools', () => {
         }
       ]
     })
+    expect(JSON.stringify(result.output)).not.toContain('"x"')
+    expect(JSON.stringify(result.output)).not.toContain('"y"')
   })
 
   it('preserves target ids for design-system validation tools', async () => {
@@ -221,5 +390,38 @@ describe('dedicated design tools', () => {
       tool: DESIGN_VALIDATE_TOOL_NAME,
       ops: [{ op: 'lint-design-system', targetIds: ['card-1', 'card-label'] }]
     })
+  })
+
+  it('normalizes structured tokens, captured components, variants, and deletions', async () => {
+    const tool = createDesignSystemTemplateTool()
+    const result = await tool.execute({
+      operation: 'update',
+      expectedHash: 'source-123',
+      tokens: [{ name: 'brand/primary', kind: 'color', value: '#2563eb' }],
+      captureComponents: [{ name: 'Button', fromId: 'shape_button', slots: [{ path: 'label', kind: 'text' }] }],
+      variants: [{
+        component: 'Button',
+        key: 'size=small',
+        selection: { size: 'small' },
+        overrides: { shape_button: { width: 96 } }
+      }],
+      deleteTokenNames: ['legacy/color'],
+      deleteComponentNames: ['LegacyCard']
+    }, context())
+
+    expect(result.output).toMatchObject({
+      ok: true,
+      tool: 'design_system',
+      operation: 'update',
+      expectedHash: 'source-123',
+      ops: [
+        { op: 'define-token', name: 'brand/primary', kind: 'color', value: '#2563eb' },
+        { op: 'define-component', name: 'Button', fromId: 'shape_button' },
+        { op: 'set-component-variant', name: 'Button', key: 'size=small' },
+        { op: 'delete-token', name: 'legacy/color' },
+        { op: 'delete-component', name: 'LegacyCard' }
+      ]
+    })
+    expect(JSON.stringify(result.output)).not.toContain('design-system-template')
   })
 })

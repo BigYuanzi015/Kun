@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { CanvasDocument, CanvasShape } from './canvas-types'
-import { createEmptyDocument, createShapeId, ROOT_SHAPE_ID } from './canvas-types'
+import { createEmptyDocument, createShapeId, isArtifactFrame, ROOT_SHAPE_ID } from './canvas-types'
 import { useCanvasUndoStore } from './canvas-undo-store'
 import type { ShapePatch } from './canvas-undo-store'
 import { useCanvasSelectionStore } from './canvas-selection-store'
@@ -108,6 +108,7 @@ function deepCloneShape(
     children: clonedChildren
   }
   delete clone.htmlArtifactId
+  delete clone.embeddedArtifact
   allClones.push(clone)
   return { clones: allClones, rootId: newId }
 }
@@ -148,6 +149,7 @@ export const useCanvasShapeStore = create<ShapeState>((set, get) => ({
       const objects = { ...s.document.objects }
       const parent = objects[pid]
       if (!parent) return s
+      if (isArtifactFrame(parent) || (isArtifactFrame(shape) && pid !== s.document.rootId)) return s
 
       // Make name unique among siblings so layers panel + AI naming stays unambiguous.
       const uniqueName = makeUniqueName(objects, pid, shape.name)
@@ -157,7 +159,14 @@ export const useCanvasShapeStore = create<ShapeState>((set, get) => ({
       }
 
       objects[shape.id] = placed
-      objects[pid] = { ...parent, children: [...parent.children, shape.id] }
+      const children = pid === s.document.rootId && !isArtifactFrame(placed)
+        ? [
+            ...parent.children.filter((childId) => !isArtifactFrame(objects[childId])),
+            shape.id,
+            ...parent.children.filter((childId) => isArtifactFrame(objects[childId]))
+          ]
+        : [...parent.children, shape.id]
+      objects[pid] = { ...parent, children }
 
       patches.push(
         { id: shape.id, before: {}, after: { ...placed } },
@@ -252,12 +261,30 @@ export const useCanvasShapeStore = create<ShapeState>((set, get) => ({
 
       const oldChildren = parent.children
       const filtered = oldChildren.filter((c) => c !== id)
-      const clamped = Math.max(0, Math.min(filtered.length, newIndex))
-      filtered.splice(clamped, 0, id)
+      let ordered: string[]
+      if (shape.parentId === s.document.rootId) {
+        // Embedded HTML/SVG frames are DOM portals rendered above the base SVG
+        // scene. Keep their document order in a dedicated top portal layer so
+        // Canvas root order never promises a cross-layer z-order we cannot draw.
+        const normal = filtered.filter((childId) => !isArtifactFrame(s.document.objects[childId]))
+        const portals = filtered.filter((childId) => isArtifactFrame(s.document.objects[childId]))
+        if (isArtifactFrame(shape)) {
+          const index = Math.max(0, Math.min(portals.length, newIndex - normal.length))
+          portals.splice(index, 0, id)
+        } else {
+          const index = Math.max(0, Math.min(normal.length, newIndex))
+          normal.splice(index, 0, id)
+        }
+        ordered = [...normal, ...portals]
+      } else {
+        const clamped = Math.max(0, Math.min(filtered.length, newIndex))
+        filtered.splice(clamped, 0, id)
+        ordered = filtered
+      }
 
       const objects = {
         ...s.document.objects,
-        [shape.parentId]: { ...parent, children: filtered }
+        [shape.parentId]: { ...parent, children: ordered }
       }
 
       useCanvasUndoStore.getState().pushChange({
@@ -265,7 +292,7 @@ export const useCanvasShapeStore = create<ShapeState>((set, get) => ({
           {
             id: shape.parentId,
             before: { children: oldChildren },
-            after: { children: filtered }
+            after: { children: ordered }
           }
         ]
       })
@@ -282,6 +309,8 @@ export const useCanvasShapeStore = create<ShapeState>((set, get) => ({
       const newParent = s.document.objects[newParentId]
       if (!oldParent || !newParent) return s
       if (id === newParentId) return s
+      if (isArtifactFrame(newParent)) return s
+      if (isArtifactFrame(shape) && newParentId !== s.document.rootId) return s
 
       const objects = { ...s.document.objects }
       const oldChildren = oldParent.children.filter((c) => c !== id)

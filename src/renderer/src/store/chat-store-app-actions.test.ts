@@ -148,7 +148,7 @@ describe('chat-store app actions composer model loading', () => {
     expect(state.composerProviderId).toBe('minimax')
     expect(localStorage.getItem(COMPOSER_PROVIDER_STORAGE_KEY)).toBe('minimax')
     expect(window.kunGui.saveSettingsSilent).toHaveBeenCalledWith({
-      agents: { kun: { model: 'MiniMax-M2' } }
+      agents: { kun: { model: 'MiniMax-M2', providerId: 'minimax' } }
     })
   })
 
@@ -492,8 +492,36 @@ describe('chat-store app actions composer model loading', () => {
     expect(state.composerProviderId).toBe('test-provider')
     expect(localStorage.getItem(COMPOSER_MODEL_STORAGE_KEY)).toBe('text-model')
     expect(window.kunGui.saveSettingsSilent).toHaveBeenCalledWith({
-      agents: { kun: { model: 'text-model' } }
+      agents: { kun: { model: 'text-model', providerId: 'test-provider' } }
     })
+  })
+
+  it('keeps an extension provider binding out of legacy built-in provider settings', () => {
+    const { actions, state } = buildHarness({
+      ok: true,
+      modelIds: ['extension-model'],
+      defaultModelId: 'extension-model',
+      modelGroups: []
+    })
+    state.activeThreadId = null
+    state.blocks = []
+    state.composerModelGroups = [{
+      providerId: 'ext-provider-runtime-id',
+      label: 'Extension Provider',
+      modelIds: ['extension-model'],
+      accountId: 'account-extension-1',
+      extensionProvider: {
+        extensionId: 'acme.models',
+        extensionVersion: '1.0.0',
+        localProviderId: 'models'
+      }
+    }]
+
+    actions.setComposerModel('extension-model', 'ext-provider-runtime-id')
+
+    expect(state.composerModel).toBe('extension-model')
+    expect(state.composerProviderId).toBe('ext-provider-runtime-id')
+    expect(window.kunGui.saveSettingsSilent).not.toHaveBeenCalled()
   })
 
   it('allows switching an active chat from text-only to vision', () => {

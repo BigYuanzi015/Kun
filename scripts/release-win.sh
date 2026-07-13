@@ -75,10 +75,22 @@ release_ensure_github_release_exists
 release_prepare_builder_cache
 release_export_update_channel
 release_export_app_version
+
+cyan "Checking Extension public release gate..."
+npm run check:extension-release-gate || die "Extension public release gate failed"
+
 release_clean_dist_artifacts
 
 cyan "Building Windows (tag ${TAG_NAME}, channel ${RELEASE_CHANNEL})..."
 npm run dist:win || die "Windows build failed"
+
+cyan "Smoking packaged Extension Node runtime..."
+npm run smoke:packaged-extensions -- --resources dist/win-unpacked/resources \
+  || die "Windows packaged Extension Node runtime smoke failed"
+
+cyan "Smoking packaged Extension desktop Chromium..."
+npm run smoke:packaged-extension-desktop \
+  || die "Windows packaged Extension desktop Chromium smoke failed"
 
 ASSETS=()
 collect() {

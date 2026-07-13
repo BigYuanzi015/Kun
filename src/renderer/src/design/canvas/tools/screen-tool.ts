@@ -36,7 +36,10 @@ export function createScreenTool(): CanvasToolHandler {
         return
       }
       const shape = createHtmlFrameShape('Screen', e.canvasX, e.canvasY, artifactId, devicePreset)
-      if (creationFactory) delete shape.htmlArtifactId
+      if (creationFactory) {
+        delete shape.htmlArtifactId
+        delete shape.embeddedArtifact
+      }
       shape.width = 0
       shape.height = 0
       previewId = shape.id

@@ -17,9 +17,6 @@ export type DesignFoundationRole = NonNullable<DesignArtifact['role']>
 /** Foundation step the orchestrator runs before any screen is generated. */
 export type DesignFoundationStep = 'spec' | 'system' | 'logo'
 
-/** Workspace-shared design-system token file (the contract design + code both read). */
-export const DESIGN_SYSTEM_MD_PATH = '.kun-design/DESIGN_SYSTEM.md'
-
 /** Per-设计稿 design brief (the project spec the foundation + pages all follow). */
 export function designSpecPath(docId: string): string {
   return `.kun-design/${docId}/design.md`
@@ -160,50 +157,6 @@ export function buildDesignSpecPrompt(options: {
 }
 
 /**
- * Design-system turn: the visual style guide every page follows. The agent builds
- * a single-file HTML "board" (swatches, type specimen, components) AND writes the
- * shared `DESIGN_SYSTEM.md` with the SAME tokens as concrete values, so the canvas
- * and the real code read one source of truth.
- */
-export function buildDesignSystemBoardPrompt(options: {
-  brief: string
-  workspaceRoot: string
-  artifactRelativePath: string
-  designSystemMdPath: string
-  designMdPath?: string
-  designContext?: DesignContext
-}): string {
-  const lines = [
-    'Kun is asking you to design the VISUAL DESIGN SYSTEM for this product — the style guide every page will follow.',
-    `Workspace: ${options.workspaceRoot}`,
-    ...(options.designMdPath ? [`Design brief to honor: ${options.designMdPath} (read it first).`] : []),
-    `Reserved style-guide file: ${options.artifactRelativePath}`,
-    `Design-system token file: ${options.designSystemMdPath}`,
-    ...formatFoundationTargetLines(options.designContext, 'system'),
-    '',
-    `Produce a single-file interactive HTML "style guide" board at \`${options.artifactRelativePath}\` that VISUALLY specifies:`,
-    '- Color: the brand/accent color, a real neutral ramp, plus semantic success / warning / danger — every swatch labeled with its #hex.',
-    '- Typography: the font family and a type-scale specimen (display / heading / body / caption) with px / weight / line-height.',
-    '- Spacing & radius: the spacing steps and corner-radius tokens shown as small visual chips.',
-    '- Core components rendered for real: buttons (primary / secondary / ghost, with hover + disabled), an input, a card, a badge/tag, and one nav or header bar — so the language is concrete, not described.',
-    '',
-    'Hard rules:',
-    `- Modify ONLY \`${options.artifactRelativePath}\` and \`${options.designSystemMdPath}\` this turn. Do not touch any other file.`,
-    `- Also WRITE \`${options.designSystemMdPath}\` (Markdown) capturing the SAME tokens as concrete values — brand/accent #hex, the neutral ramp, semantic colors, font family + type scale, spacing steps, radius — and keep it in sync with the board.`,
-    `- Produce ONE complete standalone HTML document at \`${options.artifactRelativePath}\`; it is pre-created so the canvas previews it while you work.`,
-    '- Build it INCREMENTALLY to stay inside your output limit: focused `edit` calls or small `write` replacements, every tool payload under ~4000 characters.',
-    '- The HTML file content must be raw HTML — no markdown fences, no commentary inside it.',
-    '- Finish with the document ending in `</html>`, then reply with a one-paragraph summary naming the accent #hex and the font.'
-  ]
-  const contextLines = formatDesignContextLines(options.designContext)
-  if (contextLines.length > 0) lines.push('', ...contextLines)
-  lines.push('', ...DESIGN_DELIVERY_LINES, '', ...DESIGN_CRAFT_LINES)
-  const brief = options.brief.trim()
-  if (brief) lines.push('', 'Product:', brief.slice(0, WRITE_PROTOTYPE_MAX_TEXT_CHARS))
-  return lines.join('\n')
-}
-
-/**
  * Logo turn: the brand mark. The agent decides the medium by what fits the brand
  * — crisp inline SVG (preferred, recolorable) or a generated raster mark embedded
  * via <img> — and showcases it on an on-brand tile with a couple of variants.
@@ -245,7 +198,7 @@ export function buildDesignLogoPrompt(options: {
 
 /**
  * The "follow the foundation" block prepended to every page brief: pointers to the
- * established `design.md` and `DESIGN_SYSTEM.md` so each page reuses the real spec
+ * established `design.md` and structured design-system JSON so each page reuses the real spec
  * + tokens instead of re-inventing them. Returns `[]` when no foundation exists.
  */
 export function buildFoundationFollowLines(options: {
@@ -259,11 +212,9 @@ export function buildFoundationFollowLines(options: {
   }
   if (options.designSystemMdPath) {
     lines.push(
-      `- Design tokens: ${options.designSystemMdPath} — reuse the EXACT palette #hex, type scale, spacing and radius; do not invent new ones.`
+      `- Structured design system: ${options.designSystemMdPath} — read it first and reuse its exact tokens, component trees, slots, and variants.`
     )
   }
-  lines.push(
-    '- The "Design system" style guide and the "Logo" are already on the canvas (see your siblings list) — match them exactly.'
-  )
+  lines.push('- Match the existing project foundation and any logo already present on the canvas.')
   return lines
 }

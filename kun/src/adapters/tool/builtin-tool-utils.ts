@@ -59,7 +59,11 @@ export function workspaceRoot(workspace: string): string {
   return isAbsolute(workspace) ? resolve(workspace) : resolve(process.cwd(), workspace)
 }
 
-export async function resolveWorkspacePath(inputPath: string, context: ToolHostContext): Promise<{
+export async function resolveWorkspacePath(
+  inputPath: string,
+  context: ToolHostContext,
+  options: { enforceWorkspaceBoundary?: boolean } = {}
+): Promise<{
   workspaceRoot: string
   absolutePath: string
   relativePath: string
@@ -67,6 +71,7 @@ export async function resolveWorkspacePath(inputPath: string, context: ToolHostC
   const root = workspaceRoot(context.workspace)
   const lexicalAbsolutePath = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath)
   if (
+    !options.enforceWorkspaceBoundary &&
     isBackgroundShellOutputPath(lexicalAbsolutePath, {
       runtimeDataDir: context.runtimeDataDir,
       threadId: context.threadId
@@ -84,7 +89,7 @@ export async function resolveWorkspacePath(inputPath: string, context: ToolHostC
   // danger-full-access, and lets read/ls/find/grep/lsp reach system paths
   // (e.g. C:\Windows on Windows, /etc on POSIX) instead of failing with
   // "path escapes the workspace root".
-  if (effectiveSandboxMode(context) === 'danger-full-access') {
+  if (!options.enforceWorkspaceBoundary && effectiveSandboxMode(context) === 'danger-full-access') {
     return {
       workspaceRoot: root,
       absolutePath: lexicalAbsolutePath,
@@ -338,19 +343,74 @@ export function shellConfig(
   return { shell: 'sh', args: ['-lc'] }
 }
 
-// Environment for spawned shells/commands. On Windows, guarantees the core
-// system directories are on PATH so built-in utilities (`where`, `findstr`,
+const SAFE_SHELL_ENV_KEYS = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'TERM',
+  'COLORTERM',
+  'NO_COLOR',
+  'XDG_CACHE_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'XDG_RUNTIME_DIR'
+])
+
+const SAFE_WINDOWS_SHELL_ENV_KEYS = new Set([
+  'PATHEXT',
+  'SYSTEMROOT',
+  'WINDIR',
+  'COMSPEC',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'PROGRAMDATA',
+  'PROGRAMFILES',
+  'PROGRAMFILES(X86)',
+  'USERNAME'
+])
+
+function copySafeShellEnvironment(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform
+): NodeJS.ProcessEnv {
+  const result: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue
+    const normalized = platform === 'win32' ? key.toUpperCase() : key
+    const allowed = SAFE_SHELL_ENV_KEYS.has(normalized) ||
+      normalized.startsWith('LC_') ||
+      (platform === 'win32' && SAFE_WINDOWS_SHELL_ENV_KEYS.has(normalized))
+    if (allowed) result[key] = value
+  }
+  return result
+}
+
+// Environment for agent-controlled shell commands. It deliberately passes a
+// small execution allow-list instead of inheriting the runtime's environment:
+// the serve process holds its bearer token and model credentials, while a
+// shell, verifier, operation, hook, or SDK child must never be able to print
+// them into a tool result. On Windows, also guarantee the core system
+// directories are on PATH so built-in utilities (`where`, `findstr`,
 // `tasklist`, …) and PATH-resolved tools (`node`, `npm`, `python`) remain
 // reachable from inside the shell even when the app inherited a PATH without
-// System32 — the same breakage that makes the bare `cmd.exe` spawn fail. The
-// directories are appended (never prepended), so the user's own PATH entries
-// keep their precedence. A no-op on non-Windows platforms.
+// System32. The directories are appended (never prepended), so the user's own
+// PATH entries keep their precedence.
 export function shellSpawnEnv(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform
 ): NodeJS.ProcessEnv {
-  if (platform !== 'win32') return env
-  const systemRoot = windowsSystemRoot(env)
+  const safeEnv = copySafeShellEnvironment(env, platform)
+  if (platform !== 'win32') return safeEnv
+  const systemRoot = windowsSystemRoot(safeEnv)
   const required = [
     win32.join(systemRoot, 'System32'),
     systemRoot,
@@ -358,13 +418,13 @@ export function shellSpawnEnv(
     win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0')
   ]
   // PATH casing varies on Windows (PATH vs Path); update the key as it exists.
-  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'Path'
-  const existing = (env[pathKey] ?? '').split(win32.delimiter).filter(Boolean)
+  const pathKey = Object.keys(safeEnv).find((key) => key.toLowerCase() === 'path') ?? 'Path'
+  const existing = (safeEnv[pathKey] ?? '').split(win32.delimiter).filter(Boolean)
   const seen = new Set(existing.map((entry) => entry.toLowerCase().replace(/[\\/]+$/, '')))
   const missing = required.filter((dir) => !seen.has(dir.toLowerCase()))
-  if (missing.length === 0) return env
+  if (missing.length === 0) return safeEnv
   return {
-    ...env,
+    ...safeEnv,
     [pathKey]: [...existing, ...missing].join(win32.delimiter)
   }
 }
@@ -543,35 +603,71 @@ function executableResponds(candidate: string): boolean {
   return !probe.error && probe.status === 0
 }
 
+/** Combined stdout/stderr ceiling for helper subprocesses such as rg and git. */
+export const DEFAULT_SPAWN_CAPTURE_MAX_BYTES = 1024 * 1024
+
 export async function spawnCapture(
   file: string,
   args: string[],
-  options: { cwd: string; signal?: AbortSignal }
-): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+  options: { cwd: string; signal?: AbortSignal; maxOutputBytes?: number }
+): Promise<{ stdout: string; stderr: string; exitCode: number | null; outputTruncated: boolean }> {
+  const maxOutputBytes = normalizePositiveInteger(options.maxOutputBytes, DEFAULT_SPAWN_CAPTURE_MAX_BYTES)
   const child = spawn(file, args, {
     cwd: options.cwd,
     env: shellSpawnEnv(),
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
   })
-  let stdout = ''
-  let stderr = ''
+  const stdout: Buffer[] = []
+  const stderr: Buffer[] = []
+  let outputBytes = 0
+  let outputTruncated = false
+  let outputTerminationRequested = false
+  let forceKillTimer: ReturnType<typeof setTimeout> | undefined
+  const stopForOutputLimit = () => {
+    if (outputTerminationRequested) return
+    outputTerminationRequested = true
+    terminateSpawnTree(child)
+    // A malicious helper can ignore SIGTERM. Escalate shortly afterward so a
+    // capped capture also releases its process and pipe resources.
+    forceKillTimer = setTimeout(() => terminateSpawnTree(child, { signal: 'SIGKILL' }), 250)
+    forceKillTimer.unref?.()
+  }
+  const appendOutput = (target: Buffer[], chunk: Buffer | string) => {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    const remaining = Math.max(0, maxOutputBytes - outputBytes)
+    if (remaining > 0) {
+      const kept = buffer.subarray(0, Math.min(buffer.length, remaining))
+      target.push(kept)
+      outputBytes += kept.length
+    }
+    if (buffer.length > remaining) {
+      outputTruncated = true
+      stopForOutputLimit()
+    }
+  }
   const onAbort = () => terminateSpawnTree(child)
   options.signal?.addEventListener('abort', onAbort, { once: true })
   child.stdout?.on('data', (chunk: Buffer | string) => {
-    stdout += chunk.toString()
+    appendOutput(stdout, chunk)
   })
   child.stderr?.on('data', (chunk: Buffer | string) => {
-    stderr += chunk.toString()
+    appendOutput(stderr, chunk)
   })
   const exitCode = await new Promise<number | null>((resolvePromise, rejectPromise) => {
     child.once('error', rejectPromise)
     child.once('close', (code) => resolvePromise(code))
   }).finally(() => {
     options.signal?.removeEventListener('abort', onAbort)
+    if (forceKillTimer) clearTimeout(forceKillTimer)
   })
   if (options.signal?.aborted) throw new Error('command aborted')
-  return { stdout, stderr, exitCode }
+  return {
+    stdout: Buffer.concat(stdout).toString('utf8'),
+    stderr: Buffer.concat(stderr).toString('utf8'),
+    exitCode,
+    outputTruncated
+  }
 }
 
 export async function collectPaths(root: string, options: { includeDirectories?: boolean; limit: number }): Promise<string[]> {

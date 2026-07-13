@@ -4,8 +4,13 @@ const { spawnSync } = require('node:child_process')
 const REQUIRED_PATHS = [
   'kun/package-lock.json',
   'kun/node_modules/diff/package.json',
+  'kun/node_modules/semver/package.json',
+  'kun/node_modules/yauzl/package.json',
+  'kun/node_modules/yazl/package.json',
   'kun/node_modules/zod/package.json',
-  'kun/node_modules/@modelcontextprotocol/sdk/package.json'
+  'kun/node_modules/@modelcontextprotocol/sdk/package.json',
+  'kun/node_modules/@kun/extension-api/package.json',
+  'kun/node_modules/create-kun-extension/package.json'
 ]
 const KUN_SQLITE_MODULE_PATH = 'kun/node_modules/better-sqlite3'
 

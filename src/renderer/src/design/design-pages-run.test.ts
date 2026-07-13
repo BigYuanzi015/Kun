@@ -142,7 +142,7 @@ describe('runDesignPages parallel fanout', () => {
     expect(htmlWrites).toHaveLength(2)
     const projectDesignMdWrite = writeWorkspaceFile.mock.calls.find((call) => {
       const payload = call[0] as { path?: string; content?: string } | undefined
-      return payload?.path === '.kun-design/DESIGN.md'
+      return payload?.path === '.kun-design/HANDOFF.md'
     })?.[0] as { content?: string } | undefined
     expect(projectDesignMdWrite?.content).toContain('# DESIGN.md: Doc')
     expect(projectDesignMdWrite?.content).toContain('IKUN community')

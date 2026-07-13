@@ -5,6 +5,7 @@ import { ArrowDown, Check, ChevronDown, ChevronRight, Copy, Download, File, File
 import type { AttachmentReference, ChatBlock, GeneratedFileReference, RuntimeDisclosureMetadata, ToolBlock, UserFileReference, UserInputAnswer } from '../../agent/types'
 import { extractUnifiedDiffText } from '../../lib/diff-stats'
 import { useChatStore } from '../../store/chat-store'
+import { runTrustedUserActivation } from '../../extensions/protected-user-activation'
 import { getProvider } from '../../agent/registry'
 import { parseWritePromptForDisplay } from '../../write/quoted-selection'
 import { parseClawUserPromptForDisplay, type ClawUserPromptDisplay } from '@shared/app-settings'
@@ -18,7 +19,11 @@ import { AssistantMarkdown } from './AssistantMarkdown'
 import { ImagePreviewLightbox } from './ImagePreviewLightbox'
 import { ModelMetaTag, WritePromptMetaDisclosure } from './message-timeline-cards'
 import { readNumber, formatDuration, formatToolTitle, summarizeBackgroundShellToolBlock } from './message-timeline-tools'
-import { answersByQuestionId, shouldShowQuestionHeader } from './user-input-panel-logic'
+import {
+  answerDisplayValues,
+  answersByQuestionId,
+  shouldShowQuestionHeader
+} from './user-input-panel-logic'
 import { InjectedMemoryMetaChip } from './injected-memory-meta-chip'
 
 const COPY_FEEDBACK_RESET_MS = 1600
@@ -834,10 +839,15 @@ function MediaPreviewTile({
     : saveState === 'saved'
       ? <Check className="h-3.5 w-3.5" strokeWidth={2} />
       : <Download className="h-3.5 w-3.5" strokeWidth={1.9} />
+  const extensionAttachmentContext = {
+    'data-extension-attachment-item': '',
+    'data-extension-attachment-id': media.id ?? '',
+    'data-extension-attachment-mime': media.mimeType ?? ''
+  }
 
   if (previewUrl && mediaIsImage(media)) {
     return (
-      <figure className={`${tileClass}${revealClass} relative`} title={title}>
+      <figure className={`${tileClass}${revealClass} relative`} title={title} {...extensionAttachmentContext}>
         <button
           type="button"
           onClick={() => setImagePreviewOpen(true)}
@@ -876,7 +886,7 @@ function MediaPreviewTile({
 
   if (previewUrl && mediaIsVideo(media)) {
     return (
-      <figure className={`${tileClass} relative`} title={title}>
+      <figure className={`${tileClass} relative`} title={title} {...extensionAttachmentContext}>
         <video src={previewUrl} className={mediaClass} controls preload="metadata" />
         <button
           type="button"
@@ -894,7 +904,7 @@ function MediaPreviewTile({
 
   const Icon = mediaIsVideo(media) ? Video : mediaIsImage(media) ? ImageIcon : File
   return (
-    <div className={`${tileClass} flex flex-col justify-between p-3`} title={title}>
+    <div className={`${tileClass} flex flex-col justify-between p-3`} title={title} {...extensionAttachmentContext}>
       <div className="flex min-w-0 items-start gap-2">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-ds-border-muted bg-ds-subtle text-ds-muted">
           <Icon className="h-4 w-4" strokeWidth={1.8} />
@@ -950,7 +960,7 @@ function MediaAttachmentGallery({
         : 'flex max-w-[80%] flex-wrap justify-end gap-2'
 
   return (
-    <div className={wrapperClass}>
+    <div className={wrapperClass} data-extension-attachment-context>
       {media.map((item) => {
         const key = mediaKey(item)
         return (
@@ -1412,7 +1422,8 @@ function UserInputBubble({
         {block.questions.map((question, index) => {
           const answer = answers[question.id]
           const hasOptions = question.options.length > 0
-          const submittedAnswer = done ? (answer?.value || answer?.label || '') : ''
+          const submittedValues = done ? answerDisplayValues(answer) : []
+          const submittedAnswer = submittedValues.join(', ')
           const showProgress = questionCount > 1
           const showHeader = shouldShowQuestionHeader(question, questionCount)
           return (
@@ -1451,14 +1462,27 @@ function UserInputBubble({
                 {question.question}
               </p>
 
-              {submittedAnswer ? (
+              {submittedValues.length > 0 ? (
                 <div className="mt-3 flex min-w-0 items-start gap-2 rounded-[10px] border border-emerald-500/14 bg-ds-card/78 px-3 py-2.5">
                   <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-500/12 text-emerald-700 dark:text-emerald-300">
                     <Check className="h-3.5 w-3.5" strokeWidth={2.1} />
                   </span>
-                  <span className="min-w-0 flex-1 break-words text-[13.5px] font-medium leading-5 text-ds-ink [overflow-wrap:anywhere]">
-                    {submittedAnswer}
-                  </span>
+                  {submittedValues.length > 1 ? (
+                    <span className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+                      {submittedValues.map((value) => (
+                        <span
+                          key={value}
+                          className="max-w-full rounded-full border border-emerald-500/16 bg-emerald-500/8 px-2 py-0.5 text-[12.5px] font-medium leading-5 text-ds-ink"
+                        >
+                          <span className="block truncate">{value}</span>
+                        </span>
+                      ))}
+                    </span>
+                  ) : (
+                    <span className="min-w-0 flex-1 break-words text-[13.5px] font-medium leading-5 text-ds-ink [overflow-wrap:anywhere]">
+                      {submittedAnswer}
+                    </span>
+                  )}
                 </div>
               ) : done ? (
                 <div className="mt-3 rounded-[10px] border border-ds-border-muted bg-ds-card/70 px-3 py-2 text-[12.5px] font-medium text-ds-muted">
@@ -1654,7 +1678,10 @@ function MessageBubbleImpl({
               type="button"
               disabled={submitting}
               className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-emerald-700 disabled:cursor-wait disabled:opacity-60"
-              onClick={() => void resolveApproval(block.id, 'allow')}
+              onClick={(event) => runTrustedUserActivation(
+                event,
+                () => void resolveApproval(block.id, 'allow')
+              )}
             >
               {t('approvalAllow')}
             </button>
@@ -1662,7 +1689,10 @@ function MessageBubbleImpl({
               type="button"
               disabled={submitting}
               className="rounded-lg border border-ds-border bg-ds-card px-3 py-1.5 text-[13px] font-medium text-ds-ink hover:bg-ds-hover disabled:cursor-wait disabled:opacity-60"
-              onClick={() => void resolveApproval(block.id, 'deny')}
+              onClick={(event) => runTrustedUserActivation(
+                event,
+                () => void resolveApproval(block.id, 'deny')
+              )}
             >
               {t('approvalDeny')}
             </button>

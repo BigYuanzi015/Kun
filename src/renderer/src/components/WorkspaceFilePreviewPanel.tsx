@@ -1,4 +1,8 @@
-import type { WorkspaceFileReadResult, WorkspaceFileTarget } from '@shared/workspace-file'
+import type {
+  WorkspaceFileReadResult,
+  WorkspaceFileTarget,
+  WorkspaceImageReadResult
+} from '@shared/workspace-file'
 import {
   Check,
   ChevronRight,
@@ -8,7 +12,8 @@ import {
   ExternalLink,
   FileCode2,
   Loader2,
-  Palette,
+  Maximize2,
+  Minimize2,
   PanelRightClose,
   X
 } from 'lucide-react'
@@ -35,7 +40,10 @@ import {
   languageFromFilePath,
   renderFallbackCodeHtml
 } from '../lib/code-highlighting'
-import { isWorkspaceTextPreviewPath } from '../lib/workspace-text-preview'
+import {
+  isWorkspaceRasterImagePreviewPath,
+  isWorkspaceTextPreviewPath
+} from '../lib/workspace-text-preview'
 import {
   initialWriteMarkdownImageSrc,
   loadWriteMarkdownImage
@@ -49,8 +57,6 @@ type Props = {
   onSelectTarget?: (target: WorkspaceFileTarget) => void
   onCloseTarget?: (target: WorkspaceFileTarget) => void
   onClose: () => void
-  /** Redesign this file in design mode (code → design). */
-  onRedesign?: (path: string, workspaceRoot: string) => void
 }
 
 const COPY_RESET_MS = 1400
@@ -104,6 +110,14 @@ function targetKey(target: WorkspaceFileTarget | null | undefined): string {
 
 function isMarkdownPreviewPath(path: string): boolean {
   return /\.(md|markdown|mdx)$/i.test(path)
+}
+
+function isSvgPreviewPath(path: string): boolean {
+  return /\.svg$/i.test(path)
+}
+
+export function svgPreviewDataUrl(content: string): string {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(content)}`
 }
 
 function normalizePreviewImageSrc(src: string | undefined): string | undefined {
@@ -185,14 +199,16 @@ export function WorkspaceFilePreviewPanel({
   className,
   onSelectTarget,
   onCloseTarget,
-  onClose,
-  onRedesign
+  onClose
 }: Props): ReactElement {
   const { t } = useTranslation('common')
   const [result, setResult] = useState<WorkspaceFileReadResult | null>(null)
+  const [imageResult, setImageResult] = useState<WorkspaceImageReadResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [copied, setCopied] = useState(false)
   const [markdownRendered, setMarkdownRendered] = useState(true)
+  const [svgRendered, setSvgRendered] = useState(true)
+  const [readingMode, setReadingMode] = useState(false)
   const [highlightHtml, setHighlightHtml] = useState(() => renderFallbackCodeHtml(''))
   const scrollRef = useRef<HTMLDivElement>(null)
   const copyResetRef = useRef<number | null>(null)
@@ -200,13 +216,44 @@ export function WorkspaceFilePreviewPanel({
   useEffect(() => {
     if (!target) {
       setResult(null)
+      setImageResult(null)
       setLoading(false)
       return
     }
 
     let cancelled = false
+    setSvgRendered(true)
     setLoading(true)
     setResult(null)
+    setImageResult(null)
+
+    const readTarget = {
+      ...target,
+      workspaceRoot: target.workspaceRoot ?? workspaceRoot
+    }
+
+    if (isWorkspaceRasterImagePreviewPath(target.path)) {
+      void window.kunGui
+        .readWorkspaceImage(readTarget)
+        .then((next) => {
+          if (!cancelled) setImageResult(next)
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setImageResult({
+              ok: false,
+              message: error instanceof Error ? error.message : String(error)
+            })
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+
+      return () => {
+        cancelled = true
+      }
+    }
 
     if (!isWorkspaceTextPreviewPath(target.path)) {
       setResult({
@@ -218,10 +265,7 @@ export function WorkspaceFilePreviewPanel({
     }
 
     void window.kunGui
-      .readWorkspaceFile({
-        ...target,
-        workspaceRoot: target.workspaceRoot ?? workspaceRoot
-      })
+      .readWorkspaceFile(readTarget)
       .then((next) => {
         if (!cancelled) setResult(next)
       })
@@ -258,17 +302,32 @@ export function WorkspaceFilePreviewPanel({
     []
   )
 
+  useEffect(() => {
+    if (!readingMode) return
+    const exitReadingMode = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setReadingMode(false)
+    }
+    document.addEventListener('keydown', exitReadingMode)
+    return () => document.removeEventListener('keydown', exitReadingMode)
+  }, [readingMode])
+
   const displayPath = useMemo(() => {
     const root = target?.workspaceRoot ?? workspaceRoot
+    if (imageResult?.ok) return formatFilePathForDisplay(imageResult.path, root) ?? fileNameFromPath(imageResult.path)
     if (result?.ok) return formatFilePathForDisplay(result.path, root) ?? fileNameFromPath(result.path)
     return target?.path ? formatFilePathForDisplay(target.path, root) ?? fileNameFromPath(target.path) : ''
-  }, [result, target, workspaceRoot])
+  }, [imageResult, result, target, workspaceRoot])
   const language = useMemo(() => {
     if (result?.ok) return languageFromFilePath(result.path)
     return target?.path ? languageFromFilePath(target.path) : ''
   }, [result, target])
   const activeTargetKey = targetKey(target)
   const isMarkdownFile = isMarkdownPreviewPath(result?.ok ? result.path : target?.path ?? '')
+  const isSvgFile = isSvgPreviewPath(result?.ok ? result.path : target?.path ?? '')
+  const svgDataUrl = useMemo(
+    () => result?.ok && isSvgFile && !result.truncated ? svgPreviewDataUrl(result.content) : '',
+    [isSvgFile, result]
+  )
   const lines = useMemo(() => (result?.ok ? result.content.split('\n') : []), [result])
   const breadcrumbSegments = useMemo(() => {
     const path = result?.ok ? result.path : target?.path ?? ''
@@ -338,9 +397,19 @@ export function WorkspaceFilePreviewPanel({
   }
 
   return (
-    <aside
-      className={`ds-no-drag ds-code-sidebar flex min-h-0 flex-col border-l border-ds-border-muted ${className ?? ''}`}
-    >
+    <>
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-hidden="true"
+        className={`ds-file-preview-reading-backdrop ${readingMode ? 'is-visible' : ''}`}
+        onClick={() => setReadingMode(false)}
+      />
+      <aside
+        data-kun-workspace-root={(target?.workspaceRoot ?? workspaceRoot).replaceAll('\\', '/')}
+        data-reading-mode={readingMode ? 'true' : 'false'}
+        className={`ds-no-drag ds-code-sidebar flex min-h-0 flex-col border-l border-ds-border-muted ${readingMode ? 'is-reading' : ''} ${className ?? ''}`}
+      >
       <div className="ds-code-sidebar-topbar">
         <div className="ds-code-sidebar-tabs" role="tablist" aria-label={t('filePreviewOpenFiles')}>
           {(openTargets.length ? openTargets : target ? [target] : []).map((item) => {
@@ -353,6 +422,7 @@ export function WorkspaceFilePreviewPanel({
             return (
               <div
                 key={targetKey(item)}
+                data-kun-preview-key={targetKey(item)}
                 role="tab"
                 tabIndex={0}
                 aria-selected={active}
@@ -405,17 +475,20 @@ export function WorkspaceFilePreviewPanel({
         </div>
 
         <div className="ds-code-sidebar-actions">
-          {onRedesign && target ? (
-            <button
-              type="button"
-              onClick={() => onRedesign(target.path, target.workspaceRoot ?? workspaceRoot)}
-              className="ds-code-sidebar-icon-button"
-              title={t('designFromCode')}
-              aria-label={t('designFromCode')}
-            >
-              <Palette className="h-4 w-4" strokeWidth={1.75} />
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => setReadingMode((value) => !value)}
+            className="ds-code-sidebar-icon-button"
+            title={readingMode ? t('filePreviewExitReadingMode') : t('filePreviewEnterReadingMode')}
+            aria-label={readingMode ? t('filePreviewExitReadingMode') : t('filePreviewEnterReadingMode')}
+            aria-pressed={readingMode}
+          >
+            {readingMode ? (
+              <Minimize2 className="h-4 w-4" strokeWidth={1.8} />
+            ) : (
+              <Maximize2 className="h-4 w-4" strokeWidth={1.8} />
+            )}
+          </button>
           {isMarkdownFile ? (
             <button
               type="button"
@@ -427,6 +500,23 @@ export function WorkspaceFilePreviewPanel({
               aria-pressed={markdownRendered}
             >
               {markdownRendered ? (
+                <Code2 className="h-4 w-4" strokeWidth={1.75} />
+              ) : (
+                <Eye className="h-4 w-4" strokeWidth={1.75} />
+              )}
+            </button>
+          ) : null}
+          {isSvgFile ? (
+            <button
+              type="button"
+              onClick={() => setSvgRendered((value) => !value)}
+              disabled={!result?.ok || result.truncated}
+              className="ds-code-sidebar-icon-button"
+              title={svgRendered ? t('filePreviewShowSvgSource') : t('filePreviewRenderSvg')}
+              aria-label={svgRendered ? t('filePreviewShowSvgSource') : t('filePreviewRenderSvg')}
+              aria-pressed={svgRendered}
+            >
+              {svgRendered ? (
                 <Code2 className="h-4 w-4" strokeWidth={1.75} />
               ) : (
                 <Eye className="h-4 w-4" strokeWidth={1.75} />
@@ -490,9 +580,9 @@ export function WorkspaceFilePreviewPanel({
             <span className="truncate text-ds-muted">{t('filePreviewEmpty')}</span>
           )}
         </div>
-        {result?.ok ? (
+        {result?.ok || imageResult?.ok ? (
           <span className="shrink-0 font-mono text-[10px] text-ds-faint">
-            {formatBytes(result.size)}
+            {formatBytes(result?.ok ? result.size : imageResult?.ok ? imageResult.size : 0)}
             {language ? ` · ${language}` : ''}
           </span>
         ) : null}
@@ -513,6 +603,14 @@ export function WorkspaceFilePreviewPanel({
             <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.8} />
             {t('filePreviewLoading')}
           </div>
+        ) : imageResult?.ok ? (
+          <div className="ds-file-preview-image min-h-0 flex-1 overflow-auto p-5">
+            <img
+              src={imageResult.dataUrl}
+              alt={currentFileName}
+              className="block h-full min-h-[120px] w-full object-contain"
+            />
+          </div>
         ) : result?.ok ? (
           <div className="relative flex min-h-0 flex-1 flex-col">
             {result.truncated ? (
@@ -520,7 +618,15 @@ export function WorkspaceFilePreviewPanel({
                 {t('filePreviewTruncated')}
               </div>
             ) : null}
-            {isMarkdownFile && markdownRendered ? (
+            {isSvgFile && svgRendered && !result.truncated ? (
+              <div className="ds-file-preview-svg min-h-0 flex-1 overflow-auto p-5">
+                <img
+                  src={svgDataUrl}
+                  alt={currentFileName}
+                  className="block h-full min-h-[120px] w-full object-contain"
+                />
+              </div>
+            ) : isMarkdownFile && markdownRendered ? (
               <div className="ds-file-preview-markdown min-h-0 flex-1 overflow-auto px-5 py-4">
                 <div className="ds-markdown min-h-full text-ds-ink">
                   <ReactMarkdown
@@ -590,10 +696,11 @@ export function WorkspaceFilePreviewPanel({
           </div>
         ) : (
           <div className="flex flex-1 items-center justify-center px-6 text-center text-[12px] leading-6 text-red-700 dark:text-red-300">
-            {result?.message ?? t('filePreviewFailed')}
+            {imageResult?.message ?? result?.message ?? t('filePreviewFailed')}
           </div>
         )}
       </div>
-    </aside>
+      </aside>
+    </>
   )
 }

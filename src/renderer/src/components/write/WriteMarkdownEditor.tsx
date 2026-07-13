@@ -23,6 +23,7 @@ import {
   type WriteTermReplacementSeed
 } from '../../write/term-propagation'
 import { writeSelectionStatesEqual } from '../../write/write-selection'
+import { writeDocumentContextMatches } from '../../write/write-document-context'
 
 export type WriteSelectionAnchorRect = {
   left: number
@@ -108,6 +109,7 @@ type Props = {
   value: string
   workspaceRoot?: string | null
   filePath?: string | null
+  documentEpoch?: number
   imageDirectory?: string | null
   appearance?: 'source' | 'live'
   livePreviewEnabled?: boolean
@@ -388,6 +390,7 @@ export function WriteMarkdownEditor({
   value,
   workspaceRoot,
   filePath,
+  documentEpoch,
   imageDirectory,
   appearance = 'live',
   livePreviewEnabled = appearance === 'live',
@@ -416,6 +419,7 @@ export function WriteMarkdownEditor({
   const editableCompartmentRef = useRef<Compartment | null>(null)
   const workspaceRootRef = useRef(workspaceRoot ?? '')
   const filePathRef = useRef(filePath ?? '')
+  const documentEpochRef = useRef(documentEpoch ?? 0)
   const imageDirectoryRef = useRef(imageDirectory ?? '')
   const livePreviewEnabledRef = useRef(livePreviewEnabled)
   const readOnlyRef = useRef(readOnly)
@@ -443,6 +447,7 @@ export function WriteMarkdownEditor({
 
   workspaceRootRef.current = workspaceRoot ?? ''
   filePathRef.current = filePath ?? ''
+  documentEpochRef.current = documentEpoch ?? 0
   imageDirectoryRef.current = imageDirectory ?? ''
   livePreviewEnabledRef.current = livePreviewEnabled
   readOnlyRef.current = readOnly
@@ -640,6 +645,7 @@ export function WriteMarkdownEditor({
             if (!hasClipboardImage(event)) return false
             const nextWorkspaceRoot = workspaceRootRef.current.trim()
             const nextFilePath = filePathRef.current.trim()
+            const nextDocumentEpoch = documentEpochRef.current
             if (!nextWorkspaceRoot || !nextFilePath) {
               onImagePasteErrorRef.current?.('Open a workspace file before pasting an image.')
               event.preventDefault()
@@ -657,6 +663,21 @@ export function WriteMarkdownEditor({
                   : {})
               })
               .then((result) => {
+                if (
+                  viewRef.current !== view ||
+                  !writeDocumentContextMatches(
+                    {
+                      workspaceRoot: workspaceRootRef.current,
+                      activeFilePath: filePathRef.current,
+                      documentEpoch: documentEpochRef.current
+                    },
+                    {
+                      workspaceRoot: nextWorkspaceRoot,
+                      filePath: nextFilePath,
+                      documentEpoch: nextDocumentEpoch
+                    }
+                  )
+                ) return
                 if (!result.ok) {
                   onImagePasteErrorRef.current?.(result.message)
                   return
@@ -681,6 +702,21 @@ export function WriteMarkdownEditor({
                 onImagePasteSavedRef.current?.()
               })
               .catch((error) => {
+                if (
+                  viewRef.current !== view ||
+                  !writeDocumentContextMatches(
+                    {
+                      workspaceRoot: workspaceRootRef.current,
+                      activeFilePath: filePathRef.current,
+                      documentEpoch: documentEpochRef.current
+                    },
+                    {
+                      workspaceRoot: nextWorkspaceRoot,
+                      filePath: nextFilePath,
+                      documentEpoch: nextDocumentEpoch
+                    }
+                  )
+                ) return
                 onImagePasteErrorRef.current?.(
                   error instanceof Error ? error.message : String(error)
                 )

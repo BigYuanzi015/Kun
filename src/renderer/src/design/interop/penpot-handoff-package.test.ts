@@ -3,6 +3,7 @@ import {
   createDefaultShape,
   createEmptyDocument,
   createHtmlFrameShape,
+  createSvgFrameShape,
   ROOT_SHAPE_ID,
   type CanvasDocument
 } from '../canvas/canvas-types'
@@ -29,6 +30,20 @@ function artifact(): DesignArtifact {
     versions: [{ id: 'home-v1', relativePath, createdAt: now, summary: '' }],
     direction: { id: 'dir_1', name: 'Calm ops', status: 'accepted' },
     prototypeLinks: [{ targetTitle: 'Settings', targetArtifactId: 'settings', href: '../settings/v1.html' }]
+  }
+}
+
+function svgArtifact(): DesignArtifact {
+  const relativePath = '.kun-design/doc/motion/v1.svg'
+  return {
+    id: 'motion',
+    kind: 'svg',
+    title: 'Orbit loader',
+    relativePath,
+    designMdPath: '.kun-design/doc/motion/DESIGN.md',
+    createdAt: now,
+    updatedAt: now,
+    versions: [{ id: 'motion-v1', relativePath, createdAt: now, summary: 'Motion' }]
   }
 }
 
@@ -147,5 +162,36 @@ describe('penpot handoff package', () => {
 
     expect(content.endsWith('\n')).toBe(true)
     expect(JSON.parse(content)).toMatchObject({ kind: 'kun.penpot.handoff' })
+  })
+
+  it('exports SVG frames with generic artifact provenance and the standalone SVG path', () => {
+    const motion = svgArtifact()
+    const doc = createEmptyDocument()
+    const frame = {
+      ...createSvgFrameShape('Orbit loader', 80, 120, motion.id, 320, 240),
+      id: 'frame_motion',
+      parentId: ROOT_SHAPE_ID
+    }
+    doc.objects[ROOT_SHAPE_ID] = { ...doc.objects[ROOT_SHAPE_ID], children: [frame.id] }
+    doc.objects[frame.id] = frame
+
+    const pkg = buildPenpotHandoffPackage({
+      document: designDocument([motion]),
+      canvasDocument: doc,
+      designSystem,
+      artifacts: [motion],
+      updatedAt: now
+    })
+
+    expect(pkg.frames).toEqual([{
+      id: 'frame_motion',
+      name: 'Orbit loader',
+      kind: 'svg-frame',
+      bounds: { x: 80, y: 120, width: 320, height: 240 },
+      artifactId: 'motion',
+      artifactKind: 'svg',
+      svgPath: '.kun-design/doc/motion/v1.svg',
+      designMdPath: '.kun-design/doc/motion/DESIGN.md'
+    }])
   })
 })

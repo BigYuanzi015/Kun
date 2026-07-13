@@ -16,6 +16,7 @@ import { WritePdfViewer } from './WritePdfViewer'
 
 type Props = {
   activeFilePath: string | null
+  documentEpoch: number
   activeFileIsImage: boolean
   activeFileIsPdf: boolean
   activeFileIsText: boolean
@@ -63,6 +64,7 @@ type Props = {
 
 export function WriteWorkspaceDocumentPane({
   activeFilePath,
+  documentEpoch,
   activeFileIsImage,
   activeFileIsPdf,
   activeFileIsText,
@@ -182,6 +184,7 @@ export function WriteWorkspaceDocumentPane({
                 value={fileContent}
                 workspaceRoot={workspaceRoot}
                 filePath={activeFilePath}
+                documentEpoch={documentEpoch}
                 readOnly={renderSafety.readOnly}
                 completionModel={inlineCompletion.model}
                 completionEnabled={inlineCompletion.enabled && inlineCompletionApiReady}
@@ -203,6 +206,7 @@ export function WriteWorkspaceDocumentPane({
                     value={fileContent}
                     workspaceRoot={workspaceRoot}
                     filePath={activeFilePath}
+                    documentEpoch={documentEpoch}
                     appearance="live"
                     livePreviewEnabled={renderSafety.livePreviewEnabled}
                     readOnly={renderSafety.readOnly}
@@ -230,6 +234,7 @@ export function WriteWorkspaceDocumentPane({
                 value={fileContent}
                 workspaceRoot={workspaceRoot}
                 filePath={activeFilePath}
+                documentEpoch={documentEpoch}
                 appearance={editorAppearance}
                 livePreviewEnabled={renderSafety.livePreviewEnabled}
                 readOnly={renderSafety.readOnly}

@@ -42,6 +42,26 @@ import type { ModelClient } from '../../ports/model-client.js'
 import type { RolesConfig } from '../../config/kun-config.js'
 import type { ImmutablePrefix } from '../../cache/immutable-prefix.js'
 import type { PublisherTrustStore } from '../../supplychain/publisher-trust-store.js'
+import type { ThreadEventStreamRegistry } from '../thread-event-stream-registry.js'
+import type {
+  ArchiveValidationOptions,
+  ExtensionIndexClient,
+  ExtensionManager,
+  ExtensionPackageManager,
+  ExtensionPaths,
+  ExtensionRegistry,
+  ExtensionStateStore
+} from '../../extensions/index.js'
+import type { ExtensionHostBroker } from '../../services/extension-host-broker.js'
+import type { ExtensionAgentService } from '../../services/extension-agent-service.js'
+import type { ExtensionToolRegistry } from '../../adapters/tool/extension-tool-provider.js'
+import type { ExtensionModelProviderRegistry } from '../../adapters/model/extension-model-provider.js'
+import type { ExtensionProviderAccountStore } from '../../services/extension-provider-account-store.js'
+import type { ExtensionAccountBroker } from '../../services/extension-account-broker.js'
+import type { ExtensionCredentialStore } from '../../services/extension-credential-store.js'
+import type { ExtensionViewSessionService } from '../../services/extension-view-session-service.js'
+import type { ExtensionSecretRevealConsentService } from '../../services/extension-secret-reveal-consent.js'
+import type { ExtensionConfigurationService } from '../../services/extension-configuration-service.js'
 
 export type RuntimeToolDiagnostics = {
   providers: ToolProviderPolicy[]
@@ -57,6 +77,32 @@ export type RuntimeToolDiagnostics = {
   speechGen?: SpeechGenDiagnostic[]
   musicGen?: MusicGenDiagnostic[]
   videoGen?: VideoGenDiagnostic[]
+  extensions?: {
+    tools: ReturnType<ExtensionToolRegistry['list']>
+    providers: string[]
+    providerDiagnostics: ReturnType<ExtensionModelProviderRegistry['diagnostics']>
+    hosts: Awaited<ReturnType<ExtensionManager['listDiagnostics']>>
+  }
+}
+
+export type ExtensionPlatformRuntime = {
+  paths: ExtensionPaths
+  registry: ExtensionRegistry
+  packageManager: ExtensionPackageManager
+  manager: ExtensionManager
+  indexClient: ExtensionIndexClient
+  validation: ArchiveValidationOptions
+  broker: ExtensionHostBroker
+  agent: ExtensionAgentService
+  tools: ExtensionToolRegistry
+  modelProviders: ExtensionModelProviderRegistry
+  providerAccounts: ExtensionProviderAccountStore
+  accounts: ExtensionAccountBroker
+  credentials: ExtensionCredentialStore
+  state: ExtensionStateStore
+  configuration: ExtensionConfigurationService
+  viewSessions: ExtensionViewSessionService
+  secretReveals: ExtensionSecretRevealConsentService
 }
 
 /**
@@ -72,6 +118,8 @@ export type ServerRuntime = {
   eventBus: EventBus
   sessionStore: SessionStore
   events: RuntimeEventRecorder
+  /** Active SSE streams, so a successful thread delete can close them. */
+  eventStreamRegistry?: ThreadEventStreamRegistry
   /** Optional troubleshooting buffer of the most recent LLM rounds (in-memory). */
   llmDebug?: LlmDebugRecorder
   approvalGate: ApprovalGate
@@ -87,6 +135,8 @@ export type ServerRuntime = {
   delegationRuntime?: DelegationRuntime
   backgroundShellRuntime?: BackgroundShellRuntime
   supplyChainTrust?: PublisherTrustStore
+  /** Single extension platform instance shared by HTTP, CLI-style services, tools, and model routing. */
+  extensionPlatform?: ExtensionPlatformRuntime
   /**
    * Default ModelClient + model id for one-shot completions outside the
    * agent loop (e.g. AI-generated subagent profiles). Optional so test
@@ -119,6 +169,7 @@ export type ServerRuntime = {
     target: ReviewTarget
     model?: string
     providerId?: string
+    accountId?: string
   }): Promise<'completed' | 'failed' | 'aborted'> | void
   runtimeToken: string
   insecure: boolean

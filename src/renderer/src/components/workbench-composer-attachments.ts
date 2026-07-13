@@ -1,5 +1,6 @@
 import type { AttachmentReference } from '../agent/types'
 import type { RightPanelMode } from './chat/WorkbenchTopBar'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../extensions/contribution-ids'
 
 export const COMPOSER_ATTACHMENT_SCOPES = ['chat', 'write', 'design', 'sdd', 'inactive'] as const
 
@@ -23,7 +24,7 @@ export function composerAttachmentScopeForSurface(
   route: string,
   rightPanelMode: RightPanelMode | null
 ): ComposerAttachmentScope {
-  if (rightPanelMode === 'sdd-ai') return 'sdd'
+  if (rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.sddAi) return 'sdd'
   if (route === 'design') return 'design'
   if (route === 'write') return 'write'
   if (route === 'chat') return 'chat'

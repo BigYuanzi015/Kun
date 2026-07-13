@@ -430,6 +430,8 @@ summary,
 
 .cm-write-live-preview .cm-content {
   /* 720px text measure once the side padding maxes out. */
+  width: 100%;
+  min-width: 0;
   max-width: 816px;
   margin: 0 auto;
   padding-left: clamp(24px, 5vw, 48px);
@@ -494,6 +496,9 @@ summary,
 
 .cm-write-md-image-wrap {
   display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
   margin: 0.85rem 0;
   cursor: text;
 }
@@ -502,6 +507,7 @@ summary,
   display: block;
   max-width: 100%;
   max-height: 520px;
+  margin-inline: auto;
   border: 1px solid var(--ds-border-muted);
   border-radius: 10px;
   background: var(--ds-card);

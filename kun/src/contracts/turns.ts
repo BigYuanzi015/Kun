@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { TurnItem, UserFileReferenceSchema, UserMessageSource } from './items.js'
 import { isGuiPlanRelativePath } from '../shared/gui-plan.js'
 import { ApprovalPolicySchema, SandboxModeSchema } from './policy.js'
+import { MAX_TURN_ATTACHMENT_IDS } from './attachments.js'
 
 /**
  * Mode enum, inlined here (instead of importing `ThreadMode` from
@@ -41,6 +42,19 @@ export const GuiPlanContextSchema = z.object({
 })
 export type GuiPlanContextJson = z.infer<typeof GuiPlanContextSchema>
 
+export const GuiDesignArtifactContextSchema = z.object({
+  kind: z.literal('svg'),
+  artifactId: z.string().min(1),
+  relativePath: z.string().min(1).refine((value) => {
+    const normalized = value.replaceAll('\\', '/')
+    return normalized === value &&
+      normalized.startsWith('.kun-design/') &&
+      !normalized.split('/').includes('..') &&
+      /\/v\d+\.svg$/i.test(normalized)
+  }, { message: 'relativePath must be a versioned SVG file under .kun-design' })
+})
+export type GuiDesignArtifactContextJson = z.infer<typeof GuiDesignArtifactContextSchema>
+
 export const TurnStatus = z.enum([
   'queued',
   'running',
@@ -71,6 +85,7 @@ export const TurnSchema = z.object({
   prompt: z.string(),
   model: z.string().optional(),
   providerId: z.string().optional(),
+  accountId: z.string().min(1).optional(),
   reasoningEffort: TurnReasoningEffortSchema.optional(),
   /** Steered text queued by the user mid-turn. Cleared on completion. */
   steering: z.array(z.string()).default([]),
@@ -89,6 +104,10 @@ export const TurnSchema = z.object({
   toolCatalogFingerprint: z.string().optional(),
   toolCatalogToolCount: z.number().int().nonnegative().optional(),
   toolCatalogDrift: z.boolean().optional(),
+  /** Extension-run budget accounting persisted across runtime restarts. */
+  extensionBudgetTokenBaseline: z.number().int().nonnegative().optional(),
+  extensionModelRequests: z.number().int().nonnegative().optional(),
+  extensionToolInvocations: z.number().int().nonnegative().optional(),
   guiPlan: GuiPlanContextSchema.optional(),
   /**
    * True for renderer-owned design canvas turns. Kun advertises the
@@ -96,6 +115,10 @@ export const TurnSchema = z.object({
    * returned ops to its canvas store.
    */
   guiDesignCanvas: z.boolean().optional(),
+  /** True only for product Design-mode turns; Code canvas turns leave it unset. */
+  guiDesignMode: z.boolean().optional(),
+  /** Reserved first-class SVG artifact for structured SVG tools. */
+  guiDesignArtifact: GuiDesignArtifactContextSchema.optional(),
   /**
    * Optional per-turn mode override. When set, it takes precedence over
    * the thread mode for this turn (e.g. a Plan-mode turn inside an
@@ -124,6 +147,7 @@ export const StartTurnRequest = z.object({
   messageSource: UserMessageSource.optional(),
   model: z.string().optional(),
   providerId: z.string().optional(),
+  accountId: z.string().min(1).optional(),
   reasoningEffort: TurnReasoningEffortSchema.optional(),
   approvalPolicy: ApprovalPolicySchema.optional(),
   sandboxMode: SandboxModeSchema.optional(),
@@ -141,7 +165,10 @@ export const StartTurnRequest = z.object({
       })
     )
     .optional(),
-  attachmentIds: z.array(z.string().min(1)).default([]),
+  attachmentIds: z.array(z.string().min(1)).max(MAX_TURN_ATTACHMENT_IDS).refine(
+    (ids) => new Set(ids).size === ids.length,
+    { message: 'attachmentIds must not contain duplicates' }
+  ).default([]),
   fileReferences: z.array(UserFileReferenceSchema).default([]),
   workspaceCheckpointId: z.string().min(1).optional(),
   /**
@@ -155,6 +182,10 @@ export const StartTurnRequest = z.object({
    * tool for this turn only.
    */
   guiDesignCanvas: z.boolean().optional(),
+  /** True only for product Design-mode turns; Code canvas turns leave it unset. */
+  guiDesignMode: z.boolean().optional(),
+  /** Reserved first-class SVG artifact for structured SVG tools. */
+  guiDesignArtifact: GuiDesignArtifactContextSchema.optional(),
   /**
    * True when the caller cannot relay structured input prompts to a
    * user (IM bridges such as WeChat/Feishu, headless runs). The turn

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -97,6 +97,31 @@ describe('HybridThreadStore', () => {
     })
   })
 
+  it('opens legacy thread.json, preserves archive search, and accepts later JSONL writes', async () => {
+    const legacy = createThreadRecord({
+      id: 'thr_legacy_archived',
+      title: 'Legacy archive fixture',
+      workspace: '/tmp/legacy',
+      model: 'deepseek-chat',
+      createdAt: '2025-01-01T00:00:00.000Z'
+    })
+    const archived = { ...legacy, status: 'archived' as const, updatedAt: '2025-01-02T00:00:00.000Z' }
+    const threadDir = join(dataDir, 'threads', legacy.id)
+    await mkdir(threadDir, { recursive: true })
+    await writeFile(join(threadDir, 'thread.json'), JSON.stringify(archived), 'utf8')
+
+    const { threadStore } = await createHybridStores()
+    await threadStore.waitForBackfill()
+    expect((await threadStore.list({ search: 'Legacy archive', includeArchived: true })).map((item) => item.id))
+      .toEqual([legacy.id])
+    expect((await threadStore.list({ archivedOnly: true })).map((item) => item.id)).toEqual([legacy.id])
+
+    await threadStore.upsert({ ...archived, title: 'Legacy archive updated', updatedAt: '2025-01-03T00:00:00.000Z' })
+    const metadata = await readFile(join(threadDir, 'metadata.jsonl'), 'utf8')
+    expect(metadata).toContain('Legacy archive updated')
+    expect((await threadStore.get(legacy.id))?.title).toBe('Legacy archive updated')
+  })
+
   it('indexes event high water and usage events as they are appended', async () => {
     if (!sqliteAvailable) return
     const { threadStore, sessionStore } = await createHybridStores()
@@ -149,6 +174,23 @@ describe('HybridThreadStore', () => {
         usage: { totalTokens: 25, turns: 1 }
       }
     ])
+  })
+
+  it('uses the durable JSONL high-water when SQLite lags after an append', async () => {
+    const { threadStore, sessionStore } = await createHybridStores()
+    const record = await seedThreadWithMessage(threadStore, sessionStore, 'high water recovery')
+    await sessionStore.appendEvent(record.id, {
+      kind: 'heartbeat', seq: 1, timestamp: '2026-06-04T00:00:01.000Z', threadId: record.id
+    })
+    // Simulate a process death after JSONL append but before the Hybrid index
+    // hook. The file is canonical and must prevent seq=2 from being reused.
+    await appendFile(
+      join(dataDir, 'threads', record.id, 'events.jsonl'),
+      `${JSON.stringify({ kind: 'heartbeat', seq: 2, timestamp: '2026-06-04T00:00:02.000Z', threadId: record.id })}\n`,
+      'utf8'
+    )
+
+    await expect(sessionStore.highestSeq(record.id)).resolves.toBe(2)
   })
 
   it('recovers turn attachment ids from user messages when metadata is stripped', async () => {

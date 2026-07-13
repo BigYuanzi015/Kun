@@ -52,16 +52,26 @@ function applyWriteSettingsState(
 }
 
 export function createWriteSettingsActions({ set, get }: WriteSettingsActionContext): WriteSettingsActions {
+  let settingsRequestGeneration = 0
+  const nextSettingsRequest = (): number => {
+    settingsRequestGeneration += 1
+    return settingsRequestGeneration
+  }
+  const requestIsCurrent = (generation: number): boolean => generation === settingsRequestGeneration
+
   return {
     loadWriteSettings: async () => {
       if (get().settingsLoading) return
+      const generation = nextSettingsRequest()
       set({ settingsLoading: true, settingsError: null })
       try {
         const settings = await rendererRuntimeClient.getSettings({ forceRefresh: true })
+        if (!requestIsCurrent(generation)) return
         const write = applyWriteSettingsState(set, settings)
         set({ settingsLoading: false })
         await get().initializeWorkspace(write.activeWorkspaceRoot)
       } catch (error) {
+        if (!requestIsCurrent(generation)) return
         set({
           settingsLoading: false,
           settingsError: error instanceof Error ? error.message : String(error)
@@ -72,8 +82,9 @@ export function createWriteSettingsActions({ set, get }: WriteSettingsActionCont
     selectWriteWorkspace: async (workspaceRoot) => {
       const normalized = normalizePath(workspaceRoot)
       if (!normalized) return
+      const generation = nextSettingsRequest()
       const roots = compactWorkspaceRoots([normalized, ...get().workspaceRoots])
-      set({ workspaceRoots: roots })
+      set({ workspaceRoots: roots, settingsLoading: false })
       try {
         const settings = await rendererRuntimeClient.setSettings({
           write: {
@@ -81,9 +92,11 @@ export function createWriteSettingsActions({ set, get }: WriteSettingsActionCont
             workspaces: roots
           }
         })
+        if (!requestIsCurrent(generation)) return
         const write = applyWriteSettingsState(set, settings)
         await get().initializeWorkspace(write.activeWorkspaceRoot)
       } catch (error) {
+        if (!requestIsCurrent(generation)) return
         set({ settingsError: error instanceof Error ? error.message : String(error) })
       }
     },
@@ -91,7 +104,9 @@ export function createWriteSettingsActions({ set, get }: WriteSettingsActionCont
     addWriteWorkspace: async (workspaceRoot) => {
       const normalized = normalizePath(workspaceRoot)
       if (!normalized) return
+      const generation = nextSettingsRequest()
       const roots = compactWorkspaceRoots([normalized, ...get().workspaceRoots])
+      set({ settingsLoading: false })
       try {
         const settings = await rendererRuntimeClient.setSettings({
           write: {
@@ -99,9 +114,11 @@ export function createWriteSettingsActions({ set, get }: WriteSettingsActionCont
             workspaces: roots
           }
         })
+        if (!requestIsCurrent(generation)) return
         const write = applyWriteSettingsState(set, settings)
         await get().initializeWorkspace(write.activeWorkspaceRoot)
       } catch (error) {
+        if (!requestIsCurrent(generation)) return
         set({ settingsError: error instanceof Error ? error.message : String(error) })
       }
     },
@@ -109,6 +126,8 @@ export function createWriteSettingsActions({ set, get }: WriteSettingsActionCont
     removeWriteWorkspace: async (workspaceRoot) => {
       const normalized = normalizePath(workspaceRoot)
       if (!normalized) return
+      const generation = nextSettingsRequest()
+      set({ settingsLoading: false })
       const state = get()
       const fallback = state.defaultWorkspaceRoot ||
         state.workspaceRoots.find((item) => item !== normalized) ||
@@ -127,11 +146,13 @@ export function createWriteSettingsActions({ set, get }: WriteSettingsActionCont
             workspaces: roots
           }
         })
+        if (!requestIsCurrent(generation)) return
         const write = applyWriteSettingsState(set, settings)
         if (normalizePath(get().workspaceRoot) === normalized) {
           await get().initializeWorkspace(write.activeWorkspaceRoot)
         }
       } catch (error) {
+        if (!requestIsCurrent(generation)) return
         set({ settingsError: error instanceof Error ? error.message : String(error) })
       }
     }

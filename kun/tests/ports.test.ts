@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { InMemoryEventBus } from '../src/adapters/in-memory-event-bus.js'
 import { InMemoryApprovalGate } from '../src/adapters/in-memory-approval-gate.js'
+import { InMemoryUserInputGate } from '../src/adapters/in-memory-user-input-gate.js'
 import { InMemoryThreadStore } from '../src/adapters/in-memory-thread-store.js'
 import { InMemorySessionStore } from '../src/adapters/in-memory-session-store.js'
 import { LocalToolHost, defaultLocalTools } from '../src/adapters/tool/local-tool-host.js'
@@ -65,6 +66,33 @@ describe('InMemoryApprovalGate', () => {
     expect(gate.decide('missing', 'deny')).toBe(false)
   })
 
+  it('expires a pending approval and settles its waiter', async () => {
+    const gate = new InMemoryApprovalGate()
+    const approval = createApprovalRequest({
+      id: 'a', threadId: 't', turnId: 'tu', toolName: 'echo', summary: 's'
+    })
+    const pending = gate.request(approval)
+
+    expect(gate.expire('a', 'turn aborted')).toBe(true)
+    await expect(pending).resolves.toBe('deny')
+    expect(gate.get('a')).toMatchObject({ status: 'expired', reason: 'turn aborted' })
+  })
+
+  it('bounds resolved approval retention without evicting pending requests', async () => {
+    const gate = new InMemoryApprovalGate({ resolvedCapacity: 1 })
+    for (const id of ['a', 'b']) {
+      const approval = createApprovalRequest({ id, threadId: 't', turnId: 'u', toolName: 'x', summary: 's' })
+      void gate.request(approval)
+      gate.decide(id, 'deny')
+    }
+    const pending = createApprovalRequest({ id: 'pending', threadId: 't', turnId: 'u', toolName: 'x', summary: 's' })
+    void gate.request(pending)
+
+    expect(gate.get('a')).toBeUndefined()
+    expect(gate.get('b')?.status).toBe('denied')
+    expect(gate.pending()).toEqual([pending])
+  })
+
   it('filters pending by thread', () => {
     const gate = new InMemoryApprovalGate()
     gate.request(
@@ -74,6 +102,27 @@ describe('InMemoryApprovalGate', () => {
       createApprovalRequest({ id: 'b', threadId: 'th2', turnId: 't', toolName: 'x', summary: 's' })
     )
     expect(gate.pending('th1')).toHaveLength(1)
+  })
+})
+
+describe('InMemoryUserInputGate', () => {
+  it('reserves a resolution while its durable event is being recorded', async () => {
+    const gate = new InMemoryUserInputGate()
+    const pending = gate.request({
+      id: 'input_1',
+      threadId: 'thread_1',
+      turnId: 'turn_1',
+      itemId: 'item_1',
+      prompt: 'Continue?',
+      questions: []
+    })
+    const claim = gate.claimResolution('input_1')
+
+    expect(claim?.request.id).toBe('input_1')
+    expect(gate.pending('thread_1')).toEqual([])
+    expect(gate.resolve('input_1', { status: 'cancelled' })).toBe(false)
+    expect(claim?.resolve({ status: 'submitted', answers: [] })).toBe(true)
+    await expect(pending).resolves.toEqual({ status: 'submitted', answers: [] })
   })
 })
 

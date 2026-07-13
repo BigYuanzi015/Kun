@@ -5,10 +5,11 @@ import type {
   ToolCallLike,
   ToolExecutionUpdate
 } from '../../ports/tool-host.js'
+import type { UserInputQuestion } from '../../ports/user-input-gate.js'
 import type { ApprovalRequest } from '../../domain/approval.js'
 import { createApprovalRequest } from '../../domain/approval.js'
 import type { TurnItem } from '../../contracts/items.js'
-import { makeToolResultItem, makeApprovalItem } from '../../domain/item.js'
+import { makeToolResultItem } from '../../domain/item.js'
 import { buildBuiltinLocalTools } from './builtin-tools.js'
 import type { BuiltinLocalToolsOptions } from './builtin-tool-types.js'
 import { CapabilityRegistry } from './capability-registry.js'
@@ -28,6 +29,10 @@ import {
   type ReadTrackerOptions
 } from './read-tracker.js'
 import { sandboxBlockForTool, type SandboxBlock } from './sandbox-policy.js'
+import {
+  createToolOperationIdentity,
+  ToolOperationJournal
+} from '../../reliability/operation-journal.js'
 
 /**
  * A single registered tool. Tools are pure functions that observe the
@@ -44,6 +49,12 @@ export type LocalTool = {
    * prompts unless the call is in an allow-list.
    */
   policy: 'auto' | 'on-request' | 'suggest' | 'never' | 'untrusted'
+  /**
+   * Require an interactive user decision even when the thread otherwise uses
+   * `approvalPolicy: 'auto'`. Reserve this for irreversible external effects
+   * such as sending workspace data to a third-party chat channel.
+   */
+  requiresExplicitApproval?: boolean
   /**
    * Optional gating predicate. When present, the tool is only listed
    * and only executed when `shouldAdvertise` returns true for the
@@ -67,6 +78,13 @@ export type LocalToolHostOptions = {
   hooks?: readonly ResolvedHook[]
   /** Runtime read-before-edit guard. Disabled by default for direct unit use. */
   readTracker?: boolean | ReadTrackerOptions
+  /**
+   * Turn-scoped operation journal. Defaults to an in-memory journal so fallback
+   * call ids such as `call_1` are isolated by turnId/toolName/argsHash.
+   */
+  operationJournal?: ToolOperationJournal
+  /** Lazy runtime preparation hook (for example, activating declared extension providers). */
+  prepare?: (context?: ToolHostContext) => Promise<void> | void
 }
 
 /**
@@ -89,23 +107,35 @@ export class LocalToolHost implements ToolHost {
   private readonly allowList: Set<string>
   private hooks: readonly ResolvedHook[]
   private readonly readTracker: ReadTracker
+  private readonly operationJournal: ToolOperationJournal
+  private prepare?: (context?: ToolHostContext) => Promise<void> | void
 
   constructor(options: LocalToolHostOptions) {
     this.registry = options.registry ?? CapabilityRegistry.fromLocalTools(options.tools ?? [])
     this.allowList = new Set(options.allowList ?? [])
     this.hooks = options.hooks ?? []
     this.readTracker = new ReadTracker(normalizeReadTrackerOptions(options.readTracker))
+    this.operationJournal = options.operationJournal ?? new ToolOperationJournal()
+    this.prepare = options.prepare
   }
 
   replaceRuntimeComponents(input: {
     registry?: CapabilityRegistry
     hooks?: readonly ResolvedHook[]
+    prepare?: (context?: ToolHostContext) => Promise<void> | void
   }): void {
     if (input.registry) this.registry = input.registry
     if (input.hooks) this.hooks = input.hooks
+    if (input.prepare) this.prepare = input.prepare
   }
 
   listTools(context?: ToolHostContext) {
+    const prepared = this.prepare?.(context)
+    if (prepared && typeof (prepared as PromiseLike<void>).then === 'function') {
+      return Promise.resolve(prepared).then(() => this.registry.listTools(context))
+    }
+    // Evaluate before Promise.resolve so existing callers retain synchronous
+    // catalog-drift validation when no lazy preparation is configured.
     return Promise.resolve(this.registry.listTools(context))
   }
 
@@ -118,6 +148,7 @@ export class LocalToolHost implements ToolHost {
     context: ToolHostContext,
     onUpdate?: (item: TurnItem) => Promise<void> | void
   ): Promise<ToolHostResult> {
+    await this.prepare?.(context)
     if (context.abortSignal.aborted) {
       throw new Error('tool call aborted before start')
     }
@@ -171,9 +202,12 @@ export class LocalToolHost implements ToolHost {
         approved: false
       }
     }
-    const needsApproval = !preHooks.autoApproved && this.requiresApproval(tool, activeCall, context)
+    // A configured hook may auto-approve ordinary tool calls, but it must not
+    // bypass an explicit user decision for an external side effect.
+    const needsApproval = tool.requiresExplicitApproval ||
+      (!preHooks.autoApproved && this.requiresApproval(tool, activeCall, context))
     if (needsApproval) {
-      const approvalId = `appr_${activeCall.callId}`
+      const approvalId = `appr_${context.threadId}_${context.turnId}_${activeCall.callId}`
       const approval: ApprovalRequest = createApprovalRequest({
         id: approvalId,
         threadId: context.threadId,
@@ -183,20 +217,61 @@ export class LocalToolHost implements ToolHost {
       })
       const decision = await context.awaitApproval(approval)
       if (decision !== 'allow') {
-        const item = makeApprovalItem({
-          id: `item_${approvalId}`,
-          turnId: context.turnId,
-          threadId: context.threadId,
-          approvalId,
-          toolName: activeCall.toolName,
-          summary: approval.summary
-        })
-        return { item, approved: false }
+        return {
+          item: this.errorToolResult(
+            context,
+            activeCall,
+            tool,
+            'Tool call was denied by the approval policy or user.',
+            'approval_denied'
+          ),
+          approved: false
+        }
       }
     }
     if (context.abortSignal.aborted) {
       throw new Error('tool call aborted while waiting for approval')
     }
+    const operationIdentity = createToolOperationIdentity({
+      threadId: context.threadId,
+      turnId: context.turnId,
+      callId: activeCall.callId,
+      toolName: activeCall.toolName,
+      args: activeCall.arguments
+    })
+    const priorOperation = this.operationJournal.get(operationIdentity)
+    if (priorOperation?.status === 'unknown') {
+      return {
+        item: this.errorToolResult(
+          context,
+          activeCall,
+          tool,
+          `Tool side-effect outcome is unknown and will not be retried automatically: ${priorOperation.reason}`,
+          'tool_outcome_unknown'
+        ),
+        approved: !needsApproval
+      }
+    }
+    if (priorOperation?.status === 'started') {
+      return {
+        item: this.errorToolResult(
+          context,
+          activeCall,
+          tool,
+          'An invocation with the same operation identity is still in progress.',
+          'tool_invocation_in_progress'
+        ),
+        approved: !needsApproval
+      }
+    }
+    const replayed = this.operationJournal.getCompleted(operationIdentity)
+    if (replayed) {
+      return {
+        item: this.completedToolResult(context, activeCall, tool, replayed.output, replayed.isError),
+        approved: !needsApproval
+      }
+    }
+    this.operationJournal.begin(operationIdentity)
     let result: Awaited<ReturnType<LocalTool['execute']>>
     try {
       result = await tool.execute(activeCall.arguments, context, async (update) => {
@@ -218,7 +293,15 @@ export class LocalToolHost implements ToolHost {
       // A tool blowing up (an MCP server returning a protocol error, a
       // provider bug) is feedback for the model, not a reason to kill the
       // whole turn. Only abort keeps propagating.
-      if (context.abortSignal.aborted) throw error
+      if (context.abortSignal.aborted) {
+        this.operationJournal.unknown(operationIdentity, 'tool call aborted during execution')
+        throw error
+      }
+      if (isUnknownOutcomeError(error)) {
+        this.operationJournal.unknown(operationIdentity, error instanceof Error ? error.message : String(error))
+      } else {
+        this.operationJournal.fail(operationIdentity, error)
+      }
       const message = error instanceof Error ? error.message : String(error)
       return {
         item: this.errorToolResult(context, activeCall, tool, message, 'tool_execution_failed'),
@@ -233,6 +316,7 @@ export class LocalToolHost implements ToolHost {
         result
       })
     } catch (error) {
+      this.operationJournal.fail(operationIdentity, error)
       return {
         item: this.errorToolResult(context, activeCall, tool, hookErrorMessage(error), 'hook_failed'),
         approved: true
@@ -248,16 +332,8 @@ export class LocalToolHost implements ToolHost {
       isError
     })
     if (!isError) output = await offloadLargeToolOutput(output, activeCall.toolName, context)
-    const item = makeToolResultItem({
-      id: `item_${activeCall.callId}`,
-      turnId: context.turnId,
-      threadId: context.threadId,
-      callId: activeCall.callId,
-      toolName: activeCall.toolName,
-      toolKind: activeCall.toolKind ?? tool.toolKind,
-      output,
-      isError
-    })
+    this.operationJournal.complete(operationIdentity, { output, isError })
+    const item = this.completedToolResult(context, activeCall, tool, output, isError)
     return { item, approved: !needsApproval }
   }
 
@@ -312,6 +388,25 @@ export class LocalToolHost implements ToolHost {
     return `Run ${call.toolName}(${args})`
   }
 
+  private completedToolResult(
+    context: ToolHostContext,
+    call: ToolCallLike,
+    tool: LocalTool,
+    output: unknown,
+    isError?: boolean
+  ): TurnItem {
+    return makeToolResultItem({
+      id: `item_${call.callId}`,
+      turnId: context.turnId,
+      threadId: context.threadId,
+      callId: call.callId,
+      toolName: call.toolName,
+      toolKind: call.toolKind ?? tool.toolKind,
+      output,
+      isError
+    })
+  }
+
   private errorToolResult(
     context: ToolHostContext,
     call: ToolCallLike,
@@ -345,9 +440,14 @@ export class LocalToolHost implements ToolHost {
       inputSchema: tool.inputSchema,
       toolKind: tool.toolKind ?? 'tool_call',
       execute: tool.execute,
-      ...(tool.shouldAdvertise ? { shouldAdvertise: tool.shouldAdvertise } : {})
+      ...(tool.shouldAdvertise ? { shouldAdvertise: tool.shouldAdvertise } : {}),
+      ...(tool.requiresExplicitApproval ? { requiresExplicitApproval: true } : {})
     }
   }
+}
+
+function isUnknownOutcomeError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'unknownOutcome' in error && error.unknownOutcome === true)
 }
 
 const ARTIFACT_OUTPUT_THRESHOLD_BYTES = 128 * 1024
@@ -443,6 +543,21 @@ function createUserInputTool(name: string): LocalTool {
           description: 'Optional answer choices for a single question. Use strings or {label, description} objects.',
           items: optionSchema
         },
+        selectionMode: {
+          type: 'string',
+          enum: ['single', 'multiple'],
+          description: 'Use "multiple" only when the user may choose more than one option.'
+        },
+        minSelections: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Minimum required selections for a multiple-choice question.'
+        },
+        maxSelections: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Maximum allowed selections for a multiple-choice question.'
+        },
         questions: {
           type: 'array',
           description: 'One to three structured questions. Each question may include answer options.',
@@ -455,6 +570,18 @@ function createUserInputTool(name: string): LocalTool {
               options: {
                 type: 'array',
                 items: optionSchema
+              },
+              selectionMode: {
+                type: 'string',
+                enum: ['single', 'multiple']
+              },
+              minSelections: {
+                type: 'integer',
+                minimum: 1
+              },
+              maxSelections: {
+                type: 'integer',
+                minimum: 1
               }
             },
             required: ['question']
@@ -498,17 +625,12 @@ function normalizeUserInputQuestions(
   args: Record<string, unknown>,
   fallbackId: string,
   fallbackPrompt: string
-): Array<{
-  header: string
-  id: string
-  question: string
-  options: Array<{ label: string; description: string }>
-}> {
+): UserInputQuestion[] {
   const rawQuestions = Array.isArray(args.questions) ? args.questions : null
   if (rawQuestions && rawQuestions.length > 0) {
     const questions = rawQuestions
       .map((question, index) => normalizeUserInputQuestion(question, index, fallbackId))
-      .filter((question) => question !== null)
+      .filter((question): question is UserInputQuestion => question !== null)
     if (questions.length > 0) return questions
   }
   const options = Array.isArray(args.options)
@@ -521,7 +643,8 @@ function normalizeUserInputQuestions(
       header: 'Input',
       id: String(args.id ?? fallbackId),
       question: fallbackPrompt,
-      options
+      options,
+      ...normalizeUserInputSelection(args, options.length)
     }
   ]
 }
@@ -530,12 +653,7 @@ function normalizeUserInputQuestion(
   value: unknown,
   index: number,
   fallbackId: string
-): {
-  header: string
-  id: string
-  question: string
-  options: Array<{ label: string; description: string }>
-} | null {
+): UserInputQuestion | null {
   if (!value || typeof value !== 'object') return null
   const raw = value as Record<string, unknown>
   const question = typeof raw.question === 'string' && raw.question.trim()
@@ -551,8 +669,34 @@ function normalizeUserInputQuestion(
     header: typeof raw.header === 'string' && raw.header.trim() ? raw.header.trim() : `Question ${index + 1}`,
     id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : `${fallbackId}_${index + 1}`,
     question,
-    options
+    options,
+    ...normalizeUserInputSelection(raw, options.length)
   }
+}
+
+function normalizeUserInputSelection(
+  raw: Record<string, unknown>,
+  optionCount: number
+): Pick<UserInputQuestion, 'selectionMode' | 'minSelections' | 'maxSelections'> {
+  if (raw.selectionMode !== 'multiple' || optionCount === 0) {
+    return { selectionMode: 'single' }
+  }
+  const rawMax = positiveInteger(raw.maxSelections)
+  const maxSelections = rawMax === undefined ? undefined : Math.min(rawMax, optionCount)
+  const minCeiling = maxSelections ?? optionCount
+  const rawMin = positiveInteger(raw.minSelections)
+  const minSelections = Math.min(rawMin ?? 1, minCeiling)
+  return {
+    selectionMode: 'multiple',
+    minSelections,
+    ...(maxSelections !== undefined ? { maxSelections } : {})
+  }
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  const normalized = Math.floor(value)
+  return normalized > 0 ? normalized : undefined
 }
 
 function normalizeUserInputOption(

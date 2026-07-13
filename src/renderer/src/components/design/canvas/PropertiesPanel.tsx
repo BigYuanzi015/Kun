@@ -25,8 +25,10 @@ import type { AlignAxis, DistributeAxis } from '../../../design/canvas/canvas-al
 import {
   DEFAULT_FILL,
   fillColor as resolveFillColor,
+  isArtifactFrame,
   isHtmlFrame,
   isImplicitImageSlot,
+  isRunningAppFrame,
   type Arrowhead,
   type CanvasShape,
   type DevicePreset,
@@ -239,6 +241,10 @@ function PropertiesPanelInner({ surface = 'design', onImplementDesign }: Props):
   const fontColor = allText ? reduceField(shapes, (s) => s.fontColor ?? '#000000') : undefined
 
   const singleHtmlFrame = shapes.length === 1 && isHtmlFrame(shapes[0]) ? shapes[0] : null
+  // Embedded HTML/SVG artifacts are DOM portals. Their source owns artwork
+  // fills and strokes; only geometry, corner radius, opacity, and portal
+  // controls have a visible canvas effect.
+  const singleArtifactFrame = shapes.length === 1 && isArtifactFrame(shapes[0]) ? shapes[0] : null
   const linkedArtifact = singleHtmlFrame
     ? useDesignWorkspaceStore.getState().artifacts.find((a) => a.id === singleHtmlFrame.htmlArtifactId)
     : null
@@ -260,9 +266,11 @@ function PropertiesPanelInner({ surface = 'design', onImplementDesign }: Props):
 
   // AI image holder: only fillable boxes (image/frame/rect) can be a slot the
   // agent fills. The marking flows into the AI snapshot so "fill this" resolves.
-  const canBeHolder =
-    !singleHtmlFrame &&
-    shapes.every((s) => s.type === 'image' || s.type === 'frame' || s.type === 'rect')
+  const canBeHolder = shapes.every((s) =>
+    !isArtifactFrame(s) &&
+    !isRunningAppFrame(s) &&
+    (s.type === 'image' || s.type === 'frame' || s.type === 'rect')
+  )
   const aiHolder = reduceField(shapes, (s) => Boolean(s.aiImageHolder))
   // Empty boxes are implicit slots: the agent fills a selected empty box on
   // request automatically, so no manual marking is needed for the common case.
@@ -463,7 +471,7 @@ function PropertiesPanelInner({ surface = 'design', onImplementDesign }: Props):
       )}
 
       {/* Fill — non-frame, non-linear shapes */}
-      {shapes.some((s) => s.type !== 'group') && !singleHtmlFrame && !isLinear && (
+      {shapes.some((s) => s.type !== 'group') && !singleArtifactFrame && !isLinear && (
         <Section title={t('canvasInspectorFill', 'Fill')}>
           {firstFill ? (
             <div className="space-y-1.5">
@@ -499,7 +507,7 @@ function PropertiesPanelInner({ surface = 'design', onImplementDesign }: Props):
       )}
 
       {/* Stroke */}
-      {!singleHtmlFrame && (
+      {!singleArtifactFrame && (
         <Section
           title={t('canvasInspectorStroke', 'Stroke')}
           action={

@@ -53,6 +53,31 @@ export function buildDesignArtifactMarkdown(options: BuildDesignArtifactMarkdown
   const { artifact, designMdPath, currentTurn } = options
   const updatedAt = options.updatedAt ?? new Date().toISOString()
   const currentVersion = currentDesignArtifactVersion(artifact)
+  const isSvg = artifact.kind === 'svg'
+  const sourceLabel = isSvg ? 'Source SVG path' : 'Source HTML path'
+  const visualDirection = isSvg
+    ? [
+        '- Define the vector composition, layer hierarchy, palette, stroke/fill treatment, and static first frame.',
+        '- Preserve a responsive viewBox and keep editable visual layers on stable descriptive ids.',
+        '- Keep visual decisions consistent with root `DESIGN.md` when that valid project theme exists.'
+      ]
+    : [
+        '- Establish the page layout, hierarchy, color system, typography, spacing, and responsive behavior for this screen.',
+        '- Keep visual decisions consistent with root `DESIGN.md` when that valid project theme exists.'
+      ]
+  const interactionNotes = isSvg
+    ? '- Document animation timing, easing, loop behavior, paused/reduced-motion behavior, and accessibility metadata here as the design evolves.'
+    : '- Document important states, inputs, navigation, animation, and accessibility behavior here as the design evolves.'
+  const handoffNotes = isSvg
+    ? [
+        '- Keep the SVG file standalone, script-free, and implementation-ready.',
+        '- Preserve its viewBox, stable element ids, accessible title/description, and declarative animation when implementing it.',
+        '- Note any assumptions or follow-up work that code mode should preserve.'
+      ]
+    : [
+        '- Keep the HTML file standalone and implementation-ready.',
+        '- Note any assumptions or follow-up work that code mode should preserve.'
+      ]
   const versionRows =
     artifact.versions.length > 0
       ? artifact.versions
@@ -66,7 +91,7 @@ export function buildDesignArtifactMarkdown(options: BuildDesignArtifactMarkdown
   return `# Design Notes: ${fallback(artifact.title, artifact.id)}
 
 - Artifact id: \`${artifact.id}\`
-- Source HTML path: \`${artifact.relativePath}\`
+- ${sourceLabel}: \`${artifact.relativePath}\`
 - Design notes file: \`${designMdPath}\`
 - Current version: ${currentVersionLabel(artifact)}${currentVersion ? ` (\`${currentVersion.relativePath}\`)` : ''}
 - Updated: ${updatedAt}
@@ -89,17 +114,15 @@ ${formatPersistedDesignContext(options.designContext)}
 
 ## Visual Direction
 
-- Establish the page layout, hierarchy, color system, typography, spacing, and responsive behavior for this screen.
-- Keep visual decisions consistent with \`.kun-design/DESIGN_SYSTEM.md\` when that shared file exists.
+${visualDirection.join('\n')}
 
 ## Interaction Notes
 
-- Document important states, inputs, navigation, animation, and accessibility behavior here as the design evolves.
+${interactionNotes}
 
 ## Handoff Notes
 
-- Keep the HTML file standalone and implementation-ready.
-- Note any assumptions or follow-up work that code mode should preserve.
+${handoffNotes.join('\n')}
 
 ## Version History
 

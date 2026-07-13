@@ -157,7 +157,7 @@ describe('design project contract', () => {
     })
 
     expect(summary).toMatchObject({
-      path: '.kun-design/DESIGN.md',
+      path: '.kun-design/HANDOFF.md',
       title: 'Ops app',
       artifactCount: 1,
       screenCount: 1,
@@ -205,7 +205,7 @@ describe('design project contract', () => {
       toolInputSeed: {
         format: 'package',
         title: 'Ops app',
-        designMdPath: '.kun-design/DESIGN.md'
+        designMdPath: '.kun-design/HANDOFF.md'
       }
     })
     expect(ready.toolAction.prompt).toContain('Suggested tool call: design.export')

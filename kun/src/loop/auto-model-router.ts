@@ -28,6 +28,8 @@ export async function resolveAutoModelRoute(input: {
   modelClient: ModelClient
   threadId: string
   turnId: string
+  providerId?: string
+  accountId?: string
   latestRequest: string
   recentContext: string
   selectedModelMode: string
@@ -47,6 +49,8 @@ export async function resolveAutoModelRoute(input: {
       threadId: input.threadId,
       turnId: `${input.turnId}_auto_router`,
       model: AUTO_MODEL_ROUTER_MODEL,
+      ...(input.providerId?.trim() ? { providerId: input.providerId.trim() } : {}),
+      ...(input.accountId?.trim() ? { accountId: input.accountId.trim() } : {}),
       systemPrompt: AUTO_MODEL_ROUTER_SYSTEM_PROMPT,
       prefix: [],
       history: [

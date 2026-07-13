@@ -2,7 +2,9 @@ import {
   DEFAULT_APPROVAL_POLICY,
   DEFAULT_DEEPSEEK_BASE_URL,
   DEFAULT_IMAGE_GENERATION_PROTOCOL,
+  DEFAULT_IMAGE_GENERATION_RESOLUTION,
   IMAGE_GENERATION_QUALITIES,
+  IMAGE_GENERATION_RESOLUTIONS,
   DEFAULT_KUN_DATA_DIR,
   DEFAULT_KUN_MODEL,
   DEFAULT_KUN_PORT,
@@ -31,6 +33,7 @@ import {
   type KunImageGenerationSettingsV1,
   type KunInstructionSettingsV1,
   type ImageGenerationQuality,
+  type ImageGenerationResolution,
   type KunMcpSearchSettingsV1,
   type KunMusicGenerationSettingsV1,
   type KunPromptOptimizationSettingsV1,
@@ -214,6 +217,7 @@ export function defaultKunImageGenerationSettings(): KunImageGenerationSettingsV
     baseUrl: '',
     apiKey: '',
     model: '',
+    defaultResolution: DEFAULT_IMAGE_GENERATION_RESOLUTION,
     defaultSize: '',
     quality: 'auto',
     timeoutMs: 180_000
@@ -494,6 +498,11 @@ export function mergeKunRuntimeSettings(
   // whitespace strings are dropped so the field is omitted entirely.
   const nextRoleModelSlots = mergeOptionalModelSlot(current, patch)
   const nextRoleReasoningSlots = mergeOptionalReasoningSlot(current, patch)
+  const nextSubagents = mergeKunSubagentsSettings(current.subagents, patch?.subagents)
+  // Do not let the nested partial patch leak through the broad object spread;
+  // `nextSubagents` below is the fully materialized authoritative value.
+  const { subagents: _subagentsPatch, ...flatPatch } = patch ?? {}
+  void _subagentsPatch
   // NOTE: approvalPolicy/sandboxMode are merged through verbatim from the patch.
   // The unified 6-mode UI selector already resolves a mode to its concrete
   // {approvalPolicy, sandboxMode} pair via kunToolPermissionModeSettings before
@@ -504,7 +513,7 @@ export function mergeKunRuntimeSettings(
   // 'external-sandbox' sandbox to 'danger-full-access' — on every settings merge.
   const merged: KunRuntimeSettingsV1 = {
     ...current,
-    ...(patch ?? {}),
+    ...flatPatch,
     port: nextPort,
     tokenEconomyMode: nextTokenEconomy.enabled,
     tokenEconomy: nextTokenEconomy,
@@ -524,11 +533,7 @@ export function mergeKunRuntimeSettings(
     instructions: nextInstructions,
     computerUse: nextComputerUse,
     quality: nextQuality,
-    ...(patch?.subagents !== undefined
-      ? { subagents: patch.subagents }
-      : current.subagents !== undefined
-        ? { subagents: current.subagents }
-        : {})
+    ...(nextSubagents !== undefined ? { subagents: nextSubagents } : {})
   }
   // Optional model slots are authoritative from mergeOptionalModelSlot: strip any
   // verbatim copies leaked by the spreads above, then re-apply only the non-empty
@@ -538,15 +543,36 @@ export function mergeKunRuntimeSettings(
   return { ...merged, ...nextRoleModelSlots, ...nextRoleReasoningSlots }
 }
 
+function mergeKunSubagentsSettings(
+  current: KunRuntimeSettingsV1['subagents'],
+  patch: KunRuntimeSettingsPatchV1['subagents']
+): KunRuntimeSettingsV1['subagents'] {
+  if (patch === undefined) return current
+  return {
+    ...(current ?? { enabled: true, profiles: [] }),
+    ...patch,
+    enabled: patch.enabled ?? current?.enabled ?? true,
+    // A roster diff is an intentional whole-array replacement (including []
+    // for deleting every custom profile). Omitting it keeps the current roster.
+    profiles: patch.profiles !== undefined
+      ? [...patch.profiles]
+      : [...(current?.profiles ?? [])]
+  }
+}
+
 const OPTIONAL_MODEL_SLOT_KEYS = [
   'smallModel',
   'smallModelProviderId',
+  'smallModelAccountId',
   'titleModel',
   'titleProviderId',
+  'titleAccountId',
   'summaryModel',
   'summaryProviderId',
+  'summaryAccountId',
   'codeReviewModel',
-  'codeReviewProviderId'
+  'codeReviewProviderId',
+  'codeReviewAccountId'
 ] as const
 
 type OptionalModelSlotKey = (typeof OPTIONAL_MODEL_SLOT_KEYS)[number]
@@ -610,10 +636,17 @@ function normalizeKunImageGenerationSettings(
     baseUrl: typeof input?.baseUrl === 'string' ? input.baseUrl.trim() : defaults.baseUrl,
     apiKey: typeof input?.apiKey === 'string' ? input.apiKey.trim() : defaults.apiKey,
     model: typeof input?.model === 'string' ? input.model.trim() : defaults.model,
+    defaultResolution: normalizeKunImageGenerationResolution(input?.defaultResolution),
     defaultSize: /^(auto|\d+x\d+)$/.test(defaultSize) ? defaultSize : '',
     quality: normalizeKunImageGenerationQuality(input?.quality),
     timeoutMs: boundedPositiveInt(input?.timeoutMs, defaults.timeoutMs, 600_000)
   }
+}
+
+function normalizeKunImageGenerationResolution(value: unknown): ImageGenerationResolution {
+  return IMAGE_GENERATION_RESOLUTIONS.includes(value as ImageGenerationResolution)
+    ? value as ImageGenerationResolution
+    : DEFAULT_IMAGE_GENERATION_RESOLUTION
 }
 
 function normalizeKunImageGenerationQuality(value: unknown): ImageGenerationQuality {

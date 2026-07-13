@@ -585,9 +585,10 @@ export function createNavigationActions(
             })()
           })
         }
+        const stateBeforeBootCommit = get()
         set({
-          route: 'chat',
-          initialSetupOpen: needsInitialSetup,
+          route: stateBeforeBootCommit.route === 'settings' ? 'settings' : 'chat',
+          initialSetupOpen: needsInitialSetup || stateBeforeBootCommit.initialSetupOpen,
           initialSetupMode: 'required',
           workspaceRoot,
           codeWorkspaceRoots,

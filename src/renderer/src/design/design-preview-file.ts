@@ -7,6 +7,7 @@ import type {
   WorkspaceFileWritePayload,
   WorkspaceFileWriteResult
 } from '@shared/workspace-file'
+import { writeDesignWorkspaceFile } from './design-persistence-coordinator'
 
 type DesignPreviewPrepareApi = {
   readWorkspaceFile?: (options: WorkspaceFileTarget) => Promise<WorkspaceFileReadResult>
@@ -170,7 +171,12 @@ export function designPreviewRenderState(content: string): DesignPreviewRenderSt
 }
 
 function currentPrepareApi(api?: DesignPreviewPrepareApi): DesignPreviewPrepareApi | undefined {
-  return api ?? (typeof window !== 'undefined' ? window.kunGui : undefined)
+  if (api) return api
+  if (typeof window === 'undefined' || !window.kunGui) return undefined
+  return {
+    readWorkspaceFile: window.kunGui.readWorkspaceFile,
+    writeWorkspaceFile: (payload) => writeDesignWorkspaceFile(payload)
+  }
 }
 
 function currentWatchApi(api?: DesignPreviewWatchApi): DesignPreviewWatchApi | undefined {

@@ -49,6 +49,7 @@ export type SendDesignPromptOptions = {
   displayText?: string
   source?: DesignPromptSource
   screenShapeId?: string
+  svgArtifactId?: string
 }
 
 export function useDesignPromptController({
@@ -100,7 +101,7 @@ export function useDesignPromptController({
     })()
   }
 
-  function sendDesignPrompt(value: string, options: SendDesignPromptOptions = {}): void {
+  async function sendDesignPrompt(value: string, options: SendDesignPromptOptions = {}): Promise<boolean> {
     const source = options.source ?? 'user'
     const attachmentScope = getAttachmentScope()
     const promptRoute = routeDesignPrompt({
@@ -114,20 +115,20 @@ export function useDesignPromptController({
       imageOnlyDisplay: t('composerImageOnlyDisplay'),
       imageOnlyPrompt: t('composerImageOnlyPrompt')
     })
-    if (promptRoute.kind === 'ignore') return
+    if (promptRoute.kind === 'ignore') return false
     if (promptRoute.kind === 'attachment-unsupported') {
       setAttachmentUploadError(t('composerAttachmentModelUnsupported'))
-      return
+      return false
     }
     if (promptRoute.kind === 'missing-workspace') {
       setError(t('workspaceRequiredToCreateThread'))
-      return
+      return false
     }
     setDesignAssistantOpen(true)
     if (promptRoute.kind === 'multi-page') {
       setInput('')
       generateDesignPages(promptRoute.brief)
-      return
+      return true
     }
     const {
       text: routeText,
@@ -138,12 +139,25 @@ export function useDesignPromptController({
       attachments
     } = promptRoute
     if (promptRoute.shouldClearInput) setInput('')
-    void (async () => {
-      const docId = useDesignWorkspaceStore.getState().ensureActiveDocument()
+    try {
+      const dispatchState = useDesignWorkspaceStore.getState()
+      const docId = dispatchState.ensureActiveDocument()
+      const dispatchWorkspaceRoot = dispatchState.workspaceRoot || designWorkspaceRoot
       const threadId = await ensureDesignThreadForWorkspace(designWorkspaceRoot, docId)
       if (!threadId) {
         setInput(routeText)
-        return
+        return false
+      }
+      const currentState = useDesignWorkspaceStore.getState()
+      if (
+        (currentState.workspaceRoot || designWorkspaceRoot) !== dispatchWorkspaceRoot ||
+        currentState.activeDocumentId !== docId
+      ) {
+        const message = 'Design turn was cancelled because the active workspace or design document changed.'
+        currentState.setFileError(message)
+        setError(message)
+        setInput(routeText)
+        return false
       }
       const result = await submitDesignTurn({
         promptText,
@@ -158,17 +172,27 @@ export function useDesignPromptController({
         suppressedIds: designContextSuppressedIds,
         htmlElementContext: designHtmlElementContext,
         explicitScreenShapeId: options.screenShapeId,
+        explicitSvgArtifactId: options.svgArtifactId,
         clearAutoRepairScope: clearDesignAutoRepairScope
       })
       if (result.status === 'missing-board' || result.status === 'file-error') {
         setInput(routeText)
-        return
+        return false
       }
       if (result.status === 'sent') {
         clearHtmlElementContext()
         if (result.clearAttachments) clearComposerAttachments(attachmentScope)
+        return true
       }
-    })()
+      setInput(routeText)
+      return false
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      useDesignWorkspaceStore.getState().setFileError(message)
+      setError(message)
+      setInput(routeText)
+      return false
+    }
   }
 
   const {

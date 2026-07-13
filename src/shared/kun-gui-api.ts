@@ -66,6 +66,7 @@ import type {
   WorkspaceFileWritePayload,
   WorkspaceFileWriteResult
 } from './workspace-file'
+import type { ProjectDesignMdOfficialLintResult } from './project-design-md'
 import type {
   WriteInlineCompletionDebugEntry,
   WriteInlineCompletionRequest,
@@ -103,6 +104,7 @@ import type {
   WriteRichClipboardPayload,
   WriteRichClipboardResult
 } from './write-export'
+import type { PptMasterEnsureResult } from './ppt-master'
 import type { DesignExportPayload, DesignExportResult } from './design-export'
 import type {
   MemoryMarkdownExportSavePayload,
@@ -116,6 +118,7 @@ import type {
   TerminalResizePayload,
   TerminalWritePayload
 } from './terminal'
+import type { ExtensionIpcApi } from './extension-ipc'
 
 export type KunRuntimeStatusPayload = {
   state: 'starting' | 'running' | 'restarting' | 'crashed' | 'failed' | 'stopped'
@@ -181,6 +184,7 @@ export type SkillRootListItem = {
 export type SkillRootListResult =
   | { ok: true; roots: SkillRootListItem[] }
   | { ok: false; message: string }
+export type { PptMasterEnsureResult } from './ppt-master'
 export type UiPluginListIpcResult = { plugins: UiPluginListItem[] }
 export type UiPluginInstallIpcResult =
   | { canceled: true }
@@ -222,6 +226,13 @@ export type ModelProviderModelGroup = {
   label: string
   modelIds: string[]
   modelProfiles?: Record<string, ModelProviderModelProfileV1>
+  /** Opaque account reference used only for an acknowledged extension binding. */
+  accountId?: string
+  extensionProvider?: {
+    extensionId: string
+    extensionVersion: string
+    localProviderId: string
+  }
 }
 export type ModelProviderProbeRequest = {
   baseUrl: string
@@ -309,7 +320,7 @@ export type LegacySessionImportResult =
   | ({ ok: true } & LegacySessionImportSummary)
   | { ok: false; message: string }
 /** One IPC message carries every SSE event parsed from a network chunk. */
-export type SseEventPayload = { streamId: string; events: unknown[] }
+export type SseEventPayload = { streamId: string; events: unknown[]; batchId?: string }
 export type SseEndPayload = { streamId: string }
 export type SseErrorPayload = { streamId: string; status?: number; message?: string }
 export type TrayActionPayload =
@@ -343,7 +354,7 @@ export type SdkDownloadState = {
   message?: string
 }
 
-export type KunGuiApi = {
+export type KunGuiApi = ExtensionIpcApi & {
   platform: string
   homeDir: string
   getSettings: () => Promise<AppSettingsV1>
@@ -366,6 +377,7 @@ export type KunGuiApi = {
   setSettings: (partial: AppSettingsPatch) => Promise<AppSettingsV1>
   saveSettingsSilent: (partial: AppSettingsPatch) => Promise<AppSettingsV1>
   runtimeRequest: (path: string, method?: string, body?: string) => Promise<RuntimeRequestResult>
+  resolveKunApproval: (request: KunProtectedApprovalRequest) => Promise<KunProtectedApprovalResult>
   restartRuntime: () => Promise<void>
   fetchUpstreamModels: () => Promise<UpstreamModelsResult>
   probeModelProvider: (payload: ModelProviderProbeRequest) => Promise<ModelProviderProbeResult>
@@ -416,6 +428,8 @@ export type KunGuiApi = {
     manifestContent?: string
   ) => Promise<SkillSaveResult>
   importSkillsFromGitHub: (rootPath: string, url: string) => Promise<SkillGithubImportResult>
+  /** Install/repair the managed PPT Master skill and its isolated Python environment. */
+  ensurePptMaster: () => Promise<PptMasterEnsureResult>
   openSkillRoot: (rootPath: string) => Promise<PathOpenResult>
   listUiPlugins: () => Promise<UiPluginListIpcResult>
   installUiPlugin: () => Promise<UiPluginInstallIpcResult>
@@ -443,6 +457,8 @@ export type KunGuiApi = {
   restoreGitCheckpoint: (params: {
     checkpointId: string
     allowPartialRestore?: boolean
+    expectedThreadId?: string
+    expectedWorkspaceRoot?: string
   }) => Promise<GitCheckpointRestoreResult>
   checkoutGitBranchWorktree: (workspaceRoot: string, branch: string) => Promise<GitWorktreeCheckoutResult>
   createGitBranchWorktree: (workspaceRoot: string, branch: string) => Promise<GitWorktreeCheckoutResult>
@@ -491,6 +507,7 @@ export type KunGuiApi = {
   listWorkspaceDirectory: (options: WorkspaceDirectoryTarget) => Promise<WorkspaceDirectoryListResult>
   resolveWorkspaceFile: (options: WorkspaceFileTarget) => Promise<WorkspaceFileResolveResult>
   readWorkspaceFile: (options: WorkspaceFileTarget) => Promise<WorkspaceFileReadResult>
+  lintProjectDesignMd: (content: string) => Promise<ProjectDesignMdOfficialLintResult>
   readWorkspaceImage: (options: WorkspaceFileTarget) => Promise<WorkspaceImageReadResult>
   readWorkspacePdf: (options: WorkspaceFileTarget) => Promise<WorkspacePdfReadResult>
   readLocalPdfText: (options: LocalPdfTextTarget) => Promise<LocalPdfTextReadResult>
@@ -559,8 +576,14 @@ export type KunGuiApi = {
   copyWriteDocumentAsRichText: (
     payload: WriteRichClipboardPayload
   ) => Promise<WriteRichClipboardResult>
-  startSse: (threadId: string, sinceSeq: number, streamId?: string) => Promise<{ streamId: string }>
+  startSse: (
+    threadId: string,
+    sinceSeq: number,
+    streamId?: string,
+    options?: { acknowledgedBatches?: boolean }
+  ) => Promise<{ streamId: string }>
   stopSse: (streamId: string) => Promise<boolean>
+  ackSse: (streamId: string, batchId: string) => Promise<boolean>
   onSseEvent: (handler: (payload: SseEventPayload) => void) => () => void
   onSseEnd: (handler: (payload: SseEndPayload) => void) => () => void
   onSseError: (handler: (payload: SseErrorPayload) => void) => () => void
@@ -610,3 +633,14 @@ export type KunGuiApi = {
   onTerminalData: (handler: (payload: TerminalDataPayload) => void) => () => void
   onTerminalExit: (handler: (payload: TerminalExitPayload) => void) => () => void
 }
+
+export type KunProtectedApprovalRequest = {
+  approvalId: string
+  decision: 'allow' | 'deny'
+  /** Policy decisions are generated by Kun; user decisions require a protected native confirmation. */
+  source: 'policy' | 'user'
+}
+
+export type KunProtectedApprovalResult =
+  | { confirmed: false }
+  | { confirmed: true; response: RuntimeRequestResult }

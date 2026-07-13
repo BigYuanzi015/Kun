@@ -1,0 +1,265 @@
+import { describe, expect, it, vi } from 'vitest'
+import {
+  hardenExtensionWebPreferences,
+  installWebviewSecurityGuards,
+  isAllowedExtensionNavigation
+} from './extension-webview-security'
+import { ExtensionViewSessionRegistry } from './extension-view-sessions'
+
+describe('ExtensionViewSessionRegistry', () => {
+  it('binds a guest once to the exact parent, extension and entry', () => {
+    const registry = new ExtensionViewSessionRegistry(() => 1_000)
+    const created = registry.create({
+      sessionId: '1234567890abcdef',
+      extensionId: 'acme.example',
+      extensionVersion: '1.0.0',
+      contributionId: 'issues',
+      entryPath: 'dist/index.html',
+      parentWebContentsId: 10
+    })
+    const prepared = registry.prepareAttach(10, created.sourceUrl)
+    const destroyedListeners: Array<() => void> = []
+    const guest = {
+      id: 20,
+      once: (_event: string, listener: () => void) => destroyedListeners.push(listener)
+    }
+    registry.bindNextGuest(10, guest as never)
+
+    expect(registry.requireGuest(20, created.sessionId, prepared.nonce)).toMatchObject({
+      extensionId: 'acme.example',
+      contributionId: 'issues',
+      state: 'active'
+    })
+    expect(() => registry.requireGuest(20, created.sessionId, 'wrong-nonce')).toThrow(
+      /not authorized/
+    )
+    expect(() => registry.prepareAttach(10, created.sourceUrl)).toThrow(/unavailable/)
+  })
+
+  it('forces the Kun preload, non-persistent partition and sandbox baseline', () => {
+    const record = new ExtensionViewSessionRegistry().create({
+      sessionId: '1234567890abcdef',
+      extensionId: 'acme.example',
+      extensionVersion: '1.0.0',
+      contributionId: 'issues',
+      entryPath: 'dist/index.html',
+      parentWebContentsId: 10
+    })
+    const preferences = {
+      preload: '/attacker/preload.js',
+      nodeIntegration: true,
+      contextIsolation: false,
+      sandbox: false,
+      partition: 'persist:shared'
+    }
+    hardenExtensionWebPreferences(preferences as never, record, '/kun/extension-view.cjs')
+    expect(preferences).toMatchObject({
+      preload: '/kun/extension-view.cjs',
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      partition: expect.stringMatching(/^temp:kun-extension-/)
+    })
+    expect((preferences as unknown as { additionalArguments: string[] }).additionalArguments).toEqual([
+      '--kun-extension-view-session=1234567890abcdef',
+      expect.stringMatching(/^--kun-extension-view-nonce=.{32,}$/)
+    ])
+  })
+
+  it('allows only navigation within the bound extension origin', () => {
+    const record = { extensionId: 'acme.example' }
+    expect(isAllowedExtensionNavigation('kun-extension://acme.example/dist/app.js', record)).toBe(true)
+    expect(isAllowedExtensionNavigation('kun-extension://other.example/dist/app.js', record)).toBe(false)
+    expect(isAllowedExtensionNavigation('https://example.com', record)).toBe(false)
+    expect(isAllowedExtensionNavigation('file:///tmp/secret', record)).toBe(false)
+  })
+
+  it('prepares the isolated protocol partition before allowing the first Webview navigation', () => {
+    const registry = new ExtensionViewSessionRegistry()
+    const created = registry.create({
+      sessionId: '1234567890abcdef',
+      extensionId: 'acme.example',
+      extensionVersion: '1.0.0',
+      contributionId: 'issues',
+      entryPath: 'dist/index.html',
+      parentWebContentsId: 10
+    })
+    const appListeners = new Map<string, (...args: never[]) => void>()
+    const contentsListeners = new Map<string, (...args: never[]) => void>()
+    const assertExtensionPartitionPrepared = vi.fn()
+    installWebviewSecurityGuards({
+      app: {
+        on: vi.fn((event: string, listener: (...args: never[]) => void) => {
+          appListeners.set(event, listener)
+        })
+      } as never,
+      sessions: registry,
+      extensionPreloadPath: '/kun/extension-view.cjs',
+      assertExtensionPartitionPrepared,
+      isPreparedExtensionNavigation: () => false,
+      isTrustedWorkbench: () => true,
+      isAllowedDevPreviewUrl: () => false,
+      isAuthorizedPrototypeFileUrl: () => false
+    })
+    const contents = {
+      id: 10,
+      on: vi.fn((event: string, listener: (...args: never[]) => void) => {
+        contentsListeners.set(event, listener)
+      }),
+      setWindowOpenHandler: vi.fn(),
+      getType: () => 'window'
+    }
+    appListeners.get('web-contents-created')?.({} as never, contents as never)
+    const event = { preventDefault: vi.fn() }
+    const preferences: Record<string, unknown> = {}
+    const params: Record<string, unknown> = { src: created.sourceUrl }
+
+    contentsListeners.get('will-attach-webview')?.(
+      event as never,
+      preferences as never,
+      params as never
+    )
+
+    expect(assertExtensionPartitionPrepared).toHaveBeenCalledOnce()
+    expect(assertExtensionPartitionPrepared).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: created.sessionId,
+      partition: created.partition
+    }))
+    expect(params.partition).toBe(created.partition)
+    expect(preferences).toMatchObject({
+      preload: '/kun/extension-view.cjs',
+      partition: created.partition,
+      sandbox: true
+    })
+    expect(event.preventDefault).not.toHaveBeenCalled()
+  })
+
+  it('denies and disposes the View Session when isolated protocol setup fails', () => {
+    const registry = new ExtensionViewSessionRegistry()
+    const created = registry.create({
+      sessionId: '1234567890abcdef',
+      extensionId: 'acme.example',
+      extensionVersion: '1.0.0',
+      contributionId: 'issues',
+      entryPath: 'dist/index.html',
+      parentWebContentsId: 10
+    })
+    let webContentsCreated: ((...args: never[]) => void) | undefined
+    let willAttach: ((...args: never[]) => void) | undefined
+    installWebviewSecurityGuards({
+      app: {
+        on: vi.fn((_event: string, listener: (...args: never[]) => void) => {
+          webContentsCreated = listener
+        })
+      } as never,
+      sessions: registry,
+      extensionPreloadPath: '/kun/extension-view.cjs',
+      assertExtensionPartitionPrepared: () => {
+        throw new Error('protocol unavailable')
+      },
+      isPreparedExtensionNavigation: () => false,
+      isTrustedWorkbench: () => true,
+      isAllowedDevPreviewUrl: () => false,
+      isAuthorizedPrototypeFileUrl: () => false
+    })
+    webContentsCreated?.({} as never, {
+      id: 10,
+      on: vi.fn((event: string, listener: (...args: never[]) => void) => {
+        if (event === 'will-attach-webview') willAttach = listener
+      }),
+      setWindowOpenHandler: vi.fn(),
+      getType: () => 'window'
+    } as never)
+    const event = { preventDefault: vi.fn() }
+
+    willAttach?.(event as never, {} as never, { src: created.sourceUrl } as never)
+
+    expect(event.preventDefault).toHaveBeenCalledOnce()
+    expect(registry.get(created.sessionId)).toBeUndefined()
+  })
+
+  it('allows only the prepared initial navigation before did-attach binds the guest', () => {
+    let webContentsCreated: ((...args: never[]) => void) | undefined
+    const guestListeners = new Map<string, (...args: never[]) => void>()
+    const sourceUrl =
+      'kun-extension://acme.example/dist/index.html?kunViewSession=1234567890abcdef'
+    const isPreparedExtensionNavigation = vi.fn((_contents: unknown, url: string) =>
+      url === sourceUrl
+    )
+    installWebviewSecurityGuards({
+      app: {
+        on: vi.fn((_event: string, listener: (...args: never[]) => void) => {
+          webContentsCreated = listener
+        })
+      } as never,
+      sessions: new ExtensionViewSessionRegistry(),
+      extensionPreloadPath: '/kun/extension-view.cjs',
+      assertExtensionPartitionPrepared: vi.fn(),
+      isPreparedExtensionNavigation,
+      isTrustedWorkbench: () => true,
+      isAllowedDevPreviewUrl: () => false,
+      isAuthorizedPrototypeFileUrl: () => false
+    })
+    const guest = {
+      id: 20,
+      on: vi.fn((event: string, listener: (...args: never[]) => void) => {
+        guestListeners.set(event, listener)
+      }),
+      setWindowOpenHandler: vi.fn(),
+      getType: () => 'webview'
+    }
+    webContentsCreated?.({} as never, guest as never)
+    const initialEvent = { preventDefault: vi.fn() }
+    const foreignEvent = { preventDefault: vi.fn() }
+
+    guestListeners.get('will-navigate')?.(initialEvent as never, sourceUrl as never)
+    guestListeners.get('will-navigate')?.(
+      foreignEvent as never,
+      'kun-extension://other.example/dist/index.html?kunViewSession=1234567890abcdef' as never
+    )
+
+    expect(initialEvent.preventDefault).not.toHaveBeenCalled()
+    expect(foreignEvent.preventDefault).toHaveBeenCalledOnce()
+    expect(isPreparedExtensionNavigation).toHaveBeenCalledTimes(2)
+  })
+
+  it('delivers notifications only to active bound guests and reports teardown once', () => {
+    const registry = new ExtensionViewSessionRegistry()
+    const created = registry.create({
+      sessionId: '1234567890abcdef',
+      extensionId: 'acme.example',
+      extensionVersion: '1.0.0',
+      contributionId: 'issues',
+      entryPath: 'dist/index.html',
+      parentWebContentsId: 10
+    })
+    registry.prepareAttach(10, created.sourceUrl)
+    const send = vi.fn()
+    const guest = {
+      id: 20,
+      once: vi.fn(),
+      send,
+      isDestroyed: () => false,
+      close: vi.fn()
+    }
+    registry.bindNextGuest(10, guest as never)
+    const disposed = vi.fn()
+    registry.onDidDispose(disposed)
+
+    expect(registry.sendToGuest(created.sessionId, 'agent.event', { sequence: 2 })).toBe(true)
+    expect(registry.broadcastToGuests('ui.themeChanged', { kind: 'dark' })).toBe(1)
+    expect(send).toHaveBeenNthCalledWith(1, 'extension:view:notification', {
+      sessionId: created.sessionId,
+      method: 'agent.event',
+      params: { sequence: 2 }
+    })
+
+    expect(registry.disposeForParent(10)).toBe(1)
+    expect(disposed).toHaveBeenCalledTimes(1)
+    expect(disposed).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: created.sessionId,
+      state: 'disposed'
+    }))
+    expect(registry.sendToGuest(created.sessionId, 'agent.event', null)).toBe(false)
+  })
+})

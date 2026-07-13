@@ -1,15 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
-  DESIGN_SYSTEM_MD_PATH,
   buildDesignLogoPrompt,
   buildDesignSpecPrompt,
   buildDesignSpecStub,
-  buildDesignSystemBoardPrompt,
   buildFoundationFollowLines,
   designSpecPath,
   findFoundationArtifact
 } from './design-foundation'
 import type { DesignArtifact } from './design-types'
+import { PROJECT_DESIGN_SYSTEM_PATH } from './canvas/project-design-system'
 
 function artifact(partial: Partial<DesignArtifact> & { id: string }): DesignArtifact {
   const createdAt = '2026-01-01T00:00:00.000Z'
@@ -87,55 +86,12 @@ describe('buildDesignSpecPrompt', () => {
   })
 })
 
-describe('buildDesignSystemBoardPrompt', () => {
-  const prompt = buildDesignSystemBoardPrompt({
-    brief: 'An IKUN fan hub',
-    workspaceRoot: '/ws',
-    artifactRelativePath: '.kun-design/doc/sys/v1.html',
-    designSystemMdPath: DESIGN_SYSTEM_MD_PATH,
-    designMdPath: '.kun-design/doc/design.md'
-  })
-
-  it('builds a visual style guide AND writes the shared token file', () => {
-    expect(prompt).toContain('.kun-design/doc/sys/v1.html')
-    expect(prompt).toContain(`Also WRITE \`${DESIGN_SYSTEM_MD_PATH}\``)
-    expect(prompt).toContain('Design-system target: Web')
-    expect(prompt).toContain('#hex')
-    expect(prompt).toContain('Design delivery checklist')
-  })
-
-  it('limits the writable files to the board and the token file', () => {
-    expect(prompt).toContain(
-      'Modify ONLY `.kun-design/doc/sys/v1.html` and `.kun-design/DESIGN_SYSTEM.md`'
-    )
-  })
-
-  it('points the agent at the design brief to honor', () => {
-    expect(prompt).toContain('.kun-design/doc/design.md')
-  })
-
-  it('adapts the style-guide board to app targets', () => {
-    const appPrompt = buildDesignSystemBoardPrompt({
-      brief: 'A habit tracker',
-      workspaceRoot: '/ws',
-      artifactRelativePath: '.kun-design/doc/sys/v1.html',
-      designSystemMdPath: DESIGN_SYSTEM_MD_PATH,
-      designContext: { designTarget: 'app' }
-    })
-
-    expect(appPrompt).toContain('Design-system target: App')
-    expect(appPrompt).toContain('390x844 phone frame')
-    expect(appPrompt).toContain('bottom navigation/tabs')
-    expect(appPrompt).toContain('- Target: App')
-  })
-})
-
 describe('buildDesignLogoPrompt', () => {
   const prompt = buildDesignLogoPrompt({
     brief: 'An IKUN fan hub',
     workspaceRoot: '/ws',
     artifactRelativePath: '.kun-design/doc/logo/v1.html',
-    designSystemMdPath: DESIGN_SYSTEM_MD_PATH,
+    designSystemMdPath: PROJECT_DESIGN_SYSTEM_PATH,
     designContext: { brandColor: '#d4af37' }
   })
 
@@ -175,11 +131,11 @@ describe('buildFoundationFollowLines', () => {
   it('points pages at the brief, tokens, and on-canvas siblings', () => {
     const lines = buildFoundationFollowLines({
       designMdPath: '.kun-design/doc/design.md',
-      designSystemMdPath: DESIGN_SYSTEM_MD_PATH
+      designSystemMdPath: PROJECT_DESIGN_SYSTEM_PATH
     }).join('\n')
     expect(lines).toContain('.kun-design/doc/design.md')
-    expect(lines).toContain(DESIGN_SYSTEM_MD_PATH)
-    expect(lines).toContain('reuse the EXACT palette')
-    expect(lines).toContain('already on the canvas')
+    expect(lines).toContain(PROJECT_DESIGN_SYSTEM_PATH)
+    expect(lines).toContain('reuse its exact tokens, component trees, slots, and variants')
+    expect(lines).toContain('existing project foundation')
   })
 })

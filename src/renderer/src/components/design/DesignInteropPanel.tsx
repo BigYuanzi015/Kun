@@ -19,6 +19,7 @@ import {
   OPENUI_NORMALIZATION_REPORT_PATH,
   serializeOpenUiNormalizationReport
 } from '../../design/generator-lane/openui-html-normalizer'
+import { writeDesignWorkspaceFile } from '../../design/design-persistence-coordinator'
 import {
   SidebarCommandRow,
   SidebarIconButton,
@@ -83,11 +84,15 @@ export function DesignInteropPanel({ workspaceRoot, document }: Props): ReactEle
         canvasDocument: useCanvasShapeStore.getState().document,
         designSystem: useDesignSystemStore.getState().system
       })
-      await window.kunGui.writeWorkspaceFile({
+      const result = await writeDesignWorkspaceFile({
         path: PENPOT_HANDOFF_PACKAGE_PATH,
         workspaceRoot,
         content: serializePenpotHandoffPackage(latest)
       })
+      if (!result.ok) {
+        setExportState({ status: 'error', message: result.message })
+        return
+      }
       setExportState({ status: 'exported', path: PENPOT_HANDOFF_PACKAGE_PATH })
     } catch (error) {
       setExportState({ status: 'error', message: error instanceof Error ? error.message : String(error) })
@@ -107,11 +112,15 @@ export function DesignInteropPanel({ workspaceRoot, document }: Props): ReactEle
         canvasDocument: useCanvasShapeStore.getState().document,
         designSystem: useDesignSystemStore.getState().system
       })
-      await window.kunGui.writeWorkspaceFile({
+      const result = await writeDesignWorkspaceFile({
         path: DESIGN_RESOURCE_SURFACE_PATH,
         workspaceRoot,
         content: serializeDesignResourceSurface(latest)
       })
+      if (!result.ok) {
+        setExportState({ status: 'error', message: result.message })
+        return
+      }
       setExportState({ status: 'exported', path: DESIGN_RESOURCE_SURFACE_PATH })
     } catch (error) {
       setExportState({ status: 'error', message: error instanceof Error ? error.message : String(error) })
@@ -136,11 +145,15 @@ export function DesignInteropPanel({ workspaceRoot, document }: Props): ReactEle
         if (result?.ok) items.push({ artifact, html: result.content })
       }
       const report = buildOpenUiNormalizationReport({ items })
-      await window.kunGui.writeWorkspaceFile({
+      const result = await writeDesignWorkspaceFile({
         path: OPENUI_NORMALIZATION_REPORT_PATH,
         workspaceRoot,
         content: serializeOpenUiNormalizationReport(report)
       })
+      if (!result.ok) {
+        setExportState({ status: 'error', message: result.message })
+        return
+      }
       setExportState({ status: 'exported', path: OPENUI_NORMALIZATION_REPORT_PATH })
     } catch (error) {
       setExportState({ status: 'error', message: error instanceof Error ? error.message : String(error) })

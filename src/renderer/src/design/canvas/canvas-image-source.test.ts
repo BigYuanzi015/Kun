@@ -1,15 +1,45 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  CanvasImageDataUrlCache,
+  clearWorkspaceImageDataUrlCache,
   isAbsoluteLocalImagePath,
-  loadWorkspaceImageDataUrl
+  loadWorkspaceImageDataUrl,
+  workspaceImageDataUrlCacheStats
 } from './canvas-image-source'
 
 afterEach(() => {
+  clearWorkspaceImageDataUrlCache()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
 describe('canvas image source loading', () => {
+  it('evicts least-recently-used entries by byte and entry limits', () => {
+    const cache = new CanvasImageDataUrlCache(6, 2)
+    cache.set('a', '/a', 'data:image/png;base64,YWFh')
+    cache.set('b', '/a', 'data:image/png;base64,YmJi')
+    expect(cache.get('a')).toBe('data:image/png;base64,YWFh')
+
+    cache.set('c', '/b', 'data:image/png;base64,Y2Nj')
+
+    expect(cache.get('b')).toBeNull()
+    expect(cache.get('a')).not.toBeNull()
+    expect(cache.get('c')).not.toBeNull()
+    expect(cache.stats()).toEqual({ entries: 2, bytes: 6 })
+  })
+
+  it('clears cached image data for one workspace without touching another', () => {
+    const cache = new CanvasImageDataUrlCache(64, 8)
+    cache.set('a', '/workspace/a', 'data:image/png;base64,YQ==')
+    cache.set('b', '/workspace/b', 'data:image/png;base64,Yg==')
+
+    cache.clear('/workspace/a')
+
+    expect(cache.stats('/workspace/a')).toEqual({ entries: 0, bytes: 0 })
+    expect(cache.get('a')).toBeNull()
+    expect(cache.get('b')).toBe('data:image/png;base64,Yg==')
+  })
+
   it('does not permanently cache a failed workspace image read', async () => {
     const dataUrl = 'data:image/png;base64,ok'
     const readWorkspaceImage = vi.fn()
@@ -37,5 +67,6 @@ describe('canvas image source loading', () => {
       .resolves.toBe('data:image/png;base64,ok')
     expect(isAbsoluteLocalImagePath(absolutePath)).toBe(true)
     expect(readWorkspaceImage).toHaveBeenCalledWith({ path: absolutePath })
+    expect(workspaceImageDataUrlCacheStats('/Users/zxy/.kun/design-workspace').entries).toBe(1)
   })
 })

@@ -20,7 +20,7 @@ export type RuntimeRequestResult = { ok: boolean; status: number; body: string }
 export type RuntimeRequestFn = (
   settings: AppSettingsV1,
   pathAndQuery: string,
-  init: { method?: string; body?: string; headers?: Record<string, string> }
+  init: { method?: string; body?: string; headers?: Record<string, string>; signal?: AbortSignal }
 ) => Promise<RuntimeRequestResult>
 
 export type ClawRuntimeDeps = {
@@ -404,8 +404,20 @@ export function replyTextForGeneratedFiles(replyText: string, files: readonly Cl
   return trimmed
 }
 
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted || ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 export function normalizeTaskModel(model: string): string | undefined {

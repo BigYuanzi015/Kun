@@ -25,7 +25,7 @@ import {
   steerTurn
 } from './turns.js'
 import { startReview } from './review.js'
-import { buildEventStreamResponse } from './events.js'
+import { buildEventStreamResponse, parseEventCursor } from './events.js'
 import { decideApproval } from './approvals.js'
 import { resolveUserInput } from './user-inputs.js'
 import { resumeSession } from './sessions.js'
@@ -60,8 +60,11 @@ import {
 import { authorizeMcpOAuth, clearMcpOAuth, mcpOAuthDiagnostics } from './mcp-oauth.js'
 import { auditSupplyChainPackage, checkSupplyChainUpdate } from './supply-chain.js'
 import { isAuthorized, bearerToken } from '../auth.js'
+import { ApprovalConsentVerifier } from '../approval-consent.js'
 import { ERRORS } from './runtime-error.js'
 import type { ServerRuntime } from './server-runtime.js'
+import { registerExtensionManagementRoutes } from './extensions.js'
+import { registerExtensionPublicRoutes } from './extension-public.js'
 
 /**
  * Build the full router used by the HTTP server. The router exposes:
@@ -100,7 +103,22 @@ import type { ServerRuntime } from './server-runtime.js'
  */
 export function buildRouter(runtime: ServerRuntime): Router {
   const router = new Router()
+  const approvalConsent = new ApprovalConsentVerifier(runtime.runtimeToken)
   router.add('GET', '/health', () => healthJsonResponse())
+  if (runtime.extensionPlatform) {
+    // Static public extension paths must precede `/v1/extensions/:id` because
+    // the minimal Router uses first-match ordering.
+    registerExtensionPublicRoutes(router, runtime)
+    registerExtensionManagementRoutes(router, {
+      packageManager: runtime.extensionPlatform.packageManager,
+      registry: runtime.extensionPlatform.registry,
+      manager: runtime.extensionPlatform.manager,
+      indexClient: runtime.extensionPlatform.indexClient,
+      validation: runtime.extensionPlatform.validation,
+      runtimeToken: runtime.runtimeToken,
+      insecure: runtime.insecure
+    })
+  }
   router.add('GET', '/v1/runtime/info', async (request) => {
     if (!authorize(request, runtime)) return ERRORS.unauthorized()
     return runtimeInfoJsonResponse(runtime)
@@ -278,8 +296,8 @@ export function buildRouter(runtime: ServerRuntime): Router {
       runtime.turnService,
       ctx.params.id,
       request,
-      ({ threadId, turnId, reviewItemId }, target, model, providerId) => {
-        runtime.runReview?.({ threadId, turnId, reviewItemId, target, model, providerId })
+      ({ threadId, turnId, reviewItemId }, target, model, providerId, accountId) => {
+        runtime.runReview?.({ threadId, turnId, reviewItemId, target, model, providerId, accountId })
       }
     )
   })
@@ -299,13 +317,20 @@ export function buildRouter(runtime: ServerRuntime): Router {
     if (!authorize(request, runtime)) return ERRORS.unauthorized()
     return compactTurn(runtime.turnService, ctx.params.id, request)
   })
-  router.add('GET', '/v1/threads/:id/events', (request, ctx) => {
+  router.add('GET', '/v1/threads/:id/events', async (request, ctx) => {
     if (!authorize(request, runtime)) return ERRORS.unauthorized()
+    const sinceSeq = parseEventCursor(request)
+    if (sinceSeq === null) return ERRORS.validation('since_seq must be a non-negative safe integer')
+    if (!await runtime.threadService.get(ctx.params.id)) {
+      return ERRORS.notFound(`thread not found: ${ctx.params.id}`)
+    }
     return buildEventStreamResponse({
       request,
       threadId: ctx.params.id,
       eventBus: runtime.eventBus,
-      sessionStore: runtime.sessionStore
+      sessionStore: runtime.sessionStore,
+      streamRegistry: runtime.eventStreamRegistry,
+      sinceSeq
     })
   })
   router.add('POST', '/v1/approvals/:id', async (request, ctx) => {
@@ -314,7 +339,8 @@ export function buildRouter(runtime: ServerRuntime): Router {
       approvalId: ctx.params.id,
       request,
       gate: runtime.approvalGate,
-      events: runtime.events
+      events: runtime.events,
+      consent: approvalConsent
     })
   })
   router.add('POST', '/v1/user-inputs/:id', async (request, ctx) => {

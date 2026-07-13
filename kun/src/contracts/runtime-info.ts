@@ -24,6 +24,13 @@ export const RuntimeInfoResponse = z
       heapTotalBytes: z.number().int().nonnegative(),
       externalBytes: z.number().int().nonnegative()
     }).strict().optional(),
+    extensions: z.object({
+      enabled: z.boolean(),
+      apiVersions: z.array(z.string()),
+      manifestVersions: z.array(z.number().int().positive()),
+      packageRoot: z.string().min(1),
+      dataRoot: z.string().min(1)
+    }).strict().optional(),
     capabilities: RuntimeCapabilityManifest
   })
   .strict()

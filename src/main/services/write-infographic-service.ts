@@ -29,12 +29,12 @@ import { resolveCodexOAuthApiKey } from '../codex-auth'
 // Matches WORKSPACE_IMAGE_DIR in workspace-files.ts so infographics land in
 // the same workspace-level folder as pasted images.
 const INFOGRAPHIC_IMAGE_DIR = 'img'
-const IMAGE_SIZE_TIER = '1K'
 const MINIMAX_PROMPT_MAX_CHARS = 1_500
 const MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024
 const REFERENCE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
-// Portrait reads best for infographics (768x1024); design mockups read best
-// in landscape (1024x768). An explicit defaultSize setting overrides both.
+// Portrait reads best for infographics; design mockups read best in landscape.
+// The configured default resolution supplies the long edge, while an explicit
+// custom defaultSize remains the provider-specific override.
 const KIND_ASPECT_RATIO: Record<WriteInfographicKind, string> = {
   infographic: '3:4',
   design: '4:3'
@@ -151,9 +151,14 @@ export async function requestWriteInfographic(
   })
   // An explicit defaultSize wins: users set it when their provider only
   // accepts fixed sizes (e.g. gpt-image's 1024x1536). Otherwise use an
-  // aspect ratio that suits the image kind.
+  // aspect ratio that suits the image kind at the configured resolution.
   const size = imageGeneration.defaultSize.trim() ||
-    mapImageSize(KIND_ASPECT_RATIO[kind], IMAGE_SIZE_TIER, undefined)
+    mapImageSize(
+      KIND_ASPECT_RATIO[kind],
+      undefined,
+      undefined,
+      imageGeneration.defaultResolution
+    )
 
   const selectionAssist = normalizeWriteSettings(
     (settings as { write?: WriteSettingsPatchV1 }).write

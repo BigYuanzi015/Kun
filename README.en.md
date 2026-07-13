@@ -25,7 +25,7 @@
   <a href="https://github.com/KunAgent/Kun/releases"><img src="https://img.shields.io/github/v/release/KunAgent/Kun?label=release" alt="GitHub release"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue" alt="License: PolyForm Noncommercial 1.0.0"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platform">
-  <img src="https://img.shields.io/badge/Electron-34-47848F?logo=electron&logoColor=white" alt="Electron 34">
+  <img src="https://img.shields.io/badge/Electron-43-47848F?logo=electron&logoColor=white" alt="Electron 43">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React 19">
 </p>
 
@@ -88,8 +88,10 @@ This stack lets Kun route different jobs to the right capability: fast models fo
 | Requirements that become executable plans | New requirements, `/plan`, todos, `/goal`, side conversations, thread compaction, forking, and archiving |
 | Controlled changes | Tool approvals, filesystem permission modes, inline diffs, a change-review panel, and `/review` |
 | Writing in the same app | Markdown file tree, Live / Source / Split / Preview, export formats, and selection-based inline agent actions |
+| Turn Markdown into a presentation | Launch PPT Master from Write, confirm the outline, audience, and visual direction, then generate a natively editable `.pptx` |
 | Remote or background triggers | Feishu / Lark / WeChat connection, local webhook / relay, and one-time or recurring scheduled tasks |
 | Reusable workflows for repeatable processes | Visual "Create Loop" node editor to draw, run, and reuse multi-step agent flows |
+| Extend Kun for your own workflows | Install `.kunx` extensions that add workbench UI, background services, Agents, tools, custom model Providers, and account integrations |
 | More than one model vendor | Custom Base URLs, protocols, model lists, and capability extensions beyond the three core providers |
 
 ## Core Features
@@ -99,12 +101,13 @@ This stack lets Kun route different jobs to the right capability: fast models fo
 - **Design mode**: generate design drafts, interactive HTML prototypes, and design flow graphs from natural language, requirement drafts, or existing UI; iterate versions, preview on canvas, export, publish a shared design system, and hand designs to Code for implementation.
 - **Planning and review**: new requirements, `/plan`, todos, `/goal`, `/review`, side conversations, thread compaction, forking, and archiving.
 - **Controlled changes**: inline diffs, a change-review panel, tool approvals, and filesystem permission modes.
-- **Write mode**: dedicated Markdown workspaces with a file tree, Live / Source / Split / Preview modes, completion, selection-based inline agent actions, and `HTML / PDF / DOC / DOCX` export.
+- **Write mode and PPT Master**: dedicated Markdown workspaces with a file tree, Live / Source / Split / Preview modes, completion, selection-based inline agent actions, and `HTML / PDF / DOC / DOCX` export. From the current Markdown file, PPT Master can propose an outline, slide count, audience, and visual direction for confirmation, then generate a natively editable `.pptx`.
 - **Connect phone**: Feishu / Lark / WeChat IM agents, local webhook / relay support, and one-time, daily, interval, or manual scheduled tasks.
 - **Visual workflows (Create Loop)**: an n8n / dify-style node canvas on top of scheduled tasks that turns multi-step agent flows into runnable, reusable workflows — rich triggers and nodes, typed dataflow, a local run API, exposable to Kun as a tool, and bindable to hook phases.
 - **Model-stack-first**: first-run setup, provider presets, and capability auto-wiring are designed around DeepSeek, Xiaomi MiMo, and MiniMax as a cost-efficient full agent stack.
 - **Multimodal and media capabilities**: image attachments, vision input, speech transcription, image generation, speech generation, music generation, and video generation, enabled by provider configuration.
 - **MCP and Skills**: Model Context Protocol servers and project/global Skills give Kun specialized tools and workflows for different tasks.
+- **Kun Extension platform**: install or side-load `.kunx` packages that combine workbench pages and sidebars, background Node services, Agent workflows, tools, custom model Providers, and account authentication. Public SDKs, a Manifest Schema, permission consent, an isolated Extension Host, scaffolding, and test utilities form the stable Extension API v1 surface.
 - **Local runtime**: `kun serve` provides the HTTP/SSE boundary with a cache-first agent loop, append-only event logs, usage tracking, and context compaction.
 
 ## More Demos
@@ -148,6 +151,10 @@ On first launch:
 2. Choose a model provider and enter an API key or Token Plan key.
 3. For compatible providers, edit the Base URL, protocol, and model list in Settings.
 4. Open Code to bind a local project, open Design to generate a prototype, or open Write to create a writing workspace.
+
+With a plain Markdown file open in Write, use the “Generate a PPT with PPT Master” toolbar action. On first use, Kun prepares a pinned PPT Master release and an isolated Python environment; Python 3.10 or later must already be installed. Kun asks you to confirm the outline and visual direction before generating the deck under the workspace's `presentations/` directory, and it does not modify the source Markdown.
+
+To extend Kun, install a `.kunx` package from the extension management UI. Developers can run `npm create kun-extension` and follow the [five-minute extension quick start](docs/extensions/quick-start.en.md) for development, testing, packaging, and side-loading. Node and Direct DOM extensions are privileged capabilities, so install only trusted packages and review their permission prompts.
 
 ### Path B: Run From Source
 
@@ -196,6 +203,7 @@ npm install --registry=https://registry.npmmirror.com
 
 | Doc | Contents |
 | --- | --- |
+| [docs/extensions/README.en.md](docs/extensions/README.en.md) | Kun Extension platform: workbench apps, Agent runs, tools, custom model providers, accounts, packaging, and compatibility |
 | [kun/README.md](kun/README.md) | Kun runtime, CLI, environment variables, HTTP API |
 | [docs/kun-architecture.en.md](docs/kun-architecture.en.md) | Runtime architecture and GUI integration |
 | [docs/kun-cache-optimization.en.md](docs/kun-cache-optimization.en.md) | Cache optimization and token economy |

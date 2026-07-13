@@ -10,6 +10,7 @@ import { useSddDraftStore } from '../../sdd/sdd-draft-store'
 import { markSddAssistantThread } from '../../sdd/sdd-thread-registry'
 import { formatWorkspacePickerError } from '../../lib/format-workspace-picker-error'
 import type { RightPanelMode } from '../chat/WorkbenchTopBar'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../../extensions/contribution-ids'
 
 export type WorkbenchSidebarView = 'chat' | 'write' | 'claw' | 'schedule' | 'workflow' | 'subagents'
 
@@ -60,6 +61,7 @@ export type WorkbenchNavigationController = {
   exploreSddRequirementInDesign: () => void
   openCodeMode: () => void
   openPluginsView: () => void
+  openExtensionsView: () => void
   openScheduleView: () => void
   openThread: (id: string) => void
   openWorkflowView: () => void
@@ -212,6 +214,11 @@ export function useWorkbenchNavigationController({
     openPlugins(sidebarView === 'claw' ? 'claw' : 'chat')
   }, [openPlugins, setConnectPhoneSidebarOpen, sidebarView])
 
+  const openExtensionsView = useCallback((): void => {
+    setConnectPhoneSidebarOpen(false)
+    setRoute('extensions')
+  }, [setConnectPhoneSidebarOpen, setRoute])
+
   const openScheduleView = useCallback((): void => {
     setConnectPhoneSidebarOpen(false)
     openSchedule()
@@ -249,7 +256,7 @@ export function useWorkbenchNavigationController({
       }
       return
     }
-    if (rightPanelMode === 'file') clearFilePreviewTargets()
+    if (rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.file) clearFilePreviewTargets()
     setRightPanelMode(null)
     setFilePreviewTarget(null)
   }, [
@@ -294,6 +301,7 @@ export function useWorkbenchNavigationController({
     exploreSddRequirementInDesign,
     openCodeMode,
     openPluginsView,
+    openExtensionsView,
     openScheduleView,
     openThread,
     openWorkflowView,

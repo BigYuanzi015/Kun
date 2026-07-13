@@ -81,8 +81,9 @@ type WorkbenchRightPanelElementOptions = Pick<
     | 'workspaceRoot'
     | 'onSelectTarget'
     | 'onCloseTarget'
-    | 'onRedesign'
   >
+  extensionView?: RightPanelHostProps['extensionView']
+  workspaceRoot?: string
 }
 
 function resolveDesignPanelMode({
@@ -119,7 +120,9 @@ export function useWorkbenchRightPanelElement({
   todo,
   browser,
   canvas,
-  file
+  file,
+  extensionView,
+  workspaceRoot
 }: WorkbenchRightPanelElementOptions): ReactElement | null {
   const designPanelMode = resolveDesignPanelMode({
     route,
@@ -191,6 +194,8 @@ export function useWorkbenchRightPanelElement({
         ...file,
         onClose: onCollapse
       }}
+      extensionView={extensionView}
+      workspaceRoot={workspaceRoot}
       onCollapse={onCollapse}
     />
   )

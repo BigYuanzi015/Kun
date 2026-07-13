@@ -168,7 +168,7 @@ export function buildRecommendedDesignWorkflowAction(
     `Outputs: ${recommendation.outputSummary}.`,
     recommendation.toolCallLine,
     ...recommendation.promptInstructionLines,
-    `Current counts: ${counts.screenCount} screen(s), ${counts.directionCount} direction(s), ${counts.tokenCount} token(s), ${counts.componentCount} component(s), ${counts.agentNoteCount} open note(s), ${counts.activeBindingCount} active binding(s), ${counts.staleBindingCount} stale binding(s), ${counts.missingBindingCount} missing binding(s).`,
+    `Current counts: ${counts.screenCount} screen(s), ${counts.directionCount} direction(s), ${counts.svgArtifactCount} SVG artifact(s), ${counts.tokenCount} token(s), ${counts.componentCount} component(s), ${counts.agentNoteCount} open note(s), ${counts.activeBindingCount} active binding(s), ${counts.staleBindingCount} stale binding(s), ${counts.missingBindingCount} missing binding(s).`,
     '',
     workflowInstruction(step),
     'Use the Design Graph as the source of truth. Prefer design.ops, reusable tokens/components, clear direction names, and agent notes for unresolved questions.',

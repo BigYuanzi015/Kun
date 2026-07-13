@@ -4,16 +4,13 @@ import type { ChatBlock, ToolBlock } from "../../agent/types"
 import type { SendMessageOverrides } from "../../store/chat-store-types"
 import {
   defaultPreviewNodeSizeForDesignTarget,
-  formatDesignSystemMarkdown,
   type DesignContext
 } from "../design-context"
 import { buildStitchDesignMarkdown, STITCH_DESIGN_MD_PATH } from "../design-md-compat"
 import {
-  DESIGN_SYSTEM_MD_PATH,
   buildDesignLogoPrompt,
   buildDesignSpecPrompt,
   buildDesignSpecStub,
-  buildDesignSystemBoardPrompt,
   buildFoundationFollowLines,
   designSpecPath,
   findFoundationArtifact,
@@ -30,6 +27,7 @@ import {
   type DesignPagePlanEntry
 } from "../design-pages"
 import { prepareDesignPreviewFile } from "../design-preview-file"
+import { writeDesignWorkspaceFile } from "../design-persistence-coordinator"
 import {
   buildDesignTurnPrompt,
   buildParallelDesignPagesPrompt,
@@ -38,7 +36,6 @@ import {
 import { createDesignArtifactId, defaultDesignArtifactNode, type DesignDirection } from "../design-types"
 import type { ParallelDesignPageState } from "../design-workspace-store-types"
 import { useDesignWorkspaceStore } from "../design-workspace-store"
-import { useDesignSystemStore } from "../canvas/design-system-store"
 
 export type SendMessageFn = (
   text: string,
@@ -168,7 +165,7 @@ export function formatPageProductBriefLines(entry: DesignPagePlanEntry): string[
   return lines
 }
 
-/** Best-effort write of a plain workspace file (the design.md stub, DESIGN_SYSTEM.md baseline). */
+/** Best-effort write of a plain workspace file such as the design.md stub. */
 export async function writeWorkspaceTextFile(
   workspaceRoot: string,
   path: string,
@@ -177,8 +174,8 @@ export async function writeWorkspaceTextFile(
   if (typeof window === 'undefined' || typeof window.kunGui?.writeWorkspaceFile !== 'function') {
     return false
   }
-  const res = await window.kunGui.writeWorkspaceFile({ path, workspaceRoot, content }).catch(() => null)
-  return Boolean(res && res.ok)
+  const result = await writeDesignWorkspaceFile({ path, workspaceRoot, content })
+  return result.ok
 }
 
 /**

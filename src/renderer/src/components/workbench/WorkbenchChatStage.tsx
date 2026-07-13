@@ -8,16 +8,17 @@ import {
 import { useTranslation } from 'react-i18next'
 import type { ChatBlock, RuntimeConnectionStatus } from '../../agent/types'
 import { FloatingComposer } from '../chat/FloatingComposer'
+import { LazyMessageTimeline } from '../chat/LazyMessageTimeline'
 import { SubagentReturnBar } from '../chat/message-timeline-empty'
 import { WorkbenchTopActions } from '../chat/WorkbenchTopBar'
 import { IkunCameoLayer, KunCelebrationLayer } from '../chat/AnimatedWorkLogo'
 import { DevPreviewLaunchCard } from '../DevPreviewLaunchCard'
 import { SessionHeader } from '../SessionHeader'
 import { SidebarTitlebarToggleButton } from '../sidebar/SidebarPrimitives'
+import type { JsonValue } from '@kun/extension-api'
+import type { RegisteredContribution } from '../../extensions/contribution-registry'
+import { DeclarativeActionBar } from '../../extensions/ControlledContributionSurfaces'
 
-const MessageTimeline = lazy(() =>
-  import('../chat/MessageTimeline').then((module) => ({ default: module.MessageTimeline }))
-)
 const TerminalPanel = lazy(() =>
   import('../terminal/TerminalPanel').then((module) => ({ default: module.TerminalPanel }))
 )
@@ -56,6 +57,14 @@ export type WorkbenchChatStageProps = {
   onBackToParent: () => void
   onBeginTerminalResize: PointerEventHandler<HTMLDivElement>
   onToggleTerminal: () => void
+  extensionTopBarActions?: readonly RegisteredContribution<'actions.topBar'>[]
+  extensionComposerActions?: readonly RegisteredContribution<'actions.composer'>[]
+  extensionMessageActions?: readonly RegisteredContribution<'actions.message'>[]
+  extensionContextMenus?: readonly RegisteredContribution<'contextMenus'>[]
+  extensionAttachmentContextMenus?: readonly RegisteredContribution<'contextMenus'>[]
+  extensionCommands?: readonly RegisteredContribution<'commands'>[]
+  extensionResultPreviews?: readonly RegisteredContribution<'message.resultPreviews'>[]
+  onExtensionCommand?: (commandId: string, context: JsonValue) => void | Promise<unknown>
 }
 
 function WorkbenchPaneFallback(): ReactElement {
@@ -93,7 +102,15 @@ export function WorkbenchChatStage({
   onOpenDevPreview,
   onBackToParent,
   onBeginTerminalResize,
-  onToggleTerminal
+  onToggleTerminal,
+  extensionTopBarActions = [],
+  extensionComposerActions = [],
+  extensionMessageActions = [],
+  extensionContextMenus = [],
+  extensionAttachmentContextMenus = [],
+  extensionCommands = [],
+  extensionResultPreviews = [],
+  onExtensionCommand
 }: WorkbenchChatStageProps): ReactElement {
   const { t } = useTranslation('common')
   return (
@@ -114,6 +131,14 @@ export function WorkbenchChatStage({
               <SessionHeader compact className="min-w-0 flex-1" />
             </div>
             <div className="chat-topbar-actions flex min-w-0 flex-wrap items-center justify-end gap-2 self-center">
+              {extensionTopBarActions.length && onExtensionCommand ? (
+                <DeclarativeActionBar
+                  contributions={extensionTopBarActions}
+                  context={{ surface: 'topBar', threadId: activeThreadId }}
+                  onCommand={onExtensionCommand}
+                  compact
+                />
+              ) : null}
               <WorkbenchTopActions
                 terminalOpen={terminalOpen}
                 onToggleTerminal={onToggleTerminal}
@@ -127,32 +152,37 @@ export function WorkbenchChatStage({
           </div>
         </header>
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-          <Suspense fallback={<WorkbenchPaneFallback />}>
-            <MessageTimeline
-              blocks={blocks}
-              liveReasoning={liveReasoning}
-              live={liveAssistant}
-              activeThreadId={activeThreadId}
-              runtimeConnection={runtimeConnection}
-              runtimeError={runtimeError}
-              onRetryConnection={onRetryConnection}
-              onOpenSettings={onOpenSettings}
-              onSelectSuggestion={onSelectSuggestion}
-              focusModeEnabled={focusModeEnabled}
-              planActionsBusy={planActionsBusy}
-              onBuildPlan={onBuildPlan}
-              onOpenPlan={onOpenPlan}
-              devPreviewCard={
-                devPreviewVisible && devPreviewUrl ? (
-                  <DevPreviewLaunchCard
-                    url={devPreviewUrl}
-                    opened={devPreviewOpened}
-                    onOpen={onOpenDevPreview}
-                  />
-                ) : null
-              }
-            />
-          </Suspense>
+          <LazyMessageTimeline
+            fallback={<WorkbenchPaneFallback />}
+            blocks={blocks}
+            liveReasoning={liveReasoning}
+            live={liveAssistant}
+            activeThreadId={activeThreadId}
+            runtimeConnection={runtimeConnection}
+            runtimeError={runtimeError}
+            onRetryConnection={onRetryConnection}
+            onOpenSettings={onOpenSettings}
+            onSelectSuggestion={onSelectSuggestion}
+            focusModeEnabled={focusModeEnabled}
+            planActionsBusy={planActionsBusy}
+            onBuildPlan={onBuildPlan}
+            onOpenPlan={onOpenPlan}
+            devPreviewCard={
+              devPreviewVisible && devPreviewUrl ? (
+                <DevPreviewLaunchCard
+                  url={devPreviewUrl}
+                  opened={devPreviewOpened}
+                  onOpen={onOpenDevPreview}
+                />
+              ) : null
+            }
+            extensionMessageActions={extensionMessageActions}
+            extensionContextMenus={extensionContextMenus}
+            extensionAttachmentContextMenus={extensionAttachmentContextMenus}
+            extensionCommands={extensionCommands}
+            extensionResultPreviews={extensionResultPreviews}
+            onExtensionCommand={onExtensionCommand}
+          />
           {uiModeCameosEnabled && !focusModeEnabled ? <IkunCameoLayer /> : null}
           {!focusModeEnabled ? <KunCelebrationLayer active={busy} suppressed={Boolean(runtimeError)} /> : null}
         </div>
@@ -163,7 +193,16 @@ export function WorkbenchChatStage({
               onBack={onBackToParent}
             />
           ) : (
-            <FloatingComposer {...composerProps} />
+            <div className="flex w-full min-w-0 flex-col items-center gap-1">
+              {extensionComposerActions.length && onExtensionCommand ? (
+                <DeclarativeActionBar
+                  contributions={extensionComposerActions}
+                  context={{ surface: 'composer', threadId: activeThreadId }}
+                  onCommand={onExtensionCommand}
+                />
+              ) : null}
+              <FloatingComposer {...composerProps} />
+            </div>
           )}
         </div>
       </div>

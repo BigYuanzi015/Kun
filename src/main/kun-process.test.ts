@@ -580,6 +580,7 @@ describe('syncGuiManagedKunConfig', () => {
     expect(parsed.capabilities.imageGen).toEqual({
       enabled: false,
       protocol: 'openai-images',
+      defaultResolution: '1K',
       quality: 'auto',
       timeoutMs: 180000
     })
@@ -679,7 +680,14 @@ describe('syncGuiManagedKunConfig', () => {
       model: 'glm-5.2',
       modelProxyUrl: 'socks5://127.0.0.1:1080'
     })
-    expect(parsed.serve.providers?.custom).toBeUndefined()
+    expect(parsed.serve.providers?.custom).toMatchObject({
+      apiKey: '',
+      credentialSourceId: 'settings:provider:custom',
+      baseUrl: 'https://newapi.example/v1',
+      endpointFormat: 'chat_completions',
+      modelProxyUrl: 'socks5://127.0.0.1:1080'
+    })
+    expect(JSON.stringify(parsed)).not.toContain('sk-newapi')
     expect(KunConfigSchema.safeParse(parsed).success).toBe(true)
   })
 
@@ -724,6 +732,7 @@ describe('syncGuiManagedKunConfig', () => {
         baseUrl: 'https://api.siliconflow.cn/v1',
         apiKey: 'sk-image-test',
         model: 'Kwai-Kolors/Kolors',
+        defaultResolution: '2K' as const,
         defaultSize: '',
         quality: 'high' as const,
         timeoutMs: 240000
@@ -739,6 +748,7 @@ describe('syncGuiManagedKunConfig', () => {
       baseUrl: 'https://api.siliconflow.cn/v1',
       apiKey: 'sk-image-test',
       model: 'Kwai-Kolors/Kolors',
+      defaultResolution: '2K',
       quality: 'high',
       timeoutMs: 240000
     })
@@ -776,6 +786,7 @@ describe('syncGuiManagedKunConfig', () => {
         baseUrl: 'https://chatgpt.com/backend-api/codex',
         apiKey: codexCredentials,
         model: 'gpt-image-2',
+        defaultResolution: '1K',
         defaultSize: '',
         quality: 'medium',
         timeoutMs: 180000
@@ -789,6 +800,7 @@ describe('syncGuiManagedKunConfig', () => {
       baseUrl: 'https://chatgpt.com/backend-api/codex',
       apiKey: 'codex-access-token',
       model: 'gpt-image-2',
+      defaultResolution: '1K',
       quality: 'medium',
       timeoutMs: 180000,
       headers: {
@@ -870,6 +882,7 @@ describe('syncGuiManagedKunConfig', () => {
         baseUrl: 'https://api.siliconflow.cn/v1',
         apiKey: 'sk-image-test',
         model: 'Kwai-Kolors/Kolors',
+        defaultResolution: '1K' as const,
         defaultSize: '1024x1024',
         quality: 'auto' as const,
         timeoutMs: 180000
@@ -1361,6 +1374,102 @@ describe('syncGuiManagedKunConfig', () => {
     })
   })
 
+  it('imports user-managed workspace-scoped MCP servers into runtime capabilities', async () => {
+    if (!tempRoot) throw new Error('temp root not initialized')
+    const configPath = join(tempRoot, 'config.json')
+    const mcpConfigPath = join(tempRoot, 'mcp.json')
+    const workspaceRoot = join(tempRoot, 'workspace')
+    writeFileSync(mcpConfigPath, JSON.stringify({
+      servers: {
+        codegraph: {
+          command: 'uvx',
+          args: ['codegraph-mcp'],
+          workspaceRoots: [workspaceRoot],
+          trustScope: 'workspace',
+          trustedWorkspaceRoots: [workspaceRoot]
+        }
+      }
+    }), 'utf8')
+    mkdirSync(workspaceRoot, { recursive: true })
+    writeFileSync(join(workspaceRoot, '.mcp.json'), JSON.stringify({
+      servers: {
+        codegraph: {
+          command: 'repo-controlled-codegraph',
+          args: ['untrusted-project-config'],
+          trustScope: 'user'
+        }
+      }
+    }), 'utf8')
+    const module = await import('./kun-process')
+
+    await module.syncGuiManagedKunConfig(tempRoot, defaultKunRuntimeSettings(), {
+      mcpConfigPath
+    })
+
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as any
+    expect(parsed.capabilities.mcp.enabled).toBe(true)
+    expect(parsed.capabilities.mcp.servers.codegraph).toMatchObject({
+      enabled: true,
+      transport: 'stdio',
+      command: 'uvx',
+      args: ['codegraph-mcp'],
+      workspaceRoots: [workspaceRoot],
+      trustScope: 'workspace',
+      trustedWorkspaceRoots: [workspaceRoot]
+    })
+    expect(JSON.stringify(parsed.capabilities.mcp.servers.codegraph)).not.toContain('repo-controlled-codegraph')
+  })
+
+  it('does not auto-import workspace .mcp.json servers into the runtime', async () => {
+    // Security: a project file can suggest MCP setup, but it must not grant
+    // itself permission to run commands in the local runtime. Users can still
+    // opt in by copying the server into the GUI-managed MCP config above.
+    if (!tempRoot) throw new Error('temp root not initialized')
+    const configPath = join(tempRoot, 'config.json')
+    const mcpConfigPath = join(tempRoot, 'mcp.json')
+    const workspaceRoot = join(tempRoot, 'workspace')
+    writeFileSync(mcpConfigPath, JSON.stringify({
+      servers: {
+        codegraph: {
+          command: 'global-codegraph',
+          args: ['global']
+        }
+      }
+    }), 'utf8')
+    mkdirSync(workspaceRoot, { recursive: true })
+    writeFileSync(join(workspaceRoot, '.mcp.json'), JSON.stringify({
+      servers: {
+        codegraph: {
+          command: 'uvx',
+          args: ['codegraph-mcp'],
+          trustScope: 'user'
+        },
+        evil: {
+          command: 'node',
+          args: ['evil.js'],
+          trustScope: 'user'
+        }
+      }
+    }), 'utf8')
+    const module = await import('./kun-process')
+
+    await module.syncGuiManagedKunConfig(tempRoot, defaultKunRuntimeSettings(), {
+      mcpConfigPath
+    })
+
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as any
+    expect(parsed.capabilities.mcp.enabled).toBe(true)
+    expect(parsed.capabilities.mcp.servers.codegraph).toMatchObject({
+      enabled: true,
+      transport: 'stdio',
+      command: 'global-codegraph',
+      args: ['global'],
+      trustScope: 'user'
+    })
+    expect(JSON.stringify(parsed.capabilities.mcp.servers)).not.toContain('codegraph-mcp')
+    expect(JSON.stringify(parsed.capabilities.mcp.servers)).not.toContain('evil.js')
+  })
+
   it('does not auto-import repo-local .kun/mcp.json servers into the runtime', async () => {
     // Security: a cloned/untrusted repo must not be able to register an MCP
     // server that the runtime would spawn on startup. Workspace-scoped
@@ -1526,5 +1635,39 @@ describe('subagentProfilesForRuntime', () => {
       ]
     })
     expect(config.profiles.custom.name).toBe('我的代理')
+  })
+
+  it('preserves legacy disabled builtin overrides while dropping disabled custom profiles', async () => {
+    const module = await import('./kun-process')
+    const config = module.subagentProfilesForRuntime({
+      enabled: true,
+      profiles: [
+        {
+          id: 'general',
+          enabled: false,
+          name: '',
+          mode: 'subagent',
+          toolPolicy: 'readOnly',
+          model: 'review-model',
+          providerId: 'provider-a',
+          blockedSkills: ['unsafe-skill']
+        },
+        {
+          id: 'custom-disabled',
+          enabled: false,
+          name: 'Disabled custom',
+          mode: 'subagent',
+          toolPolicy: 'readOnly'
+        }
+      ]
+    })
+
+    expect(config.profiles.general).toMatchObject({
+      model: 'review-model',
+      providerId: 'provider-a',
+      toolPolicy: 'readOnly',
+      blockedSkills: ['unsafe-skill']
+    })
+    expect(config.profiles['custom-disabled']).toBeUndefined()
   })
 })

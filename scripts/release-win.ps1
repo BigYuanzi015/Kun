@@ -159,6 +159,13 @@ if ($LASTEXITCODE -ne 0) {
 $env:ELECTRON_BUILDER_CACHE = Join-Path $Root '.cache\electron-builder'
 New-Item -ItemType Directory -Force -Path $env:ELECTRON_BUILDER_CACHE | Out-Null
 
+Write-Info 'Checking Extension public release gate...'
+& npm run check:extension-release-gate
+if ($LASTEXITCODE -ne 0) {
+  Write-Err 'Extension public release gate failed.'
+  exit 1
+}
+
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue `
   (Join-Path $Root 'dist\win-unpacked'), `
   (Join-Path $Root 'dist\mac'), `
@@ -175,6 +182,20 @@ Write-Info 'Building Windows installer...'
 & npm run dist:win
 if ($LASTEXITCODE -ne 0) {
   Write-Err 'Windows build failed (npm run dist:win).'
+  exit 1
+}
+
+Write-Info 'Smoking packaged Extension Node runtime...'
+& npm run smoke:packaged-extensions -- --resources dist/win-unpacked/resources
+if ($LASTEXITCODE -ne 0) {
+  Write-Err 'Windows packaged Extension Node runtime smoke failed.'
+  exit 1
+}
+
+Write-Info 'Smoking packaged Extension desktop Chromium...'
+& npm run smoke:packaged-extension-desktop
+if ($LASTEXITCODE -ne 0) {
+  Write-Err 'Windows packaged Extension desktop Chromium smoke failed.'
   exit 1
 }
 

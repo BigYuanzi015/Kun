@@ -9,6 +9,7 @@ import {
 import { normalizeWorkspaceRoot } from '../../lib/workspace-path'
 import type { ChatFileTreeReference } from '../chat/ChatFileTreePanel'
 import type { RightPanelMode } from '../chat/WorkbenchTopBar'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../../extensions/contribution-ids'
 import { CODE_PANEL_PREFERRED } from '../workbench-layout'
 
 export type WorkbenchFileTreeSidePanelView = 'workspace' | 'design'
@@ -91,7 +92,7 @@ export function useWorkbenchFileTreeController({
     })
     setFilePreviewTarget(nextTarget)
     setRightSidebarWidth((width) => Math.max(width, CODE_PANEL_PREFERRED))
-    setRightPanelMode('file')
+    setRightPanelMode(BUILTIN_RIGHT_PANEL_IDS.file)
   }
 
   function previewWorkspaceFileFromSidebar(path: string): void {
@@ -139,7 +140,7 @@ export function useWorkbenchFileTreeController({
   }
 
   useEffect(() => {
-    if (rightPanelMode !== 'file' || !filePreviewTarget) return
+    if (rightPanelMode !== BUILTIN_RIGHT_PANEL_IDS.file || !filePreviewTarget) return
     setOpenFilePreviewTargets((current) => {
       const key = workspaceFileTargetKey(filePreviewTarget)
       if (current.some((item) => workspaceFileTargetKey(item) === key)) return current

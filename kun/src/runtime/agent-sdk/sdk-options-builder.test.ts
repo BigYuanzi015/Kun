@@ -148,8 +148,10 @@ describe('assembleSdkOptions', () => {
     expect(opts.settingSources).toEqual([])
   })
 
-  test('allowSdkBuiltins:false yields only bridged tools', () => {
+  test('allowSdkBuiltins:false disables the built-in catalog and yields only bridged tools', () => {
     const opts = assembleSdkOptions({ ...base, allowSdkBuiltins: false })
+    expect(opts.tools).toEqual([])
+    expect(opts.strictMcpConfig).toBe(true)
     expect(opts.allowedTools).toEqual(base.bridgedToolModelNames)
   })
 
@@ -160,5 +162,11 @@ describe('assembleSdkOptions', () => {
     const withExtras = assembleSdkOptions({ ...base, model: 'claude-opus-4-8', resume: 'sess_1' })
     expect(withExtras.model).toBe('claude-opus-4-8')
     expect(withExtras.resume).toBe('sess_1')
+  })
+
+  test('maps the native model-step ceiling to a finite SDK maxTurns option', () => {
+    expect(assembleSdkOptions({ ...base, maxTurns: 7 }).maxTurns).toBe(7)
+    expect(assembleSdkOptions({ ...base, maxTurns: 2.9 }).maxTurns).toBe(2)
+    expect(assembleSdkOptions(base).maxTurns).toBeUndefined()
   })
 })

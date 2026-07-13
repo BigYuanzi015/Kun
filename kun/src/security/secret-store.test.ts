@@ -29,6 +29,13 @@ describe('createAesEncryptor', () => {
     const tampered = blob.slice(0, -4) + 'AAAA'
     expect(() => enc.decrypt(tampered)).toThrow()
   })
+
+  it('authenticates caller-supplied profile binding data', () => {
+    const enc = createAesEncryptor(randomBytes(32))
+    const blob = enc.encrypt('secret', 'profile-a:credential-a')
+    expect(enc.decrypt(blob, 'profile-a:credential-a')).toBe('secret')
+    expect(() => enc.decrypt(blob, 'profile-b:credential-a')).toThrow()
+  })
 })
 
 describe('createSecretEncryptor', () => {

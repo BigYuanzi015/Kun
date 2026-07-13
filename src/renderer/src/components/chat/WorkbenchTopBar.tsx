@@ -17,23 +17,25 @@ import {
   ListTodo,
   Loader2,
   MessageCircleMore,
+  Puzzle,
   RefreshCw,
   Shapes,
   Terminal
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { readPreferredEditorId, writePreferredEditorId } from '../../lib/editor-preferences'
+import {
+  extensionResourceUrl,
+  type RegisteredContribution
+} from '../../extensions/contribution-registry'
+import type { ExtensionRightContainerTarget } from '../../extensions/ExtensionWorkbenchSurfaces'
+import {
+  BUILTIN_RIGHT_PANEL_IDS,
+  type RightPanelMode
+} from '../../extensions/contribution-ids'
+import { boundedPlainText } from '../../extensions/safe-text'
 
-export type RightPanelMode =
-  | 'todo'
-  | 'changes'
-  | 'browser'
-  | 'file'
-  | 'plan'
-  | 'sdd-ai'
-  | 'canvas'
-  | 'subagents'
-  | null
+export type { RightPanelMode } from '../../extensions/contribution-ids'
 
 type Props = {
   rightPanelMode: RightPanelMode
@@ -48,6 +50,8 @@ type Props = {
   fileTreeEnabled?: boolean
   onToggleFileTree?: () => void
   onOpenSideChat?: () => void
+  extensionItems?: readonly RegisteredContribution<'views.rightSidebar'>[]
+  extensionContainers?: readonly ExtensionRightContainerTarget[]
 }
 
 type WorkbenchTopActionsProps = {
@@ -365,16 +369,18 @@ export function WorkbenchSideRail({
   fileTreeOpen = false,
   fileTreeEnabled = true,
   onToggleFileTree,
-  onOpenSideChat
+  onOpenSideChat,
+  extensionItems = [],
+  extensionContainers = []
 }: Props): ReactElement {
   const { t } = useTranslation(['common', 'settings'])
   const items = [
-    { mode: 'todo' as const, label: t('rightPanelTodo'), icon: ListTodo },
-    ...(planPanelEnabled ? [{ mode: 'plan' as const, label: t('rightPanelPlan'), icon: ClipboardList }] : []),
-    { mode: 'changes' as const, label: t('rightPanelChanges'), icon: FileEdit },
-    { mode: 'browser' as const, label: t('rightPanelBrowser'), icon: Globe2 },
-    ...(canvasEnabled ? [{ mode: 'canvas' as const, label: t('rightPanelWhiteboard'), icon: Shapes }] : []),
-    { mode: 'subagents' as const, label: t('rightPanelSubagents'), icon: Bot }
+    { mode: BUILTIN_RIGHT_PANEL_IDS.todo, label: t('rightPanelTodo'), icon: ListTodo },
+    ...(planPanelEnabled ? [{ mode: BUILTIN_RIGHT_PANEL_IDS.plan, label: t('rightPanelPlan'), icon: ClipboardList }] : []),
+    { mode: BUILTIN_RIGHT_PANEL_IDS.changes, label: t('rightPanelChanges'), icon: FileEdit },
+    { mode: BUILTIN_RIGHT_PANEL_IDS.browser, label: t('rightPanelBrowser'), icon: Globe2 },
+    ...(canvasEnabled ? [{ mode: BUILTIN_RIGHT_PANEL_IDS.canvas, label: t('rightPanelWhiteboard'), icon: Shapes }] : []),
+    { mode: BUILTIN_RIGHT_PANEL_IDS.subagents, label: t('rightPanelSubagents'), icon: Bot }
   ]
 
   return (
@@ -415,6 +421,66 @@ export function WorkbenchSideRail({
             aria-pressed={active}
           >
             <Icon className={TOPBAR_ICON_CLASS} strokeWidth={1.75} />
+          </button>
+        )
+      })}
+
+      {extensionContainers.map(({ container, target }) => {
+        if (container.owner.kind !== 'extension') return null
+        const active = rightPanelMode === target.id
+        const icon = container.payload.icon
+        const label = boundedPlainText(container.payload.title, 128)
+        return (
+          <button
+            key={container.id}
+            type="button"
+            onClick={() => onToggleRightPanelMode(target.id as Exclude<RightPanelMode, null>)}
+            className={sideRailButtonClass(active)}
+            data-tooltip={label}
+            aria-label={label}
+            aria-pressed={active}
+            data-contribution-id={container.id}
+          >
+            {icon ? (
+              <img
+                src={extensionResourceUrl(container.owner.extensionId, icon)}
+                alt=""
+                aria-hidden="true"
+                className={TOPBAR_ICON_CLASS}
+              />
+            ) : (
+              <Puzzle className={TOPBAR_ICON_CLASS} strokeWidth={1.75} />
+            )}
+          </button>
+        )
+      })}
+
+      {extensionItems.map((item) => {
+        if (item.owner.kind !== 'extension') return null
+        const active = rightPanelMode === item.id
+        const icon = item.payload.icon
+        const label = boundedPlainText(item.payload.title, 128)
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onToggleRightPanelMode(item.id as Exclude<RightPanelMode, null>)}
+            className={sideRailButtonClass(active)}
+            data-tooltip={label}
+            aria-label={label}
+            aria-pressed={active}
+            data-contribution-id={item.id}
+          >
+            {icon ? (
+              <img
+                src={extensionResourceUrl(item.owner.extensionId, icon)}
+                alt=""
+                aria-hidden="true"
+                className={TOPBAR_ICON_CLASS}
+              />
+            ) : (
+              <Puzzle className={TOPBAR_ICON_CLASS} strokeWidth={1.75} />
+            )}
           </button>
         )
       })}

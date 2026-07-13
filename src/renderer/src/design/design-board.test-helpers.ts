@@ -9,7 +9,9 @@ export function artifact(
   extra: Partial<DesignArtifact> = {}
 ): DesignArtifact {
   const relativePath =
-    kind === 'canvas' ? `.kun-design/doc/${id}/canvas.json` : `.kun-design/doc/${id}/v1.html`
+    kind === 'canvas'
+      ? `.kun-design/doc/${id}/canvas.json`
+      : `.kun-design/doc/${id}/v1.${kind === 'svg' ? 'svg' : 'html'}`
   return {
     id,
     kind,

@@ -49,6 +49,15 @@ export function parseServeOptions(
     configServe.tokenEconomy?.enabled ??
     configServe.tokenEconomyMode ??
     DEFAULT_SERVE_OPTIONS.tokenEconomyMode
+  const observabilityEnabled =
+    booleanFlag(raw, 'observability') ??
+    envBoolean(env.KUN_OBSERVABILITY) ??
+    configServe.observability?.enabled
+  const observabilityOutputPath =
+    stringFlag(raw, 'observability-output') ??
+    stringFlag(raw, 'observabilityOutput') ??
+    env.KUN_OBSERVABILITY_OUTPUT_PATH ??
+    configServe.observability?.outputPath
   const merged: ServeOptions = {
     ...DEFAULT_SERVE_OPTIONS,
     ...(loadedConfig ? { configPath: loadedConfig.path } : {}),
@@ -84,6 +93,7 @@ export function parseServeOptions(
         : typeof raw.apiKey === 'string'
           ? raw.apiKey
           : env.DEEPSEEK_API_KEY ?? configServe.apiKey ?? DEFAULT_SERVE_OPTIONS.apiKey,
+    credentialSourceId: configServe.credentialSourceId,
     baseUrl:
       typeof raw['base-url'] === 'string'
         ? raw['base-url']
@@ -141,6 +151,14 @@ export function parseServeOptions(
         ? { sqlitePath: storageSqlitePathFromRawOrEnv(raw, env) ?? configServe.storage?.sqlitePath }
         : {})
     },
+    observability:
+      observabilityEnabled !== undefined || observabilityOutputPath
+        ? {
+            ...(configServe.observability ?? {}),
+            ...(observabilityEnabled !== undefined ? { enabled: observabilityEnabled } : {}),
+            ...(observabilityOutputPath ? { outputPath: observabilityOutputPath } : {})
+          }
+        : configServe.observability,
     headers: configServe.headers,
     providers: configServe.providers,
     models: loadedConfig?.config.models,
@@ -181,6 +199,9 @@ Options:
   --insecure               Disable bearer token check (local dev only)
   --storage-backend <b>    hybrid | file (default hybrid)
   --sqlite-path <path>     SQLite index path for hybrid storage
+  --observability          Write sanitized OpenTelemetry-style agent spans
+  --observability-output <path>
+                           JSONL span output path (default {data-dir}/observability/agent-spans.jsonl)
 `
 
 export const ServeExitCode = {

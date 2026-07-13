@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  MAX_CANVAS_CHILDREN_PER_SHAPE,
+  MAX_CANVAS_DOCUMENT_OBJECTS,
+  MAX_CANVAS_GRAPH_DEPTH,
   canvasDocumentKey,
   canvasDocPath,
+  flushPendingCanvasDocuments,
   parseCanvasDocument,
   persistCanvasDocument,
   serializeCanvasDocument
@@ -31,6 +35,24 @@ describe('canvas-persistence round-trip', () => {
     expect(loadedFrame.htmlArtifactId).toBe('artifact-123')
     expect(loadedFrame.devicePreset).toBe('desktop')
     expect(isHtmlFrame(loadedFrame)).toBe(true)
+  })
+
+  it('preserves a first-class SVG artifact reference across serialize and parse', () => {
+    const doc = createEmptyDocument()
+    const frame = createDefaultShape('frame', 20, 40)
+    frame.embeddedArtifact = { id: 'motion-123', kind: 'svg' }
+    frame.width = 320
+    frame.height = 240
+    doc.objects[frame.id] = { ...frame, parentId: doc.rootId }
+    doc.objects[doc.rootId] = { ...doc.objects[doc.rootId], children: [frame.id] }
+
+    const parsed = parseCanvasDocument(serializeCanvasDocument(doc))
+    expect(parsed?.objects[frame.id]).toMatchObject({
+      embeddedArtifact: { id: 'motion-123', kind: 'svg' },
+      width: 320,
+      height: 240
+    })
+    expect(parsed?.objects[frame.id]?.htmlArtifactId).toBeUndefined()
   })
 
   it('does not invent htmlArtifactId for plain frames', () => {
@@ -75,10 +97,10 @@ describe('canvas-persistence round-trip', () => {
       version: 1,
       rootId: '__root__',
       objects: {
-        __root__: { id: '__root__', type: 'frame', name: 'Root', x: 0, y: 0, children: ['frame'] },
-        frame: { id: 'frame', type: 'frame', name: 'F', x: 200, y: 100, children: ['child'] },
-        child: { id: 'child', type: 'group', name: 'C', x: 10, y: 20, children: ['leaf'] },
-        leaf: { id: 'leaf', type: 'rect', name: 'L', x: 5, y: 5, children: [] }
+        __root__: { id: '__root__', type: 'frame', name: 'Root', parentId: null, x: 0, y: 0, children: ['frame'] },
+        frame: { id: 'frame', type: 'frame', name: 'F', parentId: '__root__', x: 200, y: 100, children: ['child'] },
+        child: { id: 'child', type: 'group', name: 'C', parentId: 'frame', x: 10, y: 20, children: ['leaf'] },
+        leaf: { id: 'leaf', type: 'rect', name: 'L', parentId: 'child', x: 5, y: 5, children: [] }
       }
     })
     const reloaded = parseCanvasDocument(raw)
@@ -98,9 +120,9 @@ describe('canvas-persistence round-trip', () => {
       version: 2,
       rootId: '__root__',
       objects: {
-        __root__: { id: '__root__', type: 'frame', name: 'Root', x: 0, y: 0, children: ['frame'] },
-        frame: { id: 'frame', type: 'frame', name: 'F', x: 200, y: 100, children: ['child'] },
-        child: { id: 'child', type: 'rect', name: 'C', x: 210, y: 120, children: [] }
+        __root__: { id: '__root__', type: 'frame', name: 'Root', parentId: null, x: 0, y: 0, children: ['frame'] },
+        frame: { id: 'frame', type: 'frame', name: 'F', parentId: '__root__', x: 200, y: 100, children: ['child'] },
+        child: { id: 'child', type: 'rect', name: 'C', parentId: 'frame', x: 210, y: 120, children: [] }
       }
     })
     const reloaded = parseCanvasDocument(raw)
@@ -206,8 +228,8 @@ describe('canvas-persistence round-trip', () => {
       version: 1,
       rootId: '__root__',
       objects: {
-        __root__: { id: '__root__', type: 'frame', name: 'Root', children: ['f1'] },
-        f1: { id: 'f1', type: 'frame', name: 'F', htmlArtifactId: 'a1', devicePreset: 'watch' }
+        __root__: { id: '__root__', type: 'frame', name: 'Root', parentId: null, children: ['f1'] },
+        f1: { id: 'f1', type: 'frame', name: 'F', parentId: '__root__', children: [], htmlArtifactId: 'a1', devicePreset: 'watch' }
       }
     })
     const reloaded = parseCanvasDocument(raw)
@@ -215,6 +237,103 @@ describe('canvas-persistence round-trip', () => {
     const frame = reloaded!.objects.f1
     expect(frame.htmlArtifactId).toBe('a1')
     expect(frame.devicePreset).toBeUndefined()
+  })
+
+  it.each([
+    {
+      label: 'missing child',
+      objects: {
+        __root__: { type: 'frame', parentId: null, children: ['missing'] }
+      }
+    },
+    {
+      label: 'duplicate child',
+      objects: {
+        __root__: { type: 'frame', parentId: null, children: ['a', 'a'] },
+        a: { type: 'rect', parentId: '__root__', children: [] }
+      }
+    },
+    {
+      label: 'multiple parents',
+      objects: {
+        __root__: { type: 'frame', parentId: null, children: ['a', 'b'] },
+        a: { type: 'frame', parentId: '__root__', children: ['child'] },
+        b: { type: 'frame', parentId: '__root__', children: ['child'] },
+        child: { type: 'rect', parentId: 'a', children: [] }
+      }
+    },
+    {
+      label: 'parent mismatch',
+      objects: {
+        __root__: { type: 'frame', parentId: null, children: ['a'] },
+        a: { type: 'rect', parentId: 'other', children: [] }
+      }
+    },
+    {
+      label: 'cycle',
+      objects: {
+        __root__: { type: 'frame', parentId: null, children: ['a'] },
+        a: { type: 'frame', parentId: '__root__', children: ['b'] },
+        b: { type: 'frame', parentId: 'a', children: ['a'] }
+      }
+    },
+    {
+      label: 'unreachable object',
+      objects: {
+        __root__: { type: 'frame', parentId: null, children: [] },
+        orphan: { type: 'rect', parentId: null, children: [] }
+      }
+    }
+  ])('rejects a malformed graph with $label', ({ objects }) => {
+    expect(parseCanvasDocument(JSON.stringify({ version: 2, rootId: '__root__', objects }))).toBeNull()
+  })
+
+  it('rejects non-finite geometry before it reaches canvas consumers', () => {
+    expect(parseCanvasDocument(
+      '{"version":2,"rootId":"__root__","objects":{"__root__":{"type":"frame","parentId":null,"x":1e400,"children":[]}}}'
+    )).toBeNull()
+  })
+
+  it('rejects object and child collections above their limits', () => {
+    const tooManyObjects: Record<string, unknown> = {}
+    for (let index = 0; index <= MAX_CANVAS_DOCUMENT_OBJECTS; index += 1) {
+      tooManyObjects[`shape-${index}`] = { type: 'rect', parentId: null, children: [] }
+    }
+    expect(parseCanvasDocument(JSON.stringify({
+      version: 2,
+      rootId: 'shape-0',
+      objects: tooManyObjects
+    }))).toBeNull()
+
+    expect(parseCanvasDocument(JSON.stringify({
+      version: 2,
+      rootId: '__root__',
+      objects: {
+        __root__: {
+          type: 'frame',
+          parentId: null,
+          children: Array.from({ length: MAX_CANVAS_CHILDREN_PER_SHAPE + 1 }, (_, index) => `child-${index}`)
+        }
+      }
+    }))).toBeNull()
+  })
+
+  it('rejects a graph deeper than recursive canvas consumers can safely traverse', () => {
+    const objects: Record<string, unknown> = {}
+    for (let depth = 0; depth <= MAX_CANVAS_GRAPH_DEPTH + 1; depth += 1) {
+      const id = `node-${depth}`
+      objects[id] = {
+        type: depth === 0 ? 'frame' : 'group',
+        parentId: depth === 0 ? null : `node-${depth - 1}`,
+        children: depth <= MAX_CANVAS_GRAPH_DEPTH ? [`node-${depth + 1}`] : []
+      }
+    }
+
+    expect(parseCanvasDocument(JSON.stringify({
+      version: 2,
+      rootId: 'node-0',
+      objects
+    }))).toBeNull()
   })
 })
 
@@ -269,6 +388,31 @@ describe('persistCanvasDocument debounce', () => {
     expect(writeWorkspaceFile).toHaveBeenCalledTimes(1)
     expect(writeWorkspaceFile).toHaveBeenCalledWith({
       path: canvasDocPath('code-thread-1', '.kun-canvas'),
+      workspaceRoot: '/workspace',
+      content: serializeCanvasDocument(latestDoc)
+    })
+  })
+
+  it('flushes the latest debounced canvas without waiting for the timer', async () => {
+    vi.useFakeTimers()
+    const writeWorkspaceFile = vi.fn(async ({ path }: { path: string }) => ({
+      ok: true as const,
+      path,
+      savedAt: 'now'
+    }))
+    vi.stubGlobal('window', { kunGui: { writeWorkspaceFile } })
+    const latestDoc = createEmptyDocument()
+    const rect = createDefaultShape('rect', 12, 24)
+    latestDoc.objects[rect.id] = { ...rect, parentId: latestDoc.rootId }
+    latestDoc.objects[latestDoc.rootId].children = [rect.id]
+
+    persistCanvasDocument('/workspace', 'board', createEmptyDocument())
+    persistCanvasDocument('/workspace', 'board', latestDoc)
+    await flushPendingCanvasDocuments('/workspace')
+
+    expect(writeWorkspaceFile).toHaveBeenCalledTimes(1)
+    expect(writeWorkspaceFile).toHaveBeenCalledWith({
+      path: canvasDocPath('board'),
       workspaceRoot: '/workspace',
       content: serializeCanvasDocument(latestDoc)
     })

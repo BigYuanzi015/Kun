@@ -1,5 +1,5 @@
-import { type ReactElement, useEffect, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
+import { type ReactElement, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   DEFAULT_MODEL_PROVIDER_ID,
   KUN_TOOL_PERMISSION_MODES,
@@ -8,8 +8,8 @@ import {
   type AppSettingsPatch,
   type AppSettingsV1,
   type KunToolPermissionMode,
-  type ModelProviderPreset
-} from '@shared/app-settings'
+  type ModelProviderPreset,
+} from "@shared/app-settings";
 import {
   buildInitialSetupSettingsPatch,
   INITIAL_SETUP_PROVIDER_PRESETS,
@@ -18,14 +18,14 @@ import {
   initialSetupProfileId,
   initialSetupSelection,
   type InitialSetupDrafts,
-  type InitialSetupSelection
-} from './initial-setup-save'
-import { rendererRuntimeClient } from '../agent/runtime-client'
-import type { RuntimeConnectionStatus } from '../agent/types'
-import { applyTheme } from '../lib/apply-theme'
-import { emitRendererSettingsChanged } from '../lib/keyboard-shortcut-settings'
-import { useChatStore } from '../store/chat-store'
-import type { InitialSetupMode } from '../store/chat-store-types'
+  type InitialSetupSelection,
+} from "./initial-setup-save";
+import { rendererRuntimeClient } from "../agent/runtime-client";
+import type { RuntimeConnectionStatus } from "../agent/types";
+import { applyTheme } from "../lib/apply-theme";
+import { emitRendererSettingsChanged } from "../lib/keyboard-shortcut-settings";
+import { useChatStore } from "../store/chat-store";
+import type { InitialSetupMode } from "../store/chat-store-types";
 import {
   Download,
   Eye,
@@ -44,349 +44,403 @@ import {
   Sun,
   Moon,
   Monitor,
-  X
-} from 'lucide-react'
+  X,
+} from "lucide-react";
 
-type ThemePref = AppSettingsV1['theme']
-type SetupFormPatch = AppSettingsPatch
+type ThemePref = AppSettingsV1["theme"];
+type SetupFormPatch = AppSettingsPatch;
 type InitialSetupCompletionState = {
-  runtimeConnection: RuntimeConnectionStatus
-  error: string | null
-}
+  runtimeConnection: RuntimeConnectionStatus;
+  error: string | null;
+};
 
-const themeOptions: { value: ThemePref; icon: typeof Sun; labelKey: string }[] = [
-  { value: 'system', icon: Monitor, labelKey: 'themeSystem' },
-  { value: 'light', icon: Sun, labelKey: 'themeLight' },
-  { value: 'dark', icon: Moon, labelKey: 'themeDark' }
-]
+const themeOptions: { value: ThemePref; icon: typeof Sun; labelKey: string }[] =
+  [
+    { value: "system", icon: Monitor, labelKey: "themeSystem" },
+    { value: "light", icon: Sun, labelKey: "themeLight" },
+    { value: "dark", icon: Moon, labelKey: "themeDark" },
+  ];
 // 金丰和 / 生地楼 LiteLLM 网关
 const SITE_OPTIONS = [
-  { id: 'jinfenghe' as const, label: '金丰和', baseUrl: 'http://192.168.2.29:40000/' },
-  { id: 'shengdilou' as const, label: '生地楼', baseUrl: 'http://47.92.140.194:40000/' }
-]
-const DEFAULT_LITELLM_SITE = 'jinfenghe'
-const LITELLM_PRESET_ID = 'litellm'
+  {
+    id: "jinfenghe" as const,
+    label: "金丰和",
+    baseUrl: "http://192.168.2.29:40000/",
+  },
+  {
+    id: "shengdilou" as const,
+    label: "生地楼",
+    baseUrl: "http://47.92.140.194:40000/",
+  },
+];
+const DEFAULT_LITELLM_SITE = "jinfenghe";
+const LITELLM_PRESET_ID = "litellm";
 
 type PermissionOption = {
-  value: KunToolPermissionMode
-  labelKey: string
-  descriptionKey: string
-  Icon: typeof Hand
-  iconClass: string
-}
+  value: KunToolPermissionMode;
+  labelKey: string;
+  descriptionKey: string;
+  Icon: typeof Hand;
+  iconClass: string;
+};
 
-const PERMISSION_OPTIONS: PermissionOption[] = KUN_TOOL_PERMISSION_MODES.map((value) => {
-  switch (value) {
-    case 'always-ask':
-      return {
-        value,
-        labelKey: 'toolPermissionAlwaysAsk',
-        descriptionKey: 'toolPermissionAlwaysAskDesc',
-        Icon: Hand,
-        iconClass: 'border-sky-400/30 bg-sky-500/10 text-sky-700 dark:text-sky-200'
-      }
-    case 'read-only':
-      return {
-        value,
-        labelKey: 'toolPermissionReadOnly',
-        descriptionKey: 'toolPermissionReadOnlyDesc',
-        Icon: Eye,
-        iconClass: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200'
-      }
-    case 'sensitive-ask':
-      return {
-        value,
-        labelKey: 'toolPermissionSensitiveAsk',
-        descriptionKey: 'toolPermissionSensitiveAskDesc',
-        Icon: ShieldQuestion,
-        iconClass: 'border-amber-400/35 bg-amber-500/10 text-amber-700 dark:text-amber-200'
-      }
-    case 'workspace-write':
-      return {
-        value,
-        labelKey: 'toolPermissionWorkspaceWrite',
-        descriptionKey: 'toolPermissionWorkspaceWriteDesc',
-        Icon: FolderPen,
-        iconClass: 'border-indigo-400/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-200'
-      }
-    case 'trusted-workspace':
-      return {
-        value,
-        labelKey: 'toolPermissionTrustedWorkspace',
-        descriptionKey: 'toolPermissionTrustedWorkspaceDesc',
-        Icon: ShieldCheck,
-        iconClass: 'border-teal-400/30 bg-teal-500/10 text-teal-700 dark:text-teal-200'
-      }
-    case 'bypass':
-      return {
-        value,
-        labelKey: 'toolPermissionBypass',
-        descriptionKey: 'toolPermissionBypassDesc',
-        Icon: LockKeyholeOpen,
-        iconClass: 'border-orange-400/35 bg-orange-500/10 text-orange-700 dark:text-orange-200'
-      }
-  }
-})
+const PERMISSION_OPTIONS: PermissionOption[] = KUN_TOOL_PERMISSION_MODES.map(
+  (value) => {
+    switch (value) {
+      case "always-ask":
+        return {
+          value,
+          labelKey: "toolPermissionAlwaysAsk",
+          descriptionKey: "toolPermissionAlwaysAskDesc",
+          Icon: Hand,
+          iconClass:
+            "border-sky-400/30 bg-sky-500/10 text-sky-700 dark:text-sky-200",
+        };
+      case "read-only":
+        return {
+          value,
+          labelKey: "toolPermissionReadOnly",
+          descriptionKey: "toolPermissionReadOnlyDesc",
+          Icon: Eye,
+          iconClass:
+            "border-emerald-400/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+        };
+      case "sensitive-ask":
+        return {
+          value,
+          labelKey: "toolPermissionSensitiveAsk",
+          descriptionKey: "toolPermissionSensitiveAskDesc",
+          Icon: ShieldQuestion,
+          iconClass:
+            "border-amber-400/35 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+        };
+      case "workspace-write":
+        return {
+          value,
+          labelKey: "toolPermissionWorkspaceWrite",
+          descriptionKey: "toolPermissionWorkspaceWriteDesc",
+          Icon: FolderPen,
+          iconClass:
+            "border-indigo-400/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-200",
+        };
+      case "trusted-workspace":
+        return {
+          value,
+          labelKey: "toolPermissionTrustedWorkspace",
+          descriptionKey: "toolPermissionTrustedWorkspaceDesc",
+          Icon: ShieldCheck,
+          iconClass:
+            "border-teal-400/30 bg-teal-500/10 text-teal-700 dark:text-teal-200",
+        };
+      case "bypass":
+        return {
+          value,
+          labelKey: "toolPermissionBypass",
+          descriptionKey: "toolPermissionBypassDesc",
+          Icon: LockKeyholeOpen,
+          iconClass:
+            "border-orange-400/35 bg-orange-500/10 text-orange-700 dark:text-orange-200",
+        };
+    }
+  },
+);
 
 type SetupProviderCard = {
-  presetId: string
-  name: string
-  descKey: string
-  capability: 'speech' | 'image' | null
-  preset: ModelProviderPreset | null
-}
+  presetId: string;
+  name: string;
+  descKey: string;
+  capability: "speech" | "image" | null;
+  preset: ModelProviderPreset | null;
+};
 
 // 仅保留 LiteLLM（默认）和 DeepSeek。XiaoMi/MiniMax 从首次设置中移除。
 const PROVIDER_CARDS: SetupProviderCard[] = [
   {
     presetId: LITELLM_PRESET_ID,
-    name: 'LiteLLM',
-    descKey: 'firstRunProviderLitellmDesc',
+    name: "LiteLLM",
+    descKey: "firstRunProviderLitellmDesc",
     capability: null,
-    preset: null
+    preset: null,
   },
   {
     presetId: DEFAULT_MODEL_PROVIDER_ID,
-    name: 'DeepSeek',
-    descKey: 'firstRunProviderDeepseekDesc',
+    name: "DeepSeek",
+    descKey: "firstRunProviderDeepseekDesc",
     capability: null,
-    preset: null
-  }
-]
+    preset: null,
+  },
+];
 
-function keyHintKey(card: SetupProviderCard, mode: InitialSetupSelection['mode']): string {
-  if (card.presetId === LITELLM_PRESET_ID) return 'firstRunBuyApiHint' // 不显示
-  if (card.presetId === DEFAULT_MODEL_PROVIDER_ID) return 'firstRunBuyApiHint'
-  const suffix = mode === 'token-plan' ? 'TokenPlan' : 'Api'
-  return card.presetId === 'xiaomi' ? `firstRunKeyHintXiaomi${suffix}` : `firstRunKeyHintMinimax${suffix}`
+function keyHintKey(
+  card: SetupProviderCard,
+  mode: InitialSetupSelection["mode"],
+): string {
+  if (card.presetId === LITELLM_PRESET_ID) return "firstRunBuyApiHint"; // 不显示
+  if (card.presetId === DEFAULT_MODEL_PROVIDER_ID) return "firstRunBuyApiHint";
+  const suffix = mode === "token-plan" ? "TokenPlan" : "Api";
+  return card.presetId === "xiaomi"
+    ? `firstRunKeyHintXiaomi${suffix}`
+    : `firstRunKeyHintMinimax${suffix}`;
 }
 
-function keyPageUrl(card: SetupProviderCard, mode: InitialSetupSelection['mode']): string {
-  if (card.presetId === LITELLM_PRESET_ID) return '#'
-  if (!card.preset) return 'https://platform.deepseek.com/usage'
-  if (mode === 'token-plan' && card.preset.tokenPlan) return card.preset.tokenPlan.apiKeyUrl
-  return card.preset.apiKeyUrl
+function keyPageUrl(
+  card: SetupProviderCard,
+  mode: InitialSetupSelection["mode"],
+): string {
+  if (card.presetId === LITELLM_PRESET_ID) return "#";
+  if (!card.preset) return "https://platform.deepseek.com/usage";
+  if (mode === "token-plan" && card.preset.tokenPlan)
+    return card.preset.tokenPlan.apiKeyUrl;
+  return card.preset.apiKeyUrl;
 }
 
-function keyPlaceholder(card: SetupProviderCard, mode: InitialSetupSelection['mode']): string {
-  if (card.presetId === LITELLM_PRESET_ID) return '无需 API Key'
-  if (mode === 'token-plan') {
-    const prefix = card.preset?.tokenPlan?.keyPrefix
-    return prefix ? `${prefix}...` : 'API Key'
+function keyPlaceholder(
+  card: SetupProviderCard,
+  mode: InitialSetupSelection["mode"],
+): string {
+  if (card.presetId === LITELLM_PRESET_ID) return "无需 API Key";
+  if (mode === "token-plan") {
+    const prefix = card.preset?.tokenPlan?.keyPrefix;
+    return prefix ? `${prefix}...` : "API Key";
   }
-  return card.presetId === 'minimax' ? 'API Key' : 'sk-...'
+  return card.presetId === "minimax" ? "API Key" : "sk-...";
 }
 
 export function canCloseInitialSetup(mode: InitialSetupMode): boolean {
-  return mode === 'preview'
+  return mode === "preview";
 }
 
 export async function completeInitialSetupAfterSave(input: {
-  mode: InitialSetupMode
-  reloadUiSettings: () => Promise<void>
-  probeRuntime: (mode?: 'user' | 'background') => Promise<void>
-  openCode: () => Promise<void>
-  closeInitialSetup: () => void
-  getState: () => InitialSetupCompletionState
-  setDialogError: (message: string) => void
-  fallbackRuntimeError: string
+  mode: InitialSetupMode;
+  reloadUiSettings: () => Promise<void>;
+  probeRuntime: (mode?: "user" | "background") => Promise<void>;
+  openCode: () => Promise<void>;
+  closeInitialSetup: () => void;
+  getState: () => InitialSetupCompletionState;
+  setDialogError: (message: string) => void;
+  fallbackRuntimeError: string;
 }): Promise<boolean> {
-  await input.reloadUiSettings()
-  if (input.mode === 'preview') {
-    void input.probeRuntime('background')
-    input.closeInitialSetup()
-    return true
+  await input.reloadUiSettings();
+  if (input.mode === "preview") {
+    void input.probeRuntime("background");
+    input.closeInitialSetup();
+    return true;
   }
 
-  await input.probeRuntime('user')
-  const state = input.getState()
-  if (state.runtimeConnection !== 'ready') {
-    input.setDialogError(state.error?.trim() || input.fallbackRuntimeError)
-    return false
+  await input.probeRuntime("user");
+  const state = input.getState();
+  if (state.runtimeConnection !== "ready") {
+    input.setDialogError(state.error?.trim() || input.fallbackRuntimeError);
+    return false;
   }
-  await input.openCode()
-  input.closeInitialSetup()
-  return true
+  await input.openCode();
+  input.closeInitialSetup();
+  return true;
 }
 
 export function InitialSetupDialog(): ReactElement {
-  const { t } = useTranslation('settings')
-  const initialSetupMode = useChatStore((s) => s.initialSetupMode)
-  const closeInitialSetup = useChatStore((s) => s.closeInitialSetup)
-  const applyI18n = useChatStore((s) => s.applyI18nFromSettings)
-  const reloadUiSettings = useChatStore((s) => s.reloadUiSettings)
-  const probeRuntime = useChatStore((s) => s.probeRuntime)
-  const openCode = useChatStore((s) => s.openCode)
+  const { t } = useTranslation("settings");
+  const initialSetupMode = useChatStore((s) => s.initialSetupMode);
+  const closeInitialSetup = useChatStore((s) => s.closeInitialSetup);
+  const applyI18n = useChatStore((s) => s.applyI18nFromSettings);
+  const reloadUiSettings = useChatStore((s) => s.reloadUiSettings);
+  const probeRuntime = useChatStore((s) => s.probeRuntime);
+  const openCode = useChatStore((s) => s.openCode);
 
-  const [form, setForm] = useState<AppSettingsV1 | null>(null)
-  const [drafts, setDrafts] = useState<InitialSetupDrafts | null>(null)
+  const [form, setForm] = useState<AppSettingsV1 | null>(null);
+  const [drafts, setDrafts] = useState<InitialSetupDrafts | null>(null);
   const [selection, setSelection] = useState<InitialSetupSelection>({
     presetId: LITELLM_PRESET_ID,
-    mode: 'api',
-    permissionMode: 'bypass'
-  })
-  const [selectedSite, setSelectedSite] = useState<string>(DEFAULT_LITELLM_SITE)
-  const [showApiKey, setShowApiKey] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+    mode: "api",
+    permissionMode: "bypass",
+  });
+  const [selectedSite, setSelectedSite] =
+    useState<string>(DEFAULT_LITELLM_SITE);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   // 从 API 拉取模型
-  const [fetchingModels, setFetchingModels] = useState(false)
-  const [fetchedModelIds, setFetchedModelIds] = useState<string[] | null>(null)
-  const formRef = useRef<AppSettingsV1 | null>(null)
-  const isPreview = initialSetupMode === 'preview'
-  const closeAllowed = canCloseInitialSetup(initialSetupMode)
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [fetchedModelIds, setFetchedModelIds] = useState<string[] | null>(null);
+  const formRef = useRef<AppSettingsV1 | null>(null);
+  const isPreview = initialSetupMode === "preview";
+  const closeAllowed = canCloseInitialSetup(initialSetupMode);
 
   const setCurrentForm = (next: AppSettingsV1 | null): void => {
-    formRef.current = next
-    setForm(next)
-  }
+    formRef.current = next;
+    setForm(next);
+  };
 
   useEffect(() => {
-    let cancelled = false
+    let cancelled = false;
     void rendererRuntimeClient
       .getSettings({ forceRefresh: true })
       .then((s) => {
-        if (cancelled) return
+        if (cancelled) return;
         // 首次进入强制中文，选 LiteLLM + bypass 权限
-        const next = { ...s, locale: 'zh' as const }
-        if (!s.locale || s.locale === 'en') {
-          void applyI18n('zh')
+        const next = { ...s, locale: "zh" as const };
+        if (!s.locale || s.locale === "en") {
+          void applyI18n("zh");
         }
-        setCurrentForm(next)
-        setDrafts(initialSetupDrafts(next))
+        setCurrentForm(next);
+        setDrafts(initialSetupDrafts(next));
         setSelection({
           presetId: LITELLM_PRESET_ID,
-          mode: 'api',
-          permissionMode: 'bypass'
-        })
+          mode: "api",
+          permissionMode: "bypass",
+        });
         // 从现有 baseUrl 匹配对应地点
-        const existingBaseUrl = (next.provider?.baseUrl || '')
-        const matchedSite = SITE_OPTIONS.find((o) => existingBaseUrl === o.baseUrl)
-        setSelectedSite(matchedSite?.id || DEFAULT_LITELLM_SITE)
+        const existingBaseUrl = next.provider?.baseUrl || "";
+        const matchedSite = SITE_OPTIONS.find(
+          (o) => existingBaseUrl === o.baseUrl,
+        );
+        setSelectedSite(matchedSite?.id || DEFAULT_LITELLM_SITE);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
-      })
-    return () => { cancelled = true }
-  }, [])
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const updateForm = (patch: SetupFormPatch) => {
-    const current = formRef.current
-    if (!current) return
+    const current = formRef.current;
+    if (!current) return;
     const next = normalizeAppSettings({
       ...current,
-      ...patch
-    } as AppSettingsV1)
-    setCurrentForm(next)
-  }
+      ...patch,
+    } as AppSettingsV1);
+    setCurrentForm(next);
+  };
 
   const handleThemeChange = (theme: ThemePref) => {
-    if (!formRef.current) return
-    updateForm({ theme })
-    applyTheme(theme)
-  }
+    if (!formRef.current) return;
+    updateForm({ theme });
+    applyTheme(theme);
+  };
 
   const handleClose = () => {
-    if (!closeAllowed) return
-    setError(null)
-    closeInitialSetup()
-    void reloadUiSettings()
-  }
+    if (!closeAllowed) return;
+    setError(null);
+    closeInitialSetup();
+    void reloadUiSettings();
+  };
 
   const handleOpenKeyPage = (url: string) => {
-    if (typeof window.kunGui?.openExternal !== 'function') return
-    void window.kunGui.openExternal(url).catch(() => undefined)
-  }
+    if (typeof window.kunGui?.openExternal !== "function") return;
+    void window.kunGui.openExternal(url).catch(() => undefined);
+  };
 
-  const selectedCard = PROVIDER_CARDS.find((card) => card.presetId === selection.presetId) ?? PROVIDER_CARDS[0]
-  const selectedProfileId = initialSetupProfileId(selection)
-  const selectedDraft = drafts?.[selectedProfileId] ?? { apiKey: '', baseUrl: '' }
+  const selectedCard =
+    PROVIDER_CARDS.find((card) => card.presetId === selection.presetId) ??
+    PROVIDER_CARDS[0];
+  const selectedProfileId = initialSetupProfileId(selection);
+  const selectedDraft = drafts?.[selectedProfileId] ?? {
+    apiKey: "",
+    baseUrl: "",
+  };
 
   const updateSelectedDraft = (patch: Partial<typeof selectedDraft>): void => {
-    setDrafts((current) => current
-      ? { ...current, [selectedProfileId]: { ...current[selectedProfileId], ...patch } }
-      : current)
-  }
+    setDrafts((current) =>
+      current
+        ? {
+            ...current,
+            [selectedProfileId]: { ...current[selectedProfileId], ...patch },
+          }
+        : current,
+    );
+  };
 
   const selectCard = (presetId: string): void => {
-    setError(null)
-    setSelection((current) => (current.presetId === presetId ? current : { ...current, presetId, mode: 'api' }))
-  }
+    setError(null);
+    setSelection((current) =>
+      current.presetId === presetId
+        ? current
+        : { ...current, presetId, mode: "api" },
+    );
+  };
 
-  const selectMode = (mode: InitialSetupSelection['mode']): void => {
-    setError(null)
-    setSelection((current) => ({ ...current, mode }))
-  }
+  const selectMode = (mode: InitialSetupSelection["mode"]): void => {
+    setError(null);
+    setSelection((current) => ({ ...current, mode }));
+  };
 
-  const selectPermissionMode = (permissionMode: KunToolPermissionMode): void => {
-    setError(null)
-    setSelection((current) => ({ ...current, permissionMode }))
-    const current = formRef.current
-    if (!current) return
+  const selectPermissionMode = (
+    permissionMode: KunToolPermissionMode,
+  ): void => {
+    setError(null);
+    setSelection((current) => ({ ...current, permissionMode }));
+    const current = formRef.current;
+    if (!current) return;
     updateForm({
       agents: {
         ...current.agents,
         kun: {
           ...current.agents.kun,
-          ...kunToolPermissionModeSettings(permissionMode)
-        }
-      }
-    } as SetupFormPatch)
-  }
+          ...kunToolPermissionModeSettings(permissionMode),
+        },
+      },
+    } as SetupFormPatch);
+  };
 
   const cardFilled = (card: SetupProviderCard): boolean => {
-    if (!drafts) return false
-    if (drafts[card.presetId]?.apiKey.trim()) return true
-    if (!card.preset?.tokenPlan) return false
-    return Boolean(drafts[initialSetupProfileId({ presetId: card.presetId, mode: 'token-plan' })]?.apiKey.trim())
-  }
+    if (!drafts) return false;
+    if (drafts[card.presetId]?.apiKey.trim()) return true;
+    if (!card.preset?.tokenPlan) return false;
+    return Boolean(
+      drafts[
+        initialSetupProfileId({ presetId: card.presetId, mode: "token-plan" })
+      ]?.apiKey.trim(),
+    );
+  };
 
   const handleFetchModels = async () => {
-    const apiKey = selectedDraft.apiKey.trim()
-    const baseUrl = selectedDraft.baseUrl.trim()
+    const apiKey = selectedDraft.apiKey.trim();
+    const baseUrl = selectedDraft.baseUrl.trim();
     if (!apiKey || !baseUrl) {
-      setError('请先填写 API Key 和网关地址')
-      return
+      setError("请先填写 API Key 和网关地址");
+      return;
     }
-    setFetchingModels(true)
-    setError(null)
-    setFetchedModelIds(null)
+    setFetchingModels(true);
+    setError(null);
+    setFetchedModelIds(null);
     try {
       const result = await window.kunGui.probeModelProvider({
         baseUrl,
         apiKey,
-        endpointFormat: 'messages'
-      })
+        endpointFormat: "messages",
+      });
       if (!result.ok) {
-        setError(result.message || '无法获取模型列表')
-        return
+        setError(result.message || "无法获取模型列表");
+        return;
       }
-      setFetchedModelIds([...result.modelIds])
+      setFetchedModelIds([...result.modelIds]);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setFetchingModels(false)
+      setFetchingModels(false);
     }
-  }
+  };
 
   const handleSave = async () => {
-    const current = formRef.current
-    if (!current || !drafts) return
+    const current = formRef.current;
+    if (!current || !drafts) return;
     // 所有 Provider 都要填 API Key
     if (!selectedDraft.apiKey.trim()) {
-      setError(t('firstRunApiKeyValidation', { provider: selectedCard.name }))
-      return
+      setError(t("firstRunApiKeyValidation", { provider: selectedCard.name }));
+      return;
     }
-    setSaving(true)
-    setError(null)
+    setSaving(true);
+    setError(null);
     try {
       const next = await rendererRuntimeClient.setSettings(
-        buildInitialSetupSettingsPatch(current, drafts, selection)
-      )
-      setCurrentForm(next)
-      setDrafts(initialSetupDrafts(next))
-      emitRendererSettingsChanged(next)
-      await applyI18n(next.locale)
+        buildInitialSetupSettingsPatch(current, drafts, selection),
+      );
+      setCurrentForm(next);
+      setDrafts(initialSetupDrafts(next));
+      emitRendererSettingsChanged(next);
+      await applyI18n(next.locale);
       await completeInitialSetupAfterSave({
         mode: initialSetupMode,
         reloadUiSettings,
@@ -395,70 +449,83 @@ export function InitialSetupDialog(): ReactElement {
         closeInitialSetup,
         getState: useChatStore.getState,
         setDialogError: setError,
-        fallbackRuntimeError: t('common:runtimeFetchFailed')
-      })
+        fallbackRuntimeError: t("common:runtimeFetchFailed"),
+      });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setSaving(false)
+      setSaving(false);
     }
-  }
+  };
 
   if (!form || !drafts) {
     return (
       <div className="ds-no-drag fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4 backdrop-blur-md dark:bg-black/70">
         <div className="rounded-xl border border-ds-border bg-ds-card/95 px-5 py-4 text-sm text-ds-muted shadow-panel backdrop-blur-xl">
-          {t('loading')}
+          {t("loading")}
         </div>
       </div>
-    )
+    );
   }
 
-  const selectedTheme = form.theme
-  const tokenPlan = selectedCard.preset?.tokenPlan ?? null
-  const showTokenPlanMode = Boolean(tokenPlan)
-  const regions = selection.mode === 'token-plan' ? tokenPlan?.regions ?? [] : []
-  const wire = initialSetupAutoWirePlan(form, drafts)
+  const selectedTheme = form.theme;
+  const tokenPlan = selectedCard.preset?.tokenPlan ?? null;
+  const showTokenPlanMode = Boolean(tokenPlan);
+  const regions =
+    selection.mode === "token-plan" ? (tokenPlan?.regions ?? []) : [];
+  const wire = initialSetupAutoWirePlan(form, drafts);
   const wireNote = (() => {
-    if (!selectedCard.capability) return null
-    const wiredProfileId = selectedCard.capability === 'speech' ? wire.speechProviderId : wire.imageProviderId
+    if (!selectedCard.capability) return null;
+    const wiredProfileId =
+      selectedCard.capability === "speech"
+        ? wire.speechProviderId
+        : wire.imageProviderId;
     if (wiredProfileId && wiredProfileId === selectedProfileId) {
       return {
-        tone: 'success' as const,
-        text: t(selectedCard.capability === 'speech' ? 'firstRunAutoWireSpeech' : 'firstRunAutoWireImage')
-      }
+        tone: "success" as const,
+        text: t(
+          selectedCard.capability === "speech"
+            ? "firstRunAutoWireSpeech"
+            : "firstRunAutoWireImage",
+        ),
+      };
     }
-    if (selection.mode === 'token-plan' && selectedDraft.apiKey.trim()) {
-      const planServesCapability = selectedCard.capability === 'speech'
-        ? Boolean(tokenPlan?.speech)
-        : selectedCard.capability === 'image' && Boolean(tokenPlan?.image)
+    if (selection.mode === "token-plan" && selectedDraft.apiKey.trim()) {
+      const planServesCapability =
+        selectedCard.capability === "speech"
+          ? Boolean(tokenPlan?.speech)
+          : selectedCard.capability === "image" && Boolean(tokenPlan?.image);
       if (!planServesCapability) {
         return {
-          tone: 'warning' as const,
-          text: t(selectedCard.capability === 'speech' ? 'firstRunTokenPlanNoSpeech' : 'firstRunTokenPlanNoImage')
-        }
+          tone: "warning" as const,
+          text: t(
+            selectedCard.capability === "speech"
+              ? "firstRunTokenPlanNoSpeech"
+              : "firstRunTokenPlanNoImage",
+          ),
+        };
       }
     }
-    return null
-  })()
+    return null;
+  })();
 
   const choiceButtonClass = (active: boolean): string =>
     [
-      'flex min-h-10 min-w-0 items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-all duration-200 sm:min-h-11 sm:px-4',
+      "flex min-h-10 min-w-0 items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-all duration-200 sm:min-h-11 sm:px-4",
       active
-        ? 'border-[#1388ff] bg-[#1388ff]/[0.07] text-[#1377df] shadow-[0_0_0_1px_rgba(19,136,255,0.12),0_8px_18px_rgba(19,136,255,0.07)] dark:border-[#3aa0ff] dark:bg-[#3aa0ff]/[0.12] dark:text-[#88c8ff]'
-        : 'border-slate-300/80 bg-white/72 text-slate-600 hover:border-slate-400/80 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:text-slate-300 dark:hover:border-white/16 dark:hover:bg-white/[0.055]'
-    ].join(' ')
+        ? "border-[#1388ff] bg-[#1388ff]/[0.07] text-[#1377df] shadow-[0_0_0_1px_rgba(19,136,255,0.12),0_8px_18px_rgba(19,136,255,0.07)] dark:border-[#3aa0ff] dark:bg-[#3aa0ff]/[0.12] dark:text-[#88c8ff]"
+        : "border-slate-300/80 bg-white/72 text-slate-600 hover:border-slate-400/80 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:text-slate-300 dark:hover:border-white/16 dark:hover:bg-white/[0.055]",
+    ].join(" ");
   const cardButtonClass = (active: boolean): string =>
     [
-      'flex min-w-0 flex-col items-start gap-1 rounded-xl border px-3 py-2.5 text-left transition-all duration-200',
+      "flex min-w-0 flex-col items-start gap-1 rounded-xl border px-3 py-2.5 text-left transition-all duration-200",
       active
-        ? 'border-[#1388ff] bg-[#1388ff]/[0.07] shadow-[0_0_0_1px_rgba(19,136,255,0.12),0_8px_18px_rgba(19,136,255,0.07)] dark:border-[#3aa0ff] dark:bg-[#3aa0ff]/[0.12]'
-        : 'border-slate-300/80 bg-white/72 hover:border-slate-400/80 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-white/16 dark:hover:bg-white/[0.055]'
-    ].join(' ')
+        ? "border-[#1388ff] bg-[#1388ff]/[0.07] shadow-[0_0_0_1px_rgba(19,136,255,0.12),0_8px_18px_rgba(19,136,255,0.07)] dark:border-[#3aa0ff] dark:bg-[#3aa0ff]/[0.12]"
+        : "border-slate-300/80 bg-white/72 hover:border-slate-400/80 hover:bg-white dark:border-white/10 dark:bg-white/[0.035] dark:hover:border-white/16 dark:hover:bg-white/[0.055]",
+    ].join(" ");
   const fieldClass =
-    'w-full rounded-xl border border-slate-300/75 bg-white/88 px-4 py-3 text-[15px] text-slate-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] outline-none transition focus:border-[#1388ff]/70 focus:ring-2 focus:ring-[#1388ff]/15 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-100 dark:shadow-none dark:focus:border-[#3aa0ff]/70 dark:focus:ring-[#3aa0ff]/15 dark:placeholder:text-slate-500'
-  const labelClass = 'text-sm font-semibold text-slate-700 dark:text-slate-200'
+    "w-full rounded-xl border border-slate-300/75 bg-white/88 px-4 py-3 text-[15px] text-slate-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] outline-none transition focus:border-[#1388ff]/70 focus:ring-2 focus:ring-[#1388ff]/15 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-100 dark:shadow-none dark:focus:border-[#3aa0ff]/70 dark:focus:ring-[#3aa0ff]/15 dark:placeholder:text-slate-500";
+  const labelClass = "text-sm font-semibold text-slate-700 dark:text-slate-200";
   return (
     <div className="ds-no-drag fixed inset-0 z-50 overflow-y-auto bg-[#eef2fb]/45 p-3 backdrop-blur-[18px] dark:bg-black/62 dark:backdrop-blur-[22px] sm:p-6">
       <div className="flex min-h-full items-center justify-center">
@@ -468,387 +535,440 @@ export function InitialSetupDialog(): ReactElement {
           aria-labelledby="initial-setup-title"
           className="flex h-[calc(100dvh-24px)] max-h-[calc(100dvh-24px)] w-full max-w-[640px] flex-col overflow-hidden rounded-2xl border border-white/75 bg-[rgba(255,255,255,0.94)] text-slate-900 shadow-[0_28px_86px_rgba(88,105,136,0.22)] backdrop-blur-2xl dark:border-white/10 dark:bg-[rgba(18,21,28,0.96)] dark:text-white dark:shadow-[0_28px_92px_rgba(0,0,0,0.55)] sm:h-auto sm:max-h-[calc(100dvh-48px)]"
         >
-        <div className="shrink-0 border-b border-slate-200/72 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,250,253,0.9))] px-5 py-4 dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(27,31,40,0.98),rgba(19,22,29,0.96))] sm:px-7 sm:py-6">
-          <div className="flex items-start justify-between gap-3">
-            <div className="inline-flex min-w-0 items-center gap-2 rounded-lg border border-[#1388ff]/22 bg-[#1388ff]/[0.06] px-3 py-1.5 text-[12.5px] font-semibold text-[#1377df] dark:border-[#3aa0ff]/22 dark:bg-[#3aa0ff]/[0.12] dark:text-[#88c8ff]">
-              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.9} />
-              <span className="min-w-0 truncate">{t(isPreview ? 'firstRunPreviewBadge' : 'firstRunBadge')}</span>
+          <div className="shrink-0 border-b border-slate-200/72 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,250,253,0.9))] px-5 py-4 dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(27,31,40,0.98),rgba(19,22,29,0.96))] sm:px-7 sm:py-6">
+            <div className="flex items-start justify-between gap-3">
+              <div className="inline-flex min-w-0 items-center gap-2 rounded-lg border border-[#1388ff]/22 bg-[#1388ff]/[0.06] px-3 py-1.5 text-[12.5px] font-semibold text-[#1377df] dark:border-[#3aa0ff]/22 dark:bg-[#3aa0ff]/[0.12] dark:text-[#88c8ff]">
+                <Sparkles className="h-3.5 w-3.5" strokeWidth={1.9} />
+                <span className="min-w-0 truncate">
+                  {t(isPreview ? "firstRunPreviewBadge" : "firstRunBadge")}
+                </span>
+              </div>
+              {closeAllowed ? (
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  aria-label={t("firstRunClose")}
+                  title={t("firstRunClose")}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-300/80 bg-white/72 text-slate-500 transition hover:border-slate-400 hover:text-slate-700 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-400 dark:hover:border-white/18 dark:hover:text-slate-200"
+                >
+                  <X className="h-[18px] w-[18px]" strokeWidth={1.8} />
+                </button>
+              ) : null}
             </div>
-            {closeAllowed ? (
-              <button
-                type="button"
-                onClick={handleClose}
-                aria-label={t('firstRunClose')}
-                title={t('firstRunClose')}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-300/80 bg-white/72 text-slate-500 transition hover:border-slate-400 hover:text-slate-700 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-400 dark:hover:border-white/18 dark:hover:text-slate-200"
-              >
-                <X className="h-[18px] w-[18px]" strokeWidth={1.8} />
-              </button>
-            ) : null}
-          </div>
-          <h1 id="initial-setup-title" className="mt-3 text-xl font-semibold leading-tight text-slate-900 dark:text-white sm:mt-4 sm:text-[22px]">
-            {t('firstRunTitle')}
-          </h1>
-          <p className="mt-2.5 text-sm leading-6 text-slate-500 dark:text-slate-400 sm:text-[15px]">
-            {t('firstRunSubtitle')}
-          </p>
-        </div>
-
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 sm:space-y-5 sm:px-7 sm:py-6">
-          <div className="space-y-2.5 sm:space-y-3.5">
-            <label className={labelClass}>
-              {t('theme')}
-            </label>
-            <div className="grid grid-cols-1 gap-2 sm:gap-2.5 sm:grid-cols-3">
-              {themeOptions.map(({ value, icon: Icon, labelKey }) => {
-                const isActive = selectedTheme === value
-                return (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => handleThemeChange(value)}
-                    className={choiceButtonClass(isActive)}
-                  >
-                    <Icon className="h-4 w-4 shrink-0" />
-                    <span className="min-w-0 text-center leading-tight">{t(labelKey)}</span>
-                  </button>
-                )
-              })}
-            </div>
+            <h1
+              id="initial-setup-title"
+              className="mt-3 text-xl font-semibold leading-tight text-slate-900 dark:text-white sm:mt-4 sm:text-[22px]"
+            >
+              {t("firstRunTitle")}
+            </h1>
+            <p className="mt-2.5 text-sm leading-6 text-slate-500 dark:text-slate-400 sm:text-[15px]">
+              {t("firstRunSubtitle")}
+            </p>
           </div>
 
-          <div className="space-y-2.5 sm:space-y-3.5">
-            <label className={labelClass}>
-              {t('language')}
-            </label>
-            <div className="grid grid-cols-1 gap-2 sm:gap-2.5 min-[440px]:grid-cols-2">
-              {(['en', 'zh'] as const).map((lang) => {
-                const isActive = form.locale === lang
-                return (
-                  <button
-                    key={lang}
-                    type="button"
-                    onClick={() => {
-                      updateForm({ locale: lang })
-                      void applyI18n(lang)
-                    }}
-                    className={choiceButtonClass(isActive)}
-                  >
-                    <span className="min-w-0 text-center leading-tight">{lang === 'en' ? 'English' : '简体中文'}</span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-
-          <div className="space-y-2.5 sm:space-y-3.5">
-            <label className={labelClass}>
-              {t('firstRunProviderLabel')}
-            </label>
-            <div className="grid grid-cols-1 gap-2 sm:gap-2.5 min-[440px]:grid-cols-3">
-              {PROVIDER_CARDS.map((card) => {
-                const isActive = selection.presetId === card.presetId
-                const filled = cardFilled(card)
-                return (
-                  <button
-                    key={card.presetId}
-                    type="button"
-                    onClick={() => selectCard(card.presetId)}
-                    className={cardButtonClass(isActive)}
-                  >
-                    <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">
-                      {card.name}
-                      <span
-                        aria-hidden="true"
-                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${filled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-white/20'}`}
-                      />
-                    </span>
-                    <span className="text-[12px] leading-tight text-slate-500 dark:text-slate-400">
-                      {t(card.descKey)}
-                    </span>
-                    {card.capability ? (
-                      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
-                        {card.capability === 'speech'
-                          ? <Mic className="h-3 w-3" strokeWidth={2} />
-                          : <ImageIcon className="h-3 w-3" strokeWidth={2} />}
-                        {t(card.capability === 'speech' ? 'firstRunCapabilitySpeech' : 'firstRunCapabilityImage')}
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[11px] text-slate-400 dark:text-slate-500">
-                        <MessageCircle className="h-3 w-3" strokeWidth={2} />
-                        {t('firstRunCapabilityChat')}
-                      </span>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-
-          {showTokenPlanMode && (
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 sm:space-y-5 sm:px-7 sm:py-6">
             <div className="space-y-2.5 sm:space-y-3.5">
-              <label className={labelClass}>
-                {t('firstRunModeLabel')}
-              </label>
+              <label className={labelClass}>{t("theme")}</label>
+              <div className="grid grid-cols-1 gap-2 sm:gap-2.5 sm:grid-cols-3">
+                {themeOptions.map(({ value, icon: Icon, labelKey }) => {
+                  const isActive = selectedTheme === value;
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => handleThemeChange(value)}
+                      className={choiceButtonClass(isActive)}
+                    >
+                      <Icon className="h-4 w-4 shrink-0" />
+                      <span className="min-w-0 text-center leading-tight">
+                        {t(labelKey)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-2.5 sm:space-y-3.5">
+              <label className={labelClass}>{t("language")}</label>
               <div className="grid grid-cols-1 gap-2 sm:gap-2.5 min-[440px]:grid-cols-2">
-                <button
-                  type="button"
-                  onClick={() => selectMode('api')}
-                  className={choiceButtonClass(selection.mode === 'api')}
-                >
-                  <span className="min-w-0 text-center leading-tight">{t('firstRunModeApi')}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => selectMode('token-plan')}
-                  className={choiceButtonClass(selection.mode === 'token-plan')}
-                >
-                  <span className="min-w-0 text-center leading-tight">{t('firstRunModeTokenPlan')}</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="space-y-2.5 sm:space-y-3.5">
-            <label className={labelClass}>
-              {t('firstRunPermissionLabel')}
-            </label>
-            <div className="grid grid-cols-1 gap-2 sm:gap-2.5 min-[520px]:grid-cols-2">
-              {PERMISSION_OPTIONS.map((option) => {
-                const isActive = selection.permissionMode === option.value
-                const Icon = option.Icon
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onClick={() => selectPermissionMode(option.value)}
-                    className={cardButtonClass(isActive)}
-                  >
-                    <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
-                      <span className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${option.iconClass}`}>
-                        <Icon className="h-3.5 w-3.5" strokeWidth={1.9} />
+                {(["en", "zh"] as const).map((lang) => {
+                  const isActive = form.locale === lang;
+                  return (
+                    <button
+                      key={lang}
+                      type="button"
+                      onClick={() => {
+                        updateForm({ locale: lang });
+                        void applyI18n(lang);
+                      }}
+                      className={choiceButtonClass(isActive)}
+                    >
+                      <span className="min-w-0 text-center leading-tight">
+                        {lang === "en" ? "English" : "简体中文"}
                       </span>
-                      <span className="min-w-0 truncate">{t(option.labelKey)}</span>
-                    </span>
-                    <span className="text-[12px] leading-5 text-slate-500 dark:text-slate-400">
-                      {t(option.descriptionKey)}
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-            <div className="rounded-xl border border-orange-300/60 bg-orange-50/80 px-4 py-3 text-[12.5px] leading-5 text-orange-800 dark:border-orange-800/60 dark:bg-orange-950/30 dark:text-orange-200">
-              {t('firstRunPermissionFullAccessRisk')}
-            </div>
-          </div>
-
-          {/* 地点选择（仅 LiteLLM） */}
-          {selection.presetId === LITELLM_PRESET_ID && (
-            <div className="space-y-2.5 sm:space-y-3.5">
-              <label className={labelClass}>办公地点</label>
-              <div className="grid grid-cols-2 gap-2 sm:gap-2.5">
-                {SITE_OPTIONS.map((site) => (
-                  <button
-                    key={site.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedSite(site.id)
-                      updateSelectedDraft({ baseUrl: site.baseUrl })
-                    }}
-                    className={choiceButtonClass(selectedSite === site.id)}
-                  >
-                    <span className="min-w-0 text-center leading-tight">{site.label}</span>
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
             </div>
-          )}
 
-          {regions.length > 0 && (
             <div className="space-y-2.5 sm:space-y-3.5">
-              <label className={labelClass}>
-                {t('firstRunRegionLabel')}
-              </label>
+              <label className={labelClass}>{t("firstRunProviderLabel")}</label>
               <div className="grid grid-cols-1 gap-2 sm:gap-2.5 min-[440px]:grid-cols-3">
-                {regions.map((region) => (
+                {PROVIDER_CARDS.map((card) => {
+                  const isActive = selection.presetId === card.presetId;
+                  const filled = cardFilled(card);
+                  return (
+                    <button
+                      key={card.presetId}
+                      type="button"
+                      onClick={() => selectCard(card.presetId)}
+                      className={cardButtonClass(isActive)}
+                    >
+                      <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">
+                        {card.name}
+                        <span
+                          aria-hidden="true"
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${filled ? "bg-emerald-500" : "bg-slate-300 dark:bg-white/20"}`}
+                        />
+                      </span>
+                      <span className="text-[12px] leading-tight text-slate-500 dark:text-slate-400">
+                        {t(card.descKey)}
+                      </span>
+                      {card.capability ? (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                          {card.capability === "speech" ? (
+                            <Mic className="h-3 w-3" strokeWidth={2} />
+                          ) : (
+                            <ImageIcon className="h-3 w-3" strokeWidth={2} />
+                          )}
+                          {t(
+                            card.capability === "speech"
+                              ? "firstRunCapabilitySpeech"
+                              : "firstRunCapabilityImage",
+                          )}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-slate-400 dark:text-slate-500">
+                          <MessageCircle className="h-3 w-3" strokeWidth={2} />
+                          {t("firstRunCapabilityChat")}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {showTokenPlanMode && (
+              <div className="space-y-2.5 sm:space-y-3.5">
+                <label className={labelClass}>{t("firstRunModeLabel")}</label>
+                <div className="grid grid-cols-1 gap-2 sm:gap-2.5 min-[440px]:grid-cols-2">
                   <button
-                    key={region.id}
                     type="button"
-                    onClick={() => updateSelectedDraft({ baseUrl: region.baseUrl })}
-                    className={choiceButtonClass(selectedDraft.baseUrl.trim() === region.baseUrl)}
+                    onClick={() => selectMode("api")}
+                    className={choiceButtonClass(selection.mode === "api")}
                   >
                     <span className="min-w-0 text-center leading-tight">
-                      {t(`firstRunRegion_${region.id}`)}
+                      {t("firstRunModeApi")}
                     </span>
                   </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* API Key + Base URL（仅非 LiteLLM 时显示输入框；LiteLLM 只显示 baseUrl 只读） */}
-          {selection.presetId !== LITELLM_PRESET_ID ? (
-            <>
-              <div className="space-y-2.5 sm:space-y-3.5">
-                <label className={labelClass}>
-                  {t('firstRunApiKeyLabel', { provider: selectedCard.name })}
-                </label>
-                <div className="relative">
-                  <input
-                    type={showApiKey ? 'text' : 'password'}
-                    value={selectedDraft.apiKey}
-                    onChange={(e) => updateSelectedDraft({ apiKey: e.target.value })}
-                    placeholder={keyPlaceholder(selectedCard, selection.mode)}
-                    autoComplete="off"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                    className={`${fieldClass} pr-12 font-mono placeholder:font-sans`}
-                  />
                   <button
                     type="button"
-                    onClick={() => setShowApiKey((v) => !v)}
-                    className="absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-white/[0.06] dark:hover:text-slate-300"
+                    onClick={() => selectMode("token-plan")}
+                    className={choiceButtonClass(
+                      selection.mode === "token-plan",
+                    )}
                   >
-                    {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    <span className="min-w-0 text-center leading-tight">
+                      {t("firstRunModeTokenPlan")}
+                    </span>
                   </button>
                 </div>
-                <div className="grid gap-3 rounded-xl border border-slate-200/80 bg-slate-50/75 px-4 py-3 text-[13px] text-slate-500 dark:border-white/10 dark:bg-white/[0.035] dark:text-slate-400 min-[560px]:grid-cols-[1fr_auto] min-[560px]:items-center">
-                  <p className="min-w-0 leading-6">
-                    {t(keyHintKey(selectedCard, selection.mode))}
+              </div>
+            )}
+
+            <div className="space-y-2.5 sm:space-y-3.5">
+              <label className={labelClass}>
+                {t("firstRunPermissionLabel")}
+              </label>
+              <div className="grid grid-cols-1 gap-2 sm:gap-2.5 min-[520px]:grid-cols-2">
+                {PERMISSION_OPTIONS.map((option) => {
+                  const isActive = selection.permissionMode === option.value;
+                  const Icon = option.Icon;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => selectPermissionMode(option.value)}
+                      className={cardButtonClass(isActive)}
+                    >
+                      <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
+                        <span
+                          className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${option.iconClass}`}
+                        >
+                          <Icon className="h-3.5 w-3.5" strokeWidth={1.9} />
+                        </span>
+                        <span className="min-w-0 truncate">
+                          {t(option.labelKey)}
+                        </span>
+                      </span>
+                      <span className="text-[12px] leading-5 text-slate-500 dark:text-slate-400">
+                        {t(option.descriptionKey)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="rounded-xl border border-orange-300/60 bg-orange-50/80 px-4 py-3 text-[12.5px] leading-5 text-orange-800 dark:border-orange-800/60 dark:bg-orange-950/30 dark:text-orange-200">
+                {t("firstRunPermissionFullAccessRisk")}
+              </div>
+            </div>
+
+            {/* 地点选择（仅 LiteLLM） */}
+            {selection.presetId === LITELLM_PRESET_ID && (
+              <div className="space-y-2.5 sm:space-y-3.5">
+                <label className={labelClass}>办公地点</label>
+                <div className="grid grid-cols-2 gap-2 sm:gap-2.5">
+                  {SITE_OPTIONS.map((site) => (
+                    <button
+                      key={site.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedSite(site.id);
+                        updateSelectedDraft({ baseUrl: site.baseUrl });
+                      }}
+                      className={choiceButtonClass(selectedSite === site.id)}
+                    >
+                      <span className="min-w-0 text-center leading-tight">
+                        {site.label}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {regions.length > 0 && (
+              <div className="space-y-2.5 sm:space-y-3.5">
+                <label className={labelClass}>{t("firstRunRegionLabel")}</label>
+                <div className="grid grid-cols-1 gap-2 sm:gap-2.5 min-[440px]:grid-cols-3">
+                  {regions.map((region) => (
+                    <button
+                      key={region.id}
+                      type="button"
+                      onClick={() =>
+                        updateSelectedDraft({ baseUrl: region.baseUrl })
+                      }
+                      className={choiceButtonClass(
+                        selectedDraft.baseUrl.trim() === region.baseUrl,
+                      )}
+                    >
+                      <span className="min-w-0 text-center leading-tight">
+                        {t(`firstRunRegion_${region.id}`)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* API Key + Base URL（仅非 LiteLLM 时显示输入框；LiteLLM 只显示 baseUrl 只读） */}
+            {selection.presetId !== LITELLM_PRESET_ID ? (
+              <>
+                <div className="space-y-2.5 sm:space-y-3.5">
+                  <label className={labelClass}>
+                    {t("firstRunApiKeyLabel", { provider: selectedCard.name })}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showApiKey ? "text" : "password"}
+                      value={selectedDraft.apiKey}
+                      onChange={(e) =>
+                        updateSelectedDraft({ apiKey: e.target.value })
+                      }
+                      placeholder={keyPlaceholder(selectedCard, selection.mode)}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      className={`${fieldClass} pr-12 font-mono placeholder:font-sans`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey((v) => !v)}
+                      className="absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-white/[0.06] dark:hover:text-slate-300"
+                    >
+                      {showApiKey ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                  <div className="grid gap-3 rounded-xl border border-slate-200/80 bg-slate-50/75 px-4 py-3 text-[13px] text-slate-500 dark:border-white/10 dark:bg-white/[0.035] dark:text-slate-400 min-[560px]:grid-cols-[1fr_auto] min-[560px]:items-center">
+                    <p className="min-w-0 leading-6">
+                      {t(keyHintKey(selectedCard, selection.mode))}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleOpenKeyPage(
+                          keyPageUrl(selectedCard, selection.mode),
+                        )
+                      }
+                      className="inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[#1388ff]/24 bg-[#1388ff]/[0.06] px-3 py-1.5 text-[12.5px] font-semibold text-[#1377df] transition hover:bg-[#1388ff]/[0.1] dark:border-[#3aa0ff]/22 dark:bg-[#3aa0ff]/[0.12] dark:text-[#88c8ff] dark:hover:bg-[#3aa0ff]/[0.18]"
+                    >
+                      <span className="min-w-0 text-center leading-tight">
+                        {t("firstRunGetKeyAction")}
+                      </span>
+                      <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.9} />
+                    </button>
+                  </div>
+                  {wireNote && (
+                    <div
+                      className={
+                        wireNote.tone === "success"
+                          ? "rounded-xl border border-emerald-300/60 bg-emerald-50/80 px-4 py-2.5 text-[12.5px] leading-5 text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-950/30 dark:text-emerald-300"
+                          : "rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-2.5 text-[12.5px] leading-5 text-amber-700 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300"
+                      }
+                    >
+                      {wireNote.text}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2.5 sm:space-y-3.5">
+                  <label className={labelClass}>{t("baseUrl")}</label>
+                  <input
+                    type="text"
+                    value={selectedDraft.baseUrl}
+                    onChange={(e) =>
+                      updateSelectedDraft({ baseUrl: e.target.value })
+                    }
+                    placeholder="https://"
+                    className={fieldClass}
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="space-y-2.5 sm:space-y-3.5">
+                  <label className={labelClass}>
+                    {t("firstRunApiKeyLabel", { provider: selectedCard.name })}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showApiKey ? "text" : "password"}
+                      value={selectedDraft.apiKey}
+                      onChange={(e) =>
+                        updateSelectedDraft({ apiKey: e.target.value })
+                      }
+                      placeholder="sk-..."
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      className={`${fieldClass} pr-12 font-mono placeholder:font-sans`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey((v) => !v)}
+                      className="absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-white/[0.06] dark:hover:text-slate-300"
+                    >
+                      {showApiKey ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                  <p className="text-[12px] text-amber-600 dark:text-amber-400">
+                    如果没有 key，请联系高翔获取。
                   </p>
                   <button
                     type="button"
-                    onClick={() => handleOpenKeyPage(keyPageUrl(selectedCard, selection.mode))}
-                    className="inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[#1388ff]/24 bg-[#1388ff]/[0.06] px-3 py-1.5 text-[12.5px] font-semibold text-[#1377df] transition hover:bg-[#1388ff]/[0.1] dark:border-[#3aa0ff]/22 dark:bg-[#3aa0ff]/[0.12] dark:text-[#88c8ff] dark:hover:bg-[#3aa0ff]/[0.18]"
+                    disabled={fetchingModels}
+                    onClick={() => void handleFetchModels()}
+                    className="inline-flex h-9 w-fit items-center gap-2 rounded-lg border border-[#1388ff]/24 bg-[#1388ff]/[0.06] px-3 py-1.5 text-[12.5px] font-semibold text-[#1377df] transition hover:bg-[#1388ff]/[0.1] disabled:opacity-50"
                   >
-                    <span className="min-w-0 text-center leading-tight">{t('firstRunGetKeyAction')}</span>
-                    <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.9} />
+                    {fetchingModels ? (
+                      <Loader2
+                        className="h-3.5 w-3.5 animate-spin"
+                        strokeWidth={2}
+                      />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" strokeWidth={2} />
+                    )}
+                    从 API 拉取可用模型
                   </button>
-                </div>
-                {wireNote && (
-                  <div
-                    className={
-                      wireNote.tone === 'success'
-                        ? 'rounded-xl border border-emerald-300/60 bg-emerald-50/80 px-4 py-2.5 text-[12.5px] leading-5 text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-950/30 dark:text-emerald-300'
-                        : 'rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-2.5 text-[12.5px] leading-5 text-amber-700 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300'
-                    }
-                  >
-                    {wireNote.text}
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2.5 sm:space-y-3.5">
-                <label className={labelClass}>
-                  {t('baseUrl')}
-                </label>
-                <input
-                  type="text"
-                  value={selectedDraft.baseUrl}
-                  onChange={(e) => updateSelectedDraft({ baseUrl: e.target.value })}
-                  placeholder="https://"
-                  className={fieldClass}
-                />
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="space-y-2.5 sm:space-y-3.5">
-                <label className={labelClass}>
-                  {t('firstRunApiKeyLabel', { provider: selectedCard.name })}
-                </label>
-                <div className="relative">
-                  <input
-                    type={showApiKey ? 'text' : 'password'}
-                    value={selectedDraft.apiKey}
-                    onChange={(e) => updateSelectedDraft({ apiKey: e.target.value })}
-                    placeholder="sk-..."
-                    autoComplete="off"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                    className={`${fieldClass} pr-12 font-mono placeholder:font-sans`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey((v) => !v)}
-                    className="absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-white/[0.06] dark:hover:text-slate-300"
-                  >
-                    {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-                <p className="text-[12px] text-amber-600 dark:text-amber-400">如果没有 key，请联系高翔获取。</p>
-                <button
-                  type="button"
-                  disabled={fetchingModels}
-                  onClick={() => void handleFetchModels()}
-                  className="inline-flex h-9 w-fit items-center gap-2 rounded-lg border border-[#1388ff]/24 bg-[#1388ff]/[0.06] px-3 py-1.5 text-[12.5px] font-semibold text-[#1377df] transition hover:bg-[#1388ff]/[0.1] disabled:opacity-50"
-                >
-                  {fetchingModels ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
-                  ) : (
-                    <Download className="h-3.5 w-3.5" strokeWidth={2} />
+                  {fetchedModelIds !== null && (
+                    <div className="rounded-xl border border-emerald-300/60 bg-emerald-50/80 px-4 py-2.5 text-[12.5px] leading-5 text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-950/30 dark:text-emerald-300">
+                      已获取 {fetchedModelIds.length} 个模型：
+                      {fetchedModelIds.slice(0, 6).join(", ")}
+                      {fetchedModelIds.length > 6
+                        ? ` 等 ${fetchedModelIds.length - 6} 个`
+                        : ""}
+                    </div>
                   )}
-                  从 API 拉取可用模型
-                </button>
-                {fetchedModelIds !== null && (
-                  <div className="rounded-xl border border-emerald-300/60 bg-emerald-50/80 px-4 py-2.5 text-[12.5px] leading-5 text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-950/30 dark:text-emerald-300">
-                    已获取 {fetchedModelIds.length} 个模型：{fetchedModelIds.slice(0, 6).join(', ')}
-                    {fetchedModelIds.length > 6 ? ` 等 ${fetchedModelIds.length - 6} 个` : ''}
-                  </div>
-                )}
-              </div>
+                </div>
 
-              <div className="space-y-2.5 sm:space-y-3.5">
-                <label className={labelClass}>
-                  网关地址
-                </label>
-                <input
-                  type="text"
-                  value={selectedDraft.baseUrl}
-                  readOnly
-                  className={`${fieldClass} cursor-default text-slate-500`}
-                />
-                <p className="text-[12px] text-slate-400">由上方办公地点自动选择。</p>
-              </div>
-            </>
-          )}
-        </div>
-
-        <div className="shrink-0 space-y-3 border-t border-slate-200/72 bg-white/70 px-5 pb-4 pt-3.5 dark:border-white/10 dark:bg-white/[0.025] sm:space-y-4 sm:px-7 sm:pb-6 sm:pt-4">
-          {error && (
-            <div className="rounded-xl border border-red-500/18 bg-red-500/[0.08] px-4 py-3 text-[13px] text-red-700 dark:border-red-500/20 dark:bg-red-500/[0.12] dark:text-red-200">
-              {error}
-            </div>
-          )}
-
-          <div className={closeAllowed ? 'flex flex-col-reverse gap-3 sm:grid sm:grid-cols-[0.85fr_1fr]' : 'grid gap-3'}>
-            {closeAllowed ? (
-              <button
-                type="button"
-                onClick={handleClose}
-                className="min-h-11 rounded-xl border border-slate-300/80 bg-white/75 px-4 py-2 text-[15px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-white dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-200 dark:hover:border-white/16 dark:hover:bg-white/[0.06]"
-              >
-                {t('firstRunClose')}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              disabled={saving}
-              onClick={handleSave}
-              className="min-h-11 rounded-xl bg-[linear-gradient(180deg,#2392ff_0%,#0e7df0_100%)] px-4 py-2 text-[15px] font-semibold text-white shadow-[0_14px_30px_rgba(19,136,255,0.22)] transition hover:opacity-95 disabled:opacity-50 dark:bg-[linear-gradient(180deg,#2c9dff_0%,#1584f6_100%)] dark:shadow-[0_14px_30px_rgba(21,132,246,0.2)]"
-            >
-              {saving ? t('firstRunSaving') : t('firstRunSave')}
-            </button>
+                <div className="space-y-2.5 sm:space-y-3.5">
+                  <label className={labelClass}>网关地址</label>
+                  <input
+                    type="text"
+                    value={selectedDraft.baseUrl}
+                    readOnly
+                    className={`${fieldClass} cursor-default text-slate-500`}
+                  />
+                  <p className="text-[12px] text-slate-400">
+                    由上方办公地点自动选择。
+                  </p>
+                </div>
+              </>
+            )}
           </div>
 
-          <p className="text-center text-[12.5px] leading-6 text-slate-400 dark:text-slate-500">
-            {t(isPreview ? 'firstRunPreviewHint' : 'firstRunChangeLater')}
-          </p>
-        </div>
+          <div className="shrink-0 space-y-3 border-t border-slate-200/72 bg-white/70 px-5 pb-4 pt-3.5 dark:border-white/10 dark:bg-white/[0.025] sm:space-y-4 sm:px-7 sm:pb-6 sm:pt-4">
+            {error && (
+              <div className="rounded-xl border border-red-500/18 bg-red-500/[0.08] px-4 py-3 text-[13px] text-red-700 dark:border-red-500/20 dark:bg-red-500/[0.12] dark:text-red-200">
+                {error}
+              </div>
+            )}
+
+            <div
+              className={
+                closeAllowed
+                  ? "flex flex-col-reverse gap-3 sm:grid sm:grid-cols-[0.85fr_1fr]"
+                  : "grid gap-3"
+              }
+            >
+              {closeAllowed ? (
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="min-h-11 rounded-xl border border-slate-300/80 bg-white/75 px-4 py-2 text-[15px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-white dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-200 dark:hover:border-white/16 dark:hover:bg-white/[0.06]"
+                >
+                  {t("firstRunClose")}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                disabled={saving}
+                onClick={handleSave}
+                className="min-h-11 rounded-xl bg-[linear-gradient(180deg,#2392ff_0%,#0e7df0_100%)] px-4 py-2 text-[15px] font-semibold text-white shadow-[0_14px_30px_rgba(19,136,255,0.22)] transition hover:opacity-95 disabled:opacity-50 dark:bg-[linear-gradient(180deg,#2c9dff_0%,#1584f6_100%)] dark:shadow-[0_14px_30px_rgba(21,132,246,0.2)]"
+              >
+                {saving ? t("firstRunSaving") : t("firstRunSave")}
+              </button>
+            </div>
+
+            <p className="text-center text-[12.5px] leading-6 text-slate-400 dark:text-slate-500">
+              {t(isPreview ? "firstRunPreviewHint" : "firstRunChangeLater")}
+            </p>
+          </div>
         </section>
       </div>
     </div>
-  )
+  );
 }

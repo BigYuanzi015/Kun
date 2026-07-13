@@ -82,12 +82,12 @@ const tokensByArtifact: Record<string, DerivedTokens> = {
 }
 
 describe('design turn prompt payload', () => {
-  it('builds a design canvas prompt with the design mode workflow context', async () => {
+  it('builds an intent-aware design canvas prompt without renderer-local workflow tools', async () => {
     const artifacts = [artifact('home', 'Home')]
     const payload = await buildDesignTurnPromptPayload({
       target: 'canvas',
       mode: 'text',
-      promptText: 'Create three directions',
+      promptText: '做一个 SaaS 登录页',
       artifactRelativePath: '.kun-design/doc/board.canvas.json',
       workspaceRoot: '/workspace',
       promptState: promptState(artifacts),
@@ -98,9 +98,10 @@ describe('design turn prompt payload', () => {
       tokensByArtifact
     })
 
-    expect(payload.prompt).toContain('Design mode workflow contract:')
-    expect(payload.prompt).toContain('Recommended step: plan-directions via design.plan on agent')
-    expect(payload.prompt).toContain('Suggested tool call: design.plan')
+    expect(payload.prompt).toContain('BUILD A SINGLE SCREEN')
+    expect(payload.prompt).toContain('BUILD A COMPLETE MULTI-SCREEN EXPERIENCE')
+    expect(payload.prompt).not.toContain('Design mode workflow contract:')
+    expect(payload.prompt).not.toContain('Suggested tool call: design.plan')
     expect(payload.promptState.activeDocumentId).toBe('doc')
   })
 

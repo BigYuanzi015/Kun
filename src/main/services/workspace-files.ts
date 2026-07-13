@@ -12,7 +12,7 @@ import {
 } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type {
   WorkspaceClipboardImageSavePayload,
   WorkspaceClipboardImageSaveResult,
@@ -533,11 +533,9 @@ export async function saveWorkspaceClipboardImage(
 }
 
 /**
- * Save raw image bytes (base64) into the workspace's generated-image directory.
- * The design-canvas annotation editor flattens the picture + the user's markup
- * into a PNG and calls this; the returned `workspaceRelativePath` is then used
- * both as the shape's `imageUrl` and as the `generate_image` reference path, so
- * it must land inside the workspace (where the reference resolver looks).
+ * Save raw PNG/SVG bytes (base64) into the workspace's generated-image directory.
+ * Used by flattened image annotations and deterministic whiteboard exports; the
+ * returned relative path must stay within the workspace for previews/references.
  */
 export async function saveWorkspaceImageBytes(
   payload: WorkspaceImageBytesSavePayload
@@ -548,15 +546,42 @@ export async function saveWorkspaceImageBytes(
       return { ok: false, message: 'Image data is empty.' }
     }
 
+    const requestedFileName = payload.fileName?.trim()
+    const requestedExtension = requestedFileName?.match(/\.(png|svg)$/i)?.[1]?.toLowerCase()
+    if (
+      requestedFileName &&
+      (
+        basename(requestedFileName) !== requestedFileName ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.(?:png|svg)$/i.test(requestedFileName)
+      )
+    ) {
+      return { ok: false, message: 'Image fileName must be a safe PNG or SVG basename.' }
+    }
+    const expectedMimeType = requestedExtension === 'svg' ? 'image/svg+xml' : 'image/png'
+    const suppliedMimeType = payload.mimeType?.trim().toLowerCase()
+    if (
+      (requestedExtension === 'svg' && suppliedMimeType !== expectedMimeType) ||
+      (suppliedMimeType && suppliedMimeType !== expectedMimeType)
+    ) {
+      return { ok: false, message: `Image mimeType must match the .${requestedExtension ?? 'png'} file extension.` }
+    }
+
     const imageDirectory = payload.imageDirectory?.trim() || GENERATED_IMAGE_DIR
     const imageDir = await resolveTargetPathWithinWorkspace(imageDirectory, payload.workspaceRoot)
     await mkdir(imageDir, { recursive: true })
 
     const targetPath = await resolveTargetPathWithinWorkspace(
-      join(imageDir, buildAnnotatedImageName()),
+      join(imageDir, requestedFileName || buildAnnotatedImageName()),
       payload.workspaceRoot
     )
-    await writeFile(targetPath, buffer)
+    const tmpPath = `${targetPath}.${randomUUID()}.tmp`
+    try {
+      await writeFile(tmpPath, buffer)
+      await rename(tmpPath, targetPath)
+    } catch (writeError) {
+      await unlink(tmpPath).catch(() => undefined)
+      throw writeError
+    }
 
     const workspacePath = await canonicalPath(resolve(expandHomePath(payload.workspaceRoot)))
     return {

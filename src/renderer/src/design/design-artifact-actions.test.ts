@@ -12,7 +12,9 @@ import { useDesignWorkspaceStore } from './design-workspace-store'
 function artifact(id: string, kind: DesignArtifact['kind'], patch: Partial<DesignArtifact> = {}): DesignArtifact {
   const createdAt = '2026-06-20T00:00:00.000Z'
   const relativePath =
-    kind === 'canvas' ? `.kun-design/${id}/canvas.json` : `.kun-design/${id}/v1.html`
+    kind === 'canvas'
+      ? `.kun-design/${id}/canvas.json`
+      : `.kun-design/${id}/v1.${kind === 'svg' ? 'svg' : 'html'}`
   return {
     id,
     kind,
@@ -26,13 +28,15 @@ function artifact(id: string, kind: DesignArtifact['kind'], patch: Partial<Desig
 }
 
 describe('design artifact actions', () => {
-  it('groups HTML drafts separately from design canvases while preserving order', () => {
+  it('groups HTML, SVG, and ShapeOps artifacts separately while preserving order', () => {
     const first = artifact('first-html', 'html')
     const canvas = artifact('canvas', 'canvas')
+    const svg = artifact('motion-logo', 'svg')
     const second = artifact('second-html', 'html')
 
-    expect(groupDesignArtifacts([first, canvas, second])).toEqual({
+    expect(groupDesignArtifacts([first, canvas, svg, second])).toEqual({
       html: [first, second],
+      svg: [svg],
       canvas: [canvas],
       directions: [],
       archivedDirections: []
@@ -51,6 +55,7 @@ describe('design artifact actions', () => {
 
     expect(groupDesignArtifacts([first, second], new Set(['second-html']))).toEqual({
       html: [first],
+      svg: [],
       canvas: [],
       directions: [
         {
@@ -76,6 +81,7 @@ describe('design artifact actions', () => {
 
     expect(groupDesignArtifacts([accepted, archived])).toEqual({
       html: [accepted, archived],
+      svg: [],
       canvas: [],
       directions: [
         {

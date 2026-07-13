@@ -54,6 +54,7 @@ describe('htmlFrameShouldShowGeneratingCanvas', () => {
     webviewMounted: false,
     hasArtifact: true,
     transparentGeneratingSurface: true,
+    drawingActive: true,
     previewError: '',
     failedMessage: ''
   }
@@ -65,6 +66,7 @@ describe('htmlFrameShouldShowGeneratingCanvas', () => {
   it('yields to the webview, plain placeholder, and error messages', () => {
     expect(htmlFrameShouldShowGeneratingCanvas({ ...base, webviewMounted: true })).toBe(false)
     expect(htmlFrameShouldShowGeneratingCanvas({ ...base, hasArtifact: false })).toBe(false)
+    expect(htmlFrameShouldShowGeneratingCanvas({ ...base, drawingActive: false })).toBe(false)
     expect(
       htmlFrameShouldShowGeneratingCanvas({ ...base, transparentGeneratingSurface: false })
     ).toBe(false)

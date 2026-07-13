@@ -1,41 +1,29 @@
-import type { FormEvent, MouseEvent as ReactMouseEvent, ReactElement } from 'react'
+import type {
+  DragEvent as ReactDragEvent,
+  FormEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactElement
+} from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import { useTranslation } from 'react-i18next'
 import {
-  Archive,
   ChevronDown,
   ChevronRight,
-  ClipboardList,
-  ExternalLink,
   Folder,
   FolderPlus,
   FolderOpen,
-  GitBranch,
-  Loader2,
-  PencilLine,
-  Pin,
-  PinOff,
   Plus,
-  RotateCcw,
-  ScrollText,
-  Search,
-  Trash2,
-  X
+  Search
 } from 'lucide-react'
 import type { NormalizedThread } from '../../agent/types'
+import { getProvider } from '../../agent/registry'
 import { rendererRuntimeClient } from '../../agent/runtime-client'
 import { useChatStore } from '../../store/chat-store'
-import { formatRelativeTime } from '../../lib/format-relative-time'
+import { rememberCodeWorkspaceRoots } from '../../store/chat-store-helpers'
 import { workspaceLabelFromPath } from '../../lib/workspace-label'
 import { deleteSddDraft } from '../../sdd/sdd-draft-actions'
 import { listSddDraftHistory, type SddDraftHistoryItem } from '../../sdd/sdd-draft-history'
-import { isEmptySddAssistantThreadCandidate } from '../../sdd/sdd-thread-registry'
 import { useSddDraftStore, type SddDraft } from '../../sdd/sdd-draft-store'
 import {
-  isClawWorkspacePath,
-  isInternalDeepSeekGuiWorkspace,
-  isInternalTemporaryWorkspace,
-  isConversationWorkspacePath,
   normalizeWorkspaceRoot,
   workspaceRootIdentityKey
 } from '../../lib/workspace-path'
@@ -44,12 +32,59 @@ import {
   SidebarSearchField,
   SidebarTreeRow
 } from '../sidebar/SidebarPrimitives'
+import { readThreadWorktreeRegistry } from '../../lib/thread-worktree-registry'
 import {
-  projectPathForWorktreeRecord,
-  resolveProjectWorkspacePath,
-  shouldOmitFromCodeWorkspaceRoots
-} from '../../lib/worktree-project-path'
-import { readThreadWorktreeRegistry, type ThreadWorktreeRecord } from '../../lib/thread-worktree-registry'
+  SddDraftHistoryRows,
+  SidebarEmpty,
+  ThreadRow
+} from './SidebarProjectRows'
+export { SddDraftHistoryRows, ThreadRow } from './SidebarProjectRows'
+import {
+  MoveThreadDialog,
+  SidebarActionDialog,
+  ThreadContextMenu,
+  ThreadRenameDialog,
+  WorkspaceContextMenu,
+  type MoveThreadDialogState,
+  type RenameThreadDialogState,
+  type SidebarActionDialogState,
+  type ThreadContextMenuState,
+  type WorkspaceContextMenuState
+} from './SidebarProjectOverlays'
+export {
+  MoveThreadDialog,
+  SidebarActionDialog,
+  ThreadRenameDialog
+} from './SidebarProjectOverlays'
+export type { RenameThreadDialogState } from './SidebarProjectOverlays'
+import {
+  buildSidebarDraftWorkspacePaths,
+  buildSidebarThreadMoveTargets,
+  buildSidebarWorkspaceGroups,
+  filterEmptySddAssistantThreadsFromSidebar,
+  filterSddDraftHistoryItems,
+  isSidebarProjectWorkspacePath,
+  mergeSidebarWorkspaceGroupsWithDraftHistory,
+  sidebarWorkspacePathForThread,
+  sidebarWorkspaceResolutionCandidates,
+  sddDraftHistoryForWorkspace,
+  sortSidebarThreads,
+  worktreeRecordForSidebarThread,
+  type SidebarThreadWorktreeRecord,
+  type SidebarThreadWorktrees
+} from './sidebar-project-selectors'
+export {
+  buildSidebarDraftWorkspacePaths,
+  buildSidebarThreadMoveTargets,
+  buildSidebarWorkspaceGroups,
+  filterEmptySddAssistantThreadsFromSidebar,
+  filterSddDraftHistoryItems,
+  isSidebarThreadMoveBlocked,
+  mergeSidebarWorkspaceGroupsWithDraftHistory,
+  resolveThreadPreviewPosition,
+  sortSidebarThreads
+} from './sidebar-project-selectors'
+export type { SidebarWorkspaceGroup } from './sidebar-project-selectors'
 
 type SidebarProjectsSectionProps = {
   threads: NormalizedThread[]
@@ -80,388 +115,9 @@ type SidebarProjectsSectionProps = {
   t: (k: string, opts?: Record<string, unknown>) => string
 }
 
-export type SidebarWorkspaceGroup = [workspacePath: string, threads: NormalizedThread[]]
-type SidebarThreadWorktreeRecord = Pick<ThreadWorktreeRecord, 'projectPath' | 'worktreePath'> & Partial<Pick<ThreadWorktreeRecord, 'branch' | 'createdAt' | 'poolIndex'>>
-type SidebarThreadWorktrees = Record<string, SidebarThreadWorktreeRecord>
+const SIDEBAR_THREAD_DRAG_DATA_KEY = 'application/x-kun-thread-id'
 
-type ThreadContextMenuState = {
-  thread: NormalizedThread
-  worktreeRecord?: SidebarThreadWorktreeRecord
-  x: number
-  y: number
-}
-
-type WorkspaceContextMenuState = {
-  workspacePath: string
-  x: number
-  y: number
-}
-
-type ThreadPreviewAnchorRect = Pick<DOMRect, 'left' | 'right' | 'top' | 'height'>
-
-const THREAD_PREVIEW_WIDTH = 320
-const THREAD_PREVIEW_MAX_HEIGHT = 220
-const THREAD_PREVIEW_GAP = 10
-const THREAD_PREVIEW_VIEWPORT_MARGIN = 12
-
-type SidebarActionDialogState = {
-  title: string
-  description: string
-  detail: string
-  confirmLabel: string
-  danger?: boolean
-  submitting: boolean
-  onConfirm: () => Promise<void>
-}
-
-export type RenameThreadDialogState = {
-  thread: NormalizedThread
-  value: string
-  submitting: boolean
-}
-
-const SDD_DRAFT_HISTORY_PAGE_SIZE = 3
 const SDD_DRAFT_HISTORY_LOAD_LIMIT = 40
-
-export function resolveThreadPreviewPosition(
-  anchor: ThreadPreviewAnchorRect,
-  viewport: { width: number; height: number }
-): { x: number; y: number } {
-  const rightX = anchor.right + THREAD_PREVIEW_GAP
-  const leftX = anchor.left - THREAD_PREVIEW_WIDTH - THREAD_PREVIEW_GAP
-  const maxX = Math.max(
-    THREAD_PREVIEW_VIEWPORT_MARGIN,
-    viewport.width - THREAD_PREVIEW_WIDTH - THREAD_PREVIEW_VIEWPORT_MARGIN
-  )
-  const x =
-    rightX + THREAD_PREVIEW_WIDTH <= viewport.width - THREAD_PREVIEW_VIEWPORT_MARGIN
-      ? rightX
-      : Math.max(THREAD_PREVIEW_VIEWPORT_MARGIN, Math.min(leftX, maxX))
-  const idealY = anchor.top + anchor.height / 2 - 28
-  const maxY = Math.max(
-    THREAD_PREVIEW_VIEWPORT_MARGIN,
-    viewport.height - THREAD_PREVIEW_MAX_HEIGHT - THREAD_PREVIEW_VIEWPORT_MARGIN
-  )
-  const y = Math.max(THREAD_PREVIEW_VIEWPORT_MARGIN, Math.min(idealY, maxY))
-  return { x, y }
-}
-
-function isSidebarProjectWorkspacePath(workspacePath: string): boolean {
-  const normalized = normalizeWorkspaceRoot(workspacePath)
-  if (!normalized) return false
-  if (isInternalTemporaryWorkspace(normalized)) return false
-  if (isInternalDeepSeekGuiWorkspace(normalized)) return false
-  if (isClawWorkspacePath(normalized)) return false
-  return true
-}
-
-function compareWorkspacePathsByActive(a: string, b: string, selectedWorkspace: string): number {
-  const selectedWorkspaceKey = workspaceRootIdentityKey(selectedWorkspace)
-  const aKey = workspaceRootIdentityKey(a)
-  const bKey = workspaceRootIdentityKey(b)
-  if (aKey === selectedWorkspaceKey && bKey !== selectedWorkspaceKey) return -1
-  if (bKey === selectedWorkspaceKey && aKey !== selectedWorkspaceKey) return 1
-  return a.localeCompare(b)
-}
-
-function sortWorkspacePathsByActive(workspacePaths: string[], selectedWorkspace: string): string[] {
-  return [...workspacePaths].sort((a, b) => compareWorkspacePathsByActive(a, b, selectedWorkspace))
-}
-
-function sidebarWorkspaceResolutionCandidates(options: {
-  workspaceRoot: string
-  workspaceRoots: string[]
-  threadWorktrees?: SidebarThreadWorktrees
-  threads?: NormalizedThread[]
-}): string[] {
-  const candidates = new Set<string>()
-  const selectedWorkspace = normalizeWorkspaceRoot(options.workspaceRoot)
-  if (selectedWorkspace) candidates.add(selectedWorkspace)
-  for (const workspacePath of options.workspaceRoots) {
-    const normalized = normalizeWorkspaceRoot(workspacePath)
-    if (normalized) candidates.add(normalized)
-  }
-  for (const record of Object.values(options.threadWorktrees ?? {})) {
-    const projectPath = projectPathForWorktreeRecord(record)
-    if (projectPath) candidates.add(projectPath)
-  }
-  for (const thread of options.threads ?? []) {
-    const normalized = normalizeWorkspaceRoot(thread.workspace)
-    if (normalized) candidates.add(normalized)
-  }
-  return [...candidates]
-}
-
-function workspacePathForWorktreeRecord(record: Pick<ThreadWorktreeRecord, 'projectPath' | 'worktreePath'> | undefined): string {
-  return projectPathForWorktreeRecord(record)
-}
-
-function sidebarWorkspacePathForThread(
-  thread: NormalizedThread,
-  worktrees: SidebarThreadWorktrees = {},
-  candidateProjectPaths: readonly string[] = []
-): string {
-  const worktreeProjectPath = workspacePathForWorktreeRecord(worktrees[thread.id])
-  if (worktreeProjectPath) return worktreeProjectPath
-  const workspace = thread.workspace ?? ''
-  const resolved = resolveProjectWorkspacePath(workspace, {
-    threadWorktrees: worktrees,
-    candidateProjectPaths
-  })
-  if (resolved) return resolved
-  if (shouldOmitFromCodeWorkspaceRoots(workspace)) return ''
-  return normalizeWorkspaceRoot(workspace)
-}
-
-function sidebarWorkspacePathForRememberedRoot(
-  workspacePath: string,
-  worktrees: SidebarThreadWorktrees = {},
-  candidateProjectPaths: readonly string[] = []
-): string {
-  const normalized = normalizeWorkspaceRoot(workspacePath)
-  const key = workspaceRootIdentityKey(normalized)
-  if (!key) return ''
-  for (const record of Object.values(worktrees)) {
-    const worktreePath = normalizeWorkspaceRoot(record.worktreePath)
-    if (workspaceRootIdentityKey(worktreePath) === key) {
-      return workspacePathForWorktreeRecord(record) || normalized
-    }
-  }
-  const resolved = resolveProjectWorkspacePath(normalized, {
-    threadWorktrees: worktrees,
-    candidateProjectPaths
-  })
-  if (resolved) return resolved
-  if (shouldOmitFromCodeWorkspaceRoots(normalized)) return ''
-  return normalized
-}
-
-function worktreeRecordForSidebarThread(
-  thread: NormalizedThread,
-  worktrees: SidebarThreadWorktrees = {}
-): SidebarThreadWorktreeRecord | undefined {
-  const direct = worktrees[thread.id]
-  if (direct) return direct
-  const threadWorkspaceKey = workspaceRootIdentityKey(thread.workspace)
-  if (!threadWorkspaceKey) return undefined
-  return Object.values(worktrees).find((record) =>
-    workspaceRootIdentityKey(record.worktreePath) === threadWorkspaceKey
-  )
-}
-
-export function buildSidebarWorkspaceGroups(options: {
-  threads: NormalizedThread[]
-  searchQuery: string
-  showArchived: boolean
-  workspaceRoot: string
-  workspaceRoots: string[]
-  conversationRoot: string
-  threadWorktrees?: SidebarThreadWorktrees
-}): SidebarWorkspaceGroup[] {
-  const map = new Map<string, { workspacePath: string, threads: NormalizedThread[] }>()
-  const selectedWorkspace = normalizeWorkspaceRoot(options.workspaceRoot)
-  const selectedWorkspaceKey = workspaceRootIdentityKey(selectedWorkspace)
-  const query = options.searchQuery.trim().toLowerCase()
-  const candidateProjectPaths = sidebarWorkspaceResolutionCandidates(options)
-  const conversationRoot = options.conversationRoot
-
-  const upsertWorkspace = (workspacePath: string, threads: NormalizedThread[] = []): void => {
-    const normalized = normalizeWorkspaceRoot(workspacePath)
-    const key = workspaceRootIdentityKey(normalized)
-    if (!key) return
-    const existing = map.get(key)
-    if (existing) {
-      existing.threads.push(...threads)
-      if (key === selectedWorkspaceKey && normalized === selectedWorkspace) {
-        existing.workspacePath = normalized
-      }
-      return
-    }
-    map.set(key, { workspacePath: normalized, threads: [...threads] })
-  }
-
-  for (const th of options.threads) {
-    if (isInternalTemporaryWorkspace(th.workspace)) continue
-    if (isInternalDeepSeekGuiWorkspace(th.workspace)) continue
-    if (isClawWorkspacePath(th.workspace)) continue
-    if (isConversationWorkspacePath(th.workspace, conversationRoot)) continue
-    if ((th.archived === true) !== options.showArchived) continue
-    const key = sidebarWorkspacePathForThread(th, options.threadWorktrees, candidateProjectPaths)
-    if (!key) continue
-    if (query) {
-      const haystack = [th.title, th.preview, key, workspaceLabelFromPath(key), th.workspace]
-        .filter(Boolean)
-        .join('\n')
-        .toLowerCase()
-      if (!haystack.includes(query)) continue
-    }
-    upsertWorkspace(key, [th])
-  }
-
-  if (
-    selectedWorkspace &&
-    !map.has(selectedWorkspaceKey) &&
-    isSidebarProjectWorkspacePath(selectedWorkspace) &&
-    !isConversationWorkspacePath(selectedWorkspace, conversationRoot)
-  ) {
-    upsertWorkspace(selectedWorkspace)
-  }
-  if (!query && !options.showArchived) {
-    for (const workspacePath of options.workspaceRoots) {
-      const key = sidebarWorkspacePathForRememberedRoot(
-        workspacePath,
-        options.threadWorktrees,
-        candidateProjectPaths
-      )
-      if (!key || map.has(workspaceRootIdentityKey(key))) continue
-      if (isInternalTemporaryWorkspace(key)) continue
-      if (isInternalDeepSeekGuiWorkspace(key)) continue
-      if (isClawWorkspacePath(key)) continue
-      if (isConversationWorkspacePath(key, conversationRoot)) continue
-      upsertWorkspace(key)
-    }
-  }
-
-  return Array.from(map.values()).map(({ workspacePath, threads }): SidebarWorkspaceGroup => [workspacePath, threads]).sort(([a], [b]) => {
-    const aKey = workspaceRootIdentityKey(a)
-    const bKey = workspaceRootIdentityKey(b)
-    if (aKey === selectedWorkspaceKey && bKey !== selectedWorkspaceKey) return -1
-    if (bKey === selectedWorkspaceKey && aKey !== selectedWorkspaceKey) return 1
-    return a.localeCompare(b)
-  })
-}
-
-export function buildSidebarDraftWorkspacePaths(options: {
-  threads: NormalizedThread[]
-  workspaceRoot: string
-  workspaceRoots: string[]
-  threadWorktrees?: SidebarThreadWorktrees
-}): string[] {
-  const map = new Map<string, string>()
-  const selectedWorkspace = normalizeWorkspaceRoot(options.workspaceRoot)
-  const candidateProjectPaths = sidebarWorkspaceResolutionCandidates(options)
-
-  const upsertWorkspace = (workspacePath: string): void => {
-    const normalized = normalizeWorkspaceRoot(workspacePath)
-    if (!isSidebarProjectWorkspacePath(normalized)) return
-    const key = workspaceRootIdentityKey(normalized)
-    if (!key) return
-    const previous = map.get(key)
-    if (!previous || normalized === selectedWorkspace) {
-      map.set(key, normalized)
-    }
-  }
-
-  upsertWorkspace(selectedWorkspace)
-  for (const workspacePath of options.workspaceRoots) {
-    upsertWorkspace(
-      sidebarWorkspacePathForRememberedRoot(
-        workspacePath,
-        options.threadWorktrees,
-        candidateProjectPaths
-      )
-    )
-  }
-  for (const thread of options.threads) {
-    upsertWorkspace(sidebarWorkspacePathForThread(thread, options.threadWorktrees, candidateProjectPaths))
-  }
-
-  return sortWorkspacePathsByActive([...map.values()], selectedWorkspace)
-}
-
-export function filterSddDraftHistoryItems(
-  items: SddDraftHistoryItem[],
-  searchQuery: string,
-  workspacePath = ''
-): SddDraftHistoryItem[] {
-  const query = searchQuery.trim().toLowerCase()
-  if (!query) return items
-  const workspaceLabel = workspacePath ? workspaceLabelFromPath(workspacePath) : ''
-  return items.filter((item) => {
-    const haystack = [
-      item.title,
-      item.relativePath,
-      item.absolutePath,
-      item.searchText,
-      workspacePath,
-      workspaceLabel
-    ]
-      .filter(Boolean)
-      .join('\n')
-      .toLowerCase()
-    return haystack.includes(query)
-  })
-}
-
-export function mergeSidebarWorkspaceGroupsWithDraftHistory(options: {
-  groups: SidebarWorkspaceGroup[]
-  draftHistoryByWorkspace: Record<string, SddDraftHistoryItem[]>
-  workspaceRoot: string
-}): SidebarWorkspaceGroup[] {
-  const selectedWorkspace = normalizeWorkspaceRoot(options.workspaceRoot)
-  const map = new Map<string, SidebarWorkspaceGroup>()
-
-  const upsertGroup = (workspacePath: string, threads: NormalizedThread[] = []): void => {
-    const normalized = normalizeWorkspaceRoot(workspacePath)
-    if (!isSidebarProjectWorkspacePath(normalized)) return
-    const key = workspaceRootIdentityKey(normalized)
-    if (!key) return
-    const previous = map.get(key)
-    if (previous) {
-      previous[1].push(...threads)
-      if (normalized === selectedWorkspace) previous[0] = normalized
-      return
-    }
-    map.set(key, [normalized, [...threads]])
-  }
-
-  for (const [workspacePath, threads] of options.groups) {
-    upsertGroup(workspacePath, threads)
-  }
-  for (const [workspacePath, items] of Object.entries(options.draftHistoryByWorkspace)) {
-    if (items.length > 0) upsertGroup(workspacePath)
-  }
-
-  return Array.from(map.values()).sort(([a], [b]) => compareWorkspacePathsByActive(a, b, selectedWorkspace))
-}
-
-export function filterEmptySddAssistantThreadsFromSidebar(
-  threads: NormalizedThread[],
-  draftHistory: SddDraftHistoryItem[]
-): NormalizedThread[] {
-  const draftThreadIds = new Set<string>()
-  for (const draft of draftHistory) {
-    for (const threadId of draft.chatThreadIds ?? []) {
-      if (threadId.trim()) draftThreadIds.add(threadId.trim())
-    }
-  }
-  if (draftThreadIds.size === 0) return [...threads]
-  return threads.filter((thread) =>
-    !draftThreadIds.has(thread.id) || !isEmptySddAssistantThreadCandidate(thread)
-  )
-}
-
-export function sortSidebarThreads(threads: NormalizedThread[]): NormalizedThread[] {
-  return [...threads].sort((a, b) => {
-    if (a.pinned === true && b.pinned !== true) return -1
-    if (b.pinned === true && a.pinned !== true) return 1
-    return Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
-  })
-}
-
-function sddDraftHistoryForWorkspace(
-  draftHistoryByWorkspace: Record<string, SddDraftHistoryItem[]>,
-  workspacePath: string
-): SddDraftHistoryItem[] {
-  const exact = draftHistoryByWorkspace[workspacePath]
-  if (exact) return exact
-  const targetKey = workspaceRootIdentityKey(workspacePath)
-  if (!targetKey) return []
-  for (const [path, history] of Object.entries(draftHistoryByWorkspace)) {
-    if (workspaceRootIdentityKey(path) === targetKey) return history
-  }
-  return []
-}
 
 export function SidebarProjectsSection({
   threads,
@@ -501,6 +157,9 @@ export function SidebarProjectsSection({
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<WorkspaceContextMenuState | null>(null)
   const [actionDialog, setActionDialog] = useState<SidebarActionDialogState | null>(null)
   const [renameThreadDialog, setRenameThreadDialog] = useState<RenameThreadDialogState | null>(null)
+  const [moveThreadDialog, setMoveThreadDialog] = useState<MoveThreadDialogState | null>(null)
+  const [draggingThreadId, setDraggingThreadId] = useState<string | null>(null)
+  const [dragOverWorkspace, setDragOverWorkspace] = useState<string | null>(null)
   const [draftHistoryByWorkspace, setDraftHistoryByWorkspace] = useState<Record<string, SddDraftHistoryItem[]>>({})
   const [threadWorktrees, setThreadWorktrees] = useState<SidebarThreadWorktrees>(() => readThreadWorktreeRegistry().worktrees)
   const activeSddDraftId = useSddDraftStore((s) => s.activeDraft?.id ?? '')
@@ -552,6 +211,7 @@ export function SidebarProjectsSection({
   const searchVisible = searchOpen || searchQuery.trim().length > 0
   const allGroupsCollapsed = displayGroups.length > 0 && displayGroups.every(([workspacePath]) => collapsed[workspacePath] === true)
   const workspaceHistoryKey = draftHistoryWorkspacePaths.join('\n')
+  const projectWorkspaceGroups = displayGroups.filter(([workspacePath]) => isSidebarProjectWorkspacePath(workspacePath))
 
   useEffect(() => {
     if (
@@ -786,6 +446,179 @@ export function SidebarProjectsSection({
     }
   }
 
+  const moveTargetsForThread = (thread: NormalizedThread): string[] => {
+    return buildSidebarThreadMoveTargets({
+      thread,
+      groups: projectWorkspaceGroups,
+      threadWorktrees
+    })
+  }
+
+  const threadMoveDisabledReason = (
+    thread: NormalizedThread,
+    worktreeRecord?: SidebarThreadWorktreeRecord
+  ): string => {
+    if (!thread.id.trim()) return t('sidebarThreadMoveUnsupported')
+    if (deletingThreadIds[thread.id] === true) return t('loading')
+    if (worktreeRecord) return t('sidebarThreadMoveWorktreeBlocked')
+    if (thread.status?.trim().toLowerCase() === 'running') return t('sidebarThreadMoveRunningBlocked')
+    if (watchTurnCompletion[thread.id] === true) return t('sidebarThreadMoveRunningBlocked')
+    if (activeThreadId === thread.id && busy) return t('sidebarThreadMoveRunningBlocked')
+    if (typeof getProvider().updateThreadWorkspace !== 'function') return t('sidebarThreadMoveUnsupported')
+    return ''
+  }
+
+  const moveThreadToWorkspace = async (
+    thread: NormalizedThread,
+    targetWorkspace: string
+  ): Promise<void> => {
+    const threadId = thread.id.trim()
+    const normalizedTarget = normalizeWorkspaceRoot(targetWorkspace)
+    if (!threadId || !normalizedTarget) return
+    const provider = getProvider()
+    if (typeof provider.updateThreadWorkspace !== 'function') {
+      throw new Error(t('sidebarThreadMoveUnsupported'))
+    }
+    setDeletingThreadIds((prev) => ({ ...prev, [threadId]: true }))
+    try {
+      await provider.updateThreadWorkspace(threadId, normalizedTarget)
+      useChatStore.setState((state) => ({
+        codeWorkspaceRoots: rememberCodeWorkspaceRoots(state.codeWorkspaceRoots, [normalizedTarget]),
+        threads: state.threads.map((item) =>
+          item.id === threadId ? { ...item, workspace: normalizedTarget } : item
+        )
+      }))
+      await useChatStore.getState().refreshThreads()
+      setMoveThreadDialog(null)
+      setThreadContextMenu(null)
+      setDragOverWorkspace(null)
+    } finally {
+      setDeletingThreadIds((prev) => {
+        const next = { ...prev }
+        delete next[threadId]
+        return next
+      })
+    }
+  }
+
+  const confirmThreadWorkspaceMove = (
+    thread: NormalizedThread,
+    targetWorkspace: string,
+    worktreeRecord?: SidebarThreadWorktreeRecord
+  ): void => {
+    if (threadMoveDisabledReason(thread, worktreeRecord)) return
+    const normalizedTarget = normalizeWorkspaceRoot(targetWorkspace)
+    if (!normalizedTarget) return
+    const currentWorkspaceKey = workspaceRootIdentityKey(
+      sidebarWorkspacePathForThread(thread, threadWorktrees, projectWorkspaceGroups.map(([workspacePath]) => workspacePath))
+    )
+    if (!currentWorkspaceKey || workspaceRootIdentityKey(normalizedTarget) === currentWorkspaceKey) return
+    setMoveThreadDialog({
+      thread,
+      targets: moveTargetsForThread(thread),
+      targetWorkspace: normalizedTarget,
+      submitting: false,
+      error: ''
+    })
+  }
+
+  const openMoveThreadDialog = (
+    thread: NormalizedThread,
+    worktreeRecord?: SidebarThreadWorktreeRecord
+  ): void => {
+    if (busy || threadMoveDisabledReason(thread, worktreeRecord)) return
+    setMoveThreadDialog({
+      thread,
+      targets: moveTargetsForThread(thread),
+      targetWorkspace: null,
+      submitting: false,
+      error: ''
+    })
+    setThreadContextMenu(null)
+  }
+
+  const closeMoveThreadDialog = (): void => {
+    setMoveThreadDialog((current) => current?.submitting ? current : null)
+  }
+
+  const submitMoveThreadDialog = async (): Promise<void> => {
+    const dialog = moveThreadDialog
+    if (!dialog || !dialog.targetWorkspace || dialog.submitting) return
+    setMoveThreadDialog((current) => current ? { ...current, submitting: true } : current)
+    try {
+      await moveThreadToWorkspace(dialog.thread, dialog.targetWorkspace)
+    } catch (error) {
+      setMoveThreadDialog((current) =>
+        current
+          ? {
+              ...current,
+              submitting: false,
+              error: error instanceof Error && error.message.trim()
+                ? error.message
+                : t('sidebarThreadMoveFailed')
+            }
+          : current
+      )
+    }
+  }
+
+  const handleThreadDragStart = (
+    event: ReactDragEvent<HTMLDivElement>,
+    thread: NormalizedThread
+  ): void => {
+    const worktreeRecord = worktreeRecordForSidebarThread(thread, threadWorktrees)
+    if (busy || threadMoveDisabledReason(thread, worktreeRecord) || moveTargetsForThread(thread).length === 0) {
+      event.preventDefault()
+      return
+    }
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData(SIDEBAR_THREAD_DRAG_DATA_KEY, thread.id)
+    setDraggingThreadId(thread.id)
+    setDragOverWorkspace(null)
+  }
+
+  const handleThreadDragEnd = (): void => {
+    setDraggingThreadId(null)
+    setDragOverWorkspace(null)
+  }
+
+  const handleWorkspaceDragOver = (
+    event: ReactDragEvent<HTMLDivElement>,
+    workspacePath: string
+  ): void => {
+    const threadId = draggingThreadId || event.dataTransfer.getData(SIDEBAR_THREAD_DRAG_DATA_KEY)
+    if (!threadId) return
+    const thread = threads.find((item) => item.id === threadId)
+    if (!thread) return
+    const worktreeRecord = worktreeRecordForSidebarThread(thread, threadWorktrees)
+    if (threadMoveDisabledReason(thread, worktreeRecord)) return
+    const targets = moveTargetsForThread(thread)
+    if (!targets.some((target) => workspaceRootIdentityKey(target) === workspaceRootIdentityKey(workspacePath))) {
+      return
+    }
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    setDragOverWorkspace(workspacePath)
+  }
+
+  const handleWorkspaceDrop = (
+    event: ReactDragEvent<HTMLDivElement>,
+    workspacePath: string
+  ): void => {
+    event.preventDefault()
+    const threadId = draggingThreadId || event.dataTransfer.getData(SIDEBAR_THREAD_DRAG_DATA_KEY)
+    setDraggingThreadId(null)
+    setDragOverWorkspace(null)
+    if (!threadId) return
+    const thread = threads.find((item) => item.id === threadId)
+    if (!thread) return
+    confirmThreadWorkspaceMove(
+      thread,
+      workspacePath,
+      worktreeRecordForSidebarThread(thread, threadWorktrees)
+    )
+  }
+
   const openThreadContextMenu = (
     event: ReactMouseEvent<HTMLDivElement>,
     thread: NormalizedThread
@@ -1004,6 +837,9 @@ export function SidebarProjectsSection({
           const folderName = workspaceLabelFromPath(workspacePath)
           const workspaceContext = workspaceContextLabel(workspacePath, folderName)
           const isCollapsed = collapsed[workspacePath] === true
+          const isDragOver =
+            dragOverWorkspace !== null
+            && workspaceRootIdentityKey(dragOverWorkspace) === workspaceRootIdentityKey(workspacePath)
           const draftHistory = sddDraftHistoryForWorkspace(filteredDraftHistoryByWorkspace, workspacePath)
           const sortedThreads = sortSidebarThreads(
             filterEmptySddAssistantThreadsFromSidebar(list, draftHistory)
@@ -1021,7 +857,20 @@ export function SidebarProjectsSection({
                   setCollapsed((current) => ({ ...current, [workspacePath]: !current[workspacePath] }))
                 }
                 onContextMenu={(event) => openWorkspaceContextMenu(event, workspacePath)}
-                className="min-h-[36px] text-[13.5px]"
+                onDragOver={(event) => handleWorkspaceDragOver(event, workspacePath)}
+                onDragLeave={() =>
+                  setDragOverWorkspace((current) =>
+                    workspaceRootIdentityKey(current ?? undefined) === workspaceRootIdentityKey(workspacePath)
+                      ? null
+                      : current
+                  )
+                }
+                onDrop={(event) => handleWorkspaceDrop(event, workspacePath)}
+                className={`min-h-[36px] text-[13.5px] ${
+                  isDragOver
+                    ? 'bg-accent/10 shadow-[inset_0_0_0_1px_rgba(79,124,255,0.32)]'
+                    : ''
+                }`}
                 buttonClassName="items-center gap-2 px-2.5 py-2"
                 actionsVisibility="hidden"
                 actionsLayout="overlay"
@@ -1035,16 +884,6 @@ export function SidebarProjectsSection({
                       stopPropagation
                     >
                       <Plus className="h-3.5 w-3.5" strokeWidth={1.9} />
-                    </SidebarIconButton>
-                    <SidebarIconButton
-                      onClick={() => void handleRemoveWorkspace(workspacePath)}
-                      title={t('sidebarWorkspaceRemove')}
-                      ariaLabel={t('sidebarWorkspaceRemove')}
-                      tone="danger"
-                      className="h-6 w-6"
-                      stopPropagation
-                    >
-                      <Trash2 className="h-3.5 w-3.5" strokeWidth={1.9} />
                     </SidebarIconButton>
                   </>
                 }
@@ -1114,6 +953,13 @@ export function SidebarProjectsSection({
                         onContextMenu={(event) => openThreadContextMenu(event, thread)}
                         onPreviewOpen={openThreadPreview}
                         onPreviewClose={closeThreadPreview}
+                        draggable={
+                          !busy
+                          && !threadMoveDisabledReason(thread, worktreeRecordForSidebarThread(thread, threadWorktrees))
+                          && moveTargetsForThread(thread).length > 0
+                        }
+                        onDragStart={(event) => handleThreadDragStart(event, thread)}
+                        onDragEnd={handleThreadDragEnd}
                         onPin={() => void handlePinThread(thread, thread.pinned !== true)}
                         onRename={() => openRenameThreadDialog(thread)}
                         onArchive={() => void handleArchiveThread(thread)}
@@ -1152,7 +998,10 @@ export function SidebarProjectsSection({
         <ThreadContextMenu
           state={threadContextMenu}
           busy={deletingThreadIds[threadContextMenu.thread.id] === true}
+          moveDisabled={busy || Boolean(threadMoveDisabledReason(threadContextMenu.thread, threadContextMenu.worktreeRecord))}
+          moveDisabledTitle={threadMoveDisabledReason(threadContextMenu.thread, threadContextMenu.worktreeRecord) || undefined}
           onClose={() => setThreadContextMenu(null)}
+          onMove={() => openMoveThreadDialog(threadContextMenu.thread, threadContextMenu.worktreeRecord)}
           onPin={() => void handlePinThread(threadContextMenu.thread, threadContextMenu.thread.pinned !== true)}
           onRename={() => openRenameThreadDialog(threadContextMenu.thread)}
           onSummarize={() => void handleSummarizeThread(threadContextMenu.thread)}
@@ -1188,6 +1037,22 @@ export function SidebarProjectsSection({
         />
       ) : null}
 
+      {moveThreadDialog ? (
+        <MoveThreadDialog
+          state={moveThreadDialog}
+          onClose={closeMoveThreadDialog}
+          onPickTarget={(targetWorkspace) =>
+            confirmThreadWorkspaceMove(
+              moveThreadDialog.thread,
+              targetWorkspace,
+              worktreeRecordForSidebarThread(moveThreadDialog.thread, threadWorktrees)
+            )
+          }
+          onConfirm={submitMoveThreadDialog}
+          t={t}
+        />
+      ) : null}
+
       {actionDialog ? (
         <SidebarActionDialog
           state={actionDialog}
@@ -1200,622 +1065,6 @@ export function SidebarProjectsSection({
   )
 }
 
-type ThreadRowProps = {
-  thread: NormalizedThread
-  worktreeRecord?: SidebarThreadWorktreeRecord
-  active: boolean
-  deleting: boolean
-  locale: string
-  showRunning: boolean
-  showUnread: boolean
-  onSelect: () => void
-  onContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => void
-  onPreviewOpen: (event: ReactMouseEvent<HTMLDivElement>, worktreeRecord?: SidebarThreadWorktreeRecord) => void
-  onPreviewClose: () => void
-  onPin: () => void
-  onRename: () => void
-  onArchive: () => void
-  onDelete: () => void
-  onRestore: () => void
-}
-
-export function SddDraftHistoryRows({
-  items,
-  activeDraftId,
-  onOpen,
-  onDelete,
-  deletingDraftIds = {},
-  error = '',
-  t
-}: {
-  items: SddDraftHistoryItem[]
-  activeDraftId: string
-  onOpen: (draft: SddDraft) => void
-  onDelete?: (draft: SddDraftHistoryItem) => void
-  deletingDraftIds?: Record<string, boolean>
-  error?: string
-  t: (k: string, opts?: Record<string, unknown>) => string
-}): ReactElement | null {
-  const itemKey = items.map((item) => item.id).join('\n')
-  const [collapsed, setCollapsed] = useState(true)
-  const [visibleCount, setVisibleCount] = useState(SDD_DRAFT_HISTORY_PAGE_SIZE)
-
-  useEffect(() => {
-    setCollapsed(true)
-    setVisibleCount(SDD_DRAFT_HISTORY_PAGE_SIZE)
-  }, [itemKey])
-
-  if (items.length === 0) return null
-
-  const visibleItems = items.slice(0, visibleCount)
-  const remainingCount = Math.max(0, items.length - visibleItems.length)
-  const nextCount = Math.min(SDD_DRAFT_HISTORY_PAGE_SIZE, remainingCount)
-
-  return (
-    <div className="mb-1.5 rounded-lg border border-transparent bg-[var(--ds-sidebar-row-hover)]/35 px-1 py-1">
-      <SidebarTreeRow
-        title={t('sddDraftHistoryTitle')}
-        ariaLabel={collapsed ? t('sddDraftHistoryExpand') : t('sddDraftHistoryCollapse')}
-        onClick={() => setCollapsed((current) => !current)}
-        className="min-h-[28px]"
-        buttonClassName="items-center gap-1.5 px-2 py-1.5"
-      >
-        {collapsed ? (
-          <ChevronRight className="h-3 w-3 shrink-0 text-ds-faint" strokeWidth={2} />
-        ) : (
-          <ChevronDown className="h-3 w-3 shrink-0 text-ds-faint" strokeWidth={2} />
-        )}
-        <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-ds-faint">
-          {t('sddDraftHistoryTitle')}
-        </span>
-        <span className="shrink-0 rounded-md bg-ds-card/70 px-1.5 py-0.5 text-[10.5px] text-ds-faint tabular-nums">
-          {items.length}
-        </span>
-      </SidebarTreeRow>
-      {error ? (
-        <div className="px-2 py-1 text-[11.5px] leading-4 text-red-600 dark:text-red-300">
-          {error}
-        </div>
-      ) : null}
-      {!collapsed ? (
-        <div className="space-y-[2px] pt-1">
-          {visibleItems.map((item) => (
-            <SidebarTreeRow
-              key={item.id}
-              active={activeDraftId === item.id}
-              activeVariant="outline"
-              actionsVisibility={deletingDraftIds[item.id] ? 'visible' : 'hidden'}
-              actionsLayout="overlay"
-              actions={
-                onDelete ? (
-                  <SidebarIconButton
-                    onClick={() => onDelete(item)}
-                    disabled={deletingDraftIds[item.id] === true}
-                    tone="danger"
-                    title={t('sddDraftHistoryDelete')}
-                    ariaLabel={t('sddDraftHistoryDelete')}
-                    stopPropagation
-                  >
-                    {deletingDraftIds[item.id] ? (
-                      <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
-                    ) : (
-                      <Trash2 className="h-3 w-3" strokeWidth={1.9} />
-                    )}
-                  </SidebarIconButton>
-                ) : null
-              }
-              className="min-h-[32px]"
-              buttonClassName="items-center gap-2 px-2 py-1.5"
-              title={item.relativePath}
-              ariaLabel={t('sddDraftHistoryOpen', { title: item.title })}
-              onClick={() => onOpen(item)}
-            >
-              <span
-                className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg border transition ${
-                  activeDraftId === item.id
-                    ? 'border-accent/25 bg-accent/10 text-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]'
-                    : 'border-ds-border-muted bg-ds-card/70 text-ds-faint group-hover:border-accent/20 group-hover:bg-accent/10 group-hover:text-accent'
-                }`}
-                aria-hidden="true"
-              >
-                <ClipboardList className="h-4 w-4" strokeWidth={1.9} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] leading-4 text-ds-ink">{item.title}</span>
-                <span className="block truncate text-[11.5px] leading-4 text-ds-faint">{item.relativePath}</span>
-              </span>
-              <span className="shrink-0 rounded-md bg-ds-card/70 px-1.5 py-0.5 text-[10.5px] text-ds-faint transition group-hover:opacity-0 group-focus-within:opacity-0">
-                {item.source === 'remembered' ? t('sddDraftHistoryRemembered') : t('sddDraftHistoryDisk')}
-              </span>
-            </SidebarTreeRow>
-          ))}
-        </div>
-      ) : null}
-      {!collapsed && remainingCount > 0 ? (
-        <button
-          type="button"
-          data-cursor-spotlight-target
-          onClick={() =>
-            setVisibleCount((count) => Math.min(items.length, count + SDD_DRAFT_HISTORY_PAGE_SIZE))
-          }
-          className="ml-1 mt-1 rounded-md px-2.5 py-1.5 text-[12.5px] text-ds-faint transition hover:bg-[var(--ds-sidebar-row-hover)] hover:text-ds-ink"
-        >
-          {t('sddDraftHistoryShowMore', { count: nextCount })}
-        </button>
-      ) : null}
-    </div>
-  )
-}
-
-export function ThreadRow({
-  thread,
-  worktreeRecord,
-  active,
-  deleting,
-  locale,
-  showRunning,
-  showUnread,
-  onSelect,
-  onContextMenu,
-  onPreviewOpen,
-  onPreviewClose,
-  onPin,
-  onRename,
-  onArchive,
-  onDelete,
-  onRestore
-}: ThreadRowProps): ReactElement {
-  const { t } = useTranslation('common')
-  const showUnreadDot = showUnread && !showRunning
-  const archived = thread.archived === true
-  const pinned = thread.pinned === true
-  const worktreeLabel = worktreeRecord
-    ? t('sidebarThreadWorktree', { branch: worktreeRecord.branch || 'worktree' })
-    : ''
-  const updatedLabel = formatRelativeTime(thread.updatedAt, locale)
-  const ariaLabel = [
-    thread.title,
-    updatedLabel,
-    pinned ? t('sidebarThreadPinned') : '',
-    showRunning ? t('sidebarThreadRunning') : '',
-    showUnreadDot ? t('sidebarThreadUnread') : '',
-    worktreeLabel
-  ].filter(Boolean).join(' - ')
-
-  return (
-    <SidebarTreeRow
-      active={active}
-      actionsVisibility={deleting ? 'visible' : 'hidden'}
-      actionsLayout="overlay"
-      actions={
-        <>
-          {!archived ? (
-            <SidebarIconButton
-              onClick={onPin}
-              disabled={deleting}
-              tone="accent"
-              title={pinned ? t('sidebarThreadUnpin') : t('sidebarThreadPin')}
-              ariaLabel={pinned ? t('sidebarThreadUnpin') : t('sidebarThreadPin')}
-              active={pinned}
-              stopPropagation
-            >
-              {pinned ? (
-                <PinOff className="h-3 w-3" strokeWidth={1.9} />
-              ) : (
-                <Pin className="h-3 w-3" strokeWidth={1.9} />
-              )}
-            </SidebarIconButton>
-          ) : null}
-          <SidebarIconButton
-            onClick={archived ? onRestore : onArchive}
-            disabled={deleting}
-            tone="accent"
-            title={archived ? t('sidebarThreadRestore') : t('sidebarThreadArchive')}
-            ariaLabel={archived ? t('sidebarThreadRestore') : t('sidebarThreadArchive')}
-            stopPropagation
-          >
-            {deleting ? (
-              <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
-            ) : archived ? (
-              <RotateCcw className="h-3 w-3" strokeWidth={1.9} />
-            ) : (
-              <Archive className="h-3 w-3" strokeWidth={1.9} />
-            )}
-          </SidebarIconButton>
-          <SidebarIconButton
-            onClick={onDelete}
-            disabled={deleting}
-            tone="danger"
-            title={t('sidebarThreadDelete')}
-            ariaLabel={t('sidebarThreadDelete')}
-            stopPropagation
-          >
-            <Trash2 className="h-3 w-3" strokeWidth={1.9} />
-          </SidebarIconButton>
-        </>
-      }
-      className="min-h-[34px]"
-      buttonClassName="items-center gap-2 px-2.5 py-1.5"
-      disabled={deleting}
-      ariaLabel={ariaLabel}
-      title={[thread.title, thread.summary?.trim(), worktreeLabel].filter(Boolean).join('\n')}
-      onClick={onSelect}
-      onContextMenu={onContextMenu}
-      onMouseEnter={(event) => onPreviewOpen(event, worktreeRecord)}
-      onMouseLeave={onPreviewClose}
-    >
-      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-        {pinned ? (
-          <Pin className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.9} />
-        ) : null}
-        {worktreeRecord ? (
-          <span
-            className="inline-grid h-5 w-5 shrink-0 place-items-center rounded-full border border-ds-border-muted bg-ds-card/80 text-ds-muted"
-            title={worktreeLabel}
-            aria-label={worktreeLabel}
-          >
-            <GitBranch className="h-3 w-3" strokeWidth={1.8} />
-          </span>
-        ) : null}
-        <span
-          className={`min-w-0 flex-1 truncate text-[13.5px] leading-5 ${
-            showUnreadDot && !active ? 'font-semibold text-ds-ink' : 'text-ds-ink'
-          }`}
-        >
-          {thread.title}
-        </span>
-        <span className={`ml-auto flex min-w-[3.75rem] shrink-0 items-center justify-end gap-1.5 transition ${
-          deleting ? 'opacity-0' : 'group-hover:opacity-0 group-focus-within:opacity-0'
-        }`}>
-          <span className="shrink-0 text-right text-[12px] leading-4 text-ds-faint tabular-nums">
-            {updatedLabel}
-          </span>
-          <ThreadActivityDot
-            running={showRunning}
-            unread={showUnreadDot}
-            unreadLabel={t('sidebarThreadUnread')}
-          />
-        </span>
-      </span>
-    </SidebarTreeRow>
-  )
-}
-
-export function ThreadRenameDialog({
-  state,
-  onClose,
-  onValueChange,
-  onSubmit,
-  t
-}: {
-  state: RenameThreadDialogState
-  onClose: () => void
-  onValueChange: (value: string) => void
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void
-  t: (k: string, opts?: Record<string, unknown>) => string
-}): ReactElement {
-  const nextTitle = state.value.trim()
-  const unchanged = nextTitle === state.thread.title
-  const canSubmit = Boolean(nextTitle) && !unchanged && !state.submitting
-
-  useEffect(() => {
-    if (state.submitting) return
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose, state.submitting])
-
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="thread-rename-dialog-title"
-      className="ds-no-drag fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/18 px-4 backdrop-blur-[2px] dark:bg-black/35"
-      onMouseDown={onClose}
-    >
-      <form
-        onSubmit={onSubmit}
-        onMouseDown={(event) => event.stopPropagation()}
-        className="w-full max-w-sm rounded-[24px] border border-ds-border bg-ds-card p-5 shadow-[0_24px_72px_rgba(20,47,95,0.22)]"
-      >
-        <h2
-          id="thread-rename-dialog-title"
-          className="text-[18px] font-semibold tracking-[-0.035em] text-ds-ink"
-        >
-          {t('sidebarThreadRename')}
-        </h2>
-        <p className="mt-2 text-[13px] leading-6 text-ds-muted">
-          {t('sidebarThreadRenamePrompt')}
-        </p>
-        <input
-          autoFocus
-          aria-label={t('sidebarThreadRenamePrompt')}
-          disabled={state.submitting}
-          value={state.value}
-          onChange={(event) => onValueChange(event.target.value)}
-          onFocus={(event) => event.currentTarget.select()}
-          className="mt-4 w-full rounded-xl border border-ds-border bg-ds-main/65 px-3 py-2 text-[14px] text-ds-ink outline-none transition focus:border-accent/40 focus:ring-1 focus:ring-accent/25 disabled:cursor-wait disabled:opacity-70"
-        />
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            disabled={state.submitting}
-            onClick={onClose}
-            className="rounded-xl border border-ds-border bg-ds-card px-3 py-2 text-[13px] font-medium text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink disabled:cursor-wait disabled:opacity-60"
-          >
-            {t('cancel')}
-          </button>
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className="rounded-xl bg-accent px-3 py-2 text-[13px] font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-55"
-          >
-            {state.submitting ? t('loading') : t('confirm')}
-          </button>
-        </div>
-      </form>
-    </div>
-  )
-}
-
-function ThreadContextMenu({
-  state,
-  busy,
-  onClose,
-  onPin,
-  onRename,
-  onSummarize,
-  onArchive,
-  onDelete,
-  onRestore,
-  t
-}: {
-  state: ThreadContextMenuState
-  busy: boolean
-  onClose: () => void
-  onPin: () => void
-  onRename: () => void
-  onSummarize: () => void
-  onArchive: () => void
-  onDelete: () => void
-  onRestore: () => void
-  t: (k: string, opts?: Record<string, unknown>) => string
-}): ReactElement {
-  const archived = state.thread.archived === true
-  const pinned = state.thread.pinned === true
-  const run = (action: () => void): void => {
-    onClose()
-    action()
-  }
-
-  return (
-    <div
-      role="menu"
-      aria-label={state.thread.title}
-      className="ds-thread-context-menu ds-no-drag fixed z-50 min-w-[210px] rounded-[16px] border border-ds-border bg-ds-card/95 p-1.5 text-[13px] text-ds-ink shadow-[0_18px_52px_rgba(20,47,95,0.18)] backdrop-blur-xl dark:bg-ds-card"
-      style={{ left: state.x, top: state.y }}
-      onPointerDown={(event) => event.stopPropagation()}
-    >
-      <ThreadContextMenuItem
-        icon={pinned ? <PinOff className="h-3.5 w-3.5" strokeWidth={1.9} /> : <Pin className="h-3.5 w-3.5" strokeWidth={1.9} />}
-        label={pinned ? t('sidebarThreadUnpin') : t('sidebarThreadPin')}
-        disabled={busy || archived}
-        onClick={() => run(onPin)}
-      />
-      <div className="my-1 h-px bg-ds-border-muted" />
-      <ThreadContextMenuItem
-        icon={<PencilLine className="h-3.5 w-3.5" strokeWidth={1.9} />}
-        label={t('sidebarThreadRename')}
-        disabled={busy}
-        onClick={() => run(onRename)}
-      />
-      <ThreadContextMenuItem
-        icon={<ScrollText className="h-3.5 w-3.5" strokeWidth={1.9} />}
-        label={t('summarizeSession')}
-        disabled={busy}
-        onClick={() => run(onSummarize)}
-      />
-      <ThreadContextMenuItem
-        icon={
-          archived
-            ? <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.9} />
-            : <Archive className="h-3.5 w-3.5" strokeWidth={1.9} />
-        }
-        label={archived ? t('sidebarThreadRestore') : t('sidebarThreadArchive')}
-        disabled={busy}
-        onClick={() => run(archived ? onRestore : onArchive)}
-      />
-      <div className="my-1 h-px bg-ds-border-muted" />
-      <ThreadContextMenuItem
-        icon={<Trash2 className="h-3.5 w-3.5" strokeWidth={1.9} />}
-        label={t('sidebarThreadDelete')}
-        disabled={busy}
-        danger
-        onClick={() => run(onDelete)}
-      />
-    </div>
-  )
-}
-
-function WorkspaceContextMenu({
-  state,
-  onClose,
-  onNewThread,
-  onOpenInSystem,
-  onArchiveThreads,
-  onRemove,
-  archiveDisabled,
-  t
-}: {
-  state: WorkspaceContextMenuState
-  onClose: () => void
-  onNewThread: () => void
-  onOpenInSystem: () => void
-  onArchiveThreads: () => void
-  onRemove: () => void
-  archiveDisabled: boolean
-  t: (k: string, opts?: Record<string, unknown>) => string
-}): ReactElement {
-  const run = (action: () => void): void => {
-    onClose()
-    action()
-  }
-
-  return (
-    <div
-      role="menu"
-      aria-label={state.workspacePath}
-      className="ds-workspace-context-menu ds-no-drag fixed z-50 min-w-[230px] rounded-[16px] border border-ds-border bg-ds-card/95 p-1.5 text-[13px] text-ds-ink shadow-[0_18px_52px_rgba(20,47,95,0.18)] backdrop-blur-xl dark:bg-ds-card"
-      style={{ left: state.x, top: state.y }}
-      onPointerDown={(event) => event.stopPropagation()}
-    >
-      <ThreadContextMenuItem
-        icon={<Plus className="h-3.5 w-3.5" strokeWidth={1.9} />}
-        label={t('sidebarWorkspaceNewThread')}
-        disabled={false}
-        onClick={() => run(onNewThread)}
-      />
-      <ThreadContextMenuItem
-        icon={<ExternalLink className="h-3.5 w-3.5" strokeWidth={1.9} />}
-        label={t('sidebarWorkspaceOpenInSystem')}
-        disabled={false}
-        onClick={() => run(onOpenInSystem)}
-      />
-      <ThreadContextMenuItem
-        icon={<Archive className="h-3.5 w-3.5" strokeWidth={1.9} />}
-        label={t('sidebarWorkspaceArchiveThreads')}
-        disabled={archiveDisabled}
-        onClick={() => run(onArchiveThreads)}
-      />
-      <div className="my-1 h-px bg-ds-border-muted" />
-      <ThreadContextMenuItem
-        icon={<Trash2 className="h-3.5 w-3.5" strokeWidth={1.9} />}
-        label={t('sidebarWorkspaceRemove')}
-        disabled={false}
-        danger
-        onClick={() => run(onRemove)}
-      />
-    </div>
-  )
-}
-
-export function SidebarActionDialog({
-  state,
-  onClose,
-  onConfirm,
-  t
-}: {
-  state: SidebarActionDialogState
-  onClose: () => void
-  onConfirm: () => void
-  t: (k: string, opts?: Record<string, unknown>) => string
-}): ReactElement {
-  useEffect(() => {
-    if (state.submitting) return
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose, state.submitting])
-
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="sidebar-action-dialog-title"
-      className="ds-no-drag fixed inset-0 z-[1000] flex items-end justify-center bg-slate-950/28 px-4 pb-10 backdrop-blur-[2px] dark:bg-black/45 sm:items-center sm:pb-0"
-      onMouseDown={onClose}
-    >
-      <div
-        onMouseDown={(event) => event.stopPropagation()}
-        className="w-full max-w-[520px] rounded-[26px] border border-ds-border bg-[var(--surface-3)] p-6 shadow-[0_26px_82px_rgba(20,47,95,0.24)]"
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h2
-              id="sidebar-action-dialog-title"
-              className="text-[22px] font-semibold tracking-[-0.04em] text-ds-ink"
-            >
-              {state.title}
-            </h2>
-            <p className="mt-2 text-[14px] leading-6 text-ds-muted">{state.description}</p>
-          </div>
-          <button
-            type="button"
-            disabled={state.submitting}
-            onClick={onClose}
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-ds-faint transition hover:bg-[var(--ds-sidebar-row-hover)] hover:text-ds-ink disabled:cursor-wait disabled:opacity-50"
-            aria-label={t('cancel')}
-          >
-            <X className="h-4 w-4" strokeWidth={1.9} />
-          </button>
-        </div>
-        <p className="mt-4 rounded-2xl border border-ds-border-muted bg-ds-main px-3.5 py-3 text-[13px] leading-6 text-ds-muted">
-          {state.detail}
-        </p>
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            disabled={state.submitting}
-            onClick={onClose}
-            className="rounded-2xl px-4 py-2 text-[14px] font-medium text-ds-muted transition hover:bg-[var(--ds-sidebar-row-hover)] hover:text-ds-ink disabled:cursor-wait disabled:opacity-60"
-          >
-            {t('cancel')}
-          </button>
-          <button
-            type="button"
-            disabled={state.submitting}
-            onClick={onConfirm}
-            className={`rounded-2xl px-5 py-2 text-[14px] font-semibold transition disabled:cursor-wait disabled:opacity-60 ${
-              state.danger
-                ? 'bg-red-500/12 text-red-600 hover:bg-red-500/18 dark:text-red-300'
-                : 'bg-accent text-white hover:brightness-110'
-            }`}
-          >
-            {state.submitting ? t('loading') : state.confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ThreadContextMenuItem({
-  icon,
-  label,
-  disabled,
-  danger = false,
-  onClick
-}: {
-  icon: ReactElement
-  label: string
-  disabled: boolean
-  danger?: boolean
-  onClick: () => void
-}): ReactElement {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      disabled={disabled}
-      onClick={onClick}
-      className={`flex min-h-[30px] w-full items-center gap-2 rounded-md px-2 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
-        danger
-          ? 'text-red-600 hover:bg-red-500/10 dark:text-red-300'
-          : 'text-ds-ink hover:bg-[var(--ds-sidebar-row-hover)]'
-      }`}
-    >
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-current opacity-80">
-        {icon}
-      </span>
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-    </button>
-  )
-}
-
 function workspaceContextLabel(workspacePath: string, folderName: string): string {
   const normalized = workspacePath.replace(/[/\\]+$/, '')
   const parts = normalized.split(/[/\\]/).filter(Boolean)
@@ -1823,67 +1072,4 @@ function workspaceContextLabel(workspacePath: string, folderName: string): strin
   const parent = parts[parts.length - 2] ?? ''
   if (!parent || parent.toLowerCase() === folderName.toLowerCase()) return ''
   return parent
-}
-
-function ThreadActivityDot({
-  running,
-  unread,
-  unreadLabel
-}: {
-  running: boolean
-  unread: boolean
-  unreadLabel: string
-}): ReactElement | null {
-  if (running) {
-    return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" strokeWidth={2} />
-  }
-
-  if (unread) {
-    return (
-      <span
-        className="block h-2 w-2 shrink-0 rounded-full bg-accent shadow-[0_0_0_1px_rgba(79,124,255,0.2)]"
-        title={unreadLabel}
-      />
-    )
-  }
-
-  return null
-}
-
-type SidebarEmptyProps = {
-  runtimeReady: boolean
-  hasWorkspace: boolean
-  onPickWorkspace: () => void
-  t: (k: string, opts?: Record<string, unknown>) => string
-}
-
-function SidebarEmpty({
-  runtimeReady,
-  hasWorkspace,
-  onPickWorkspace,
-  t
-}: SidebarEmptyProps): ReactElement {
-  if (!hasWorkspace && runtimeReady) {
-    return (
-      <button
-        type="button"
-        onClick={onPickWorkspace}
-        className="mx-1 mt-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-lg px-2 py-1.5 text-left text-ds-muted transition hover:bg-[var(--ds-sidebar-row-hover)] hover:text-ds-ink"
-      >
-        <FolderPlus className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.75} />
-        <span className="min-w-0 flex-1 truncate text-[14px] font-medium">
-          {t('selectWorkspace')}
-        </span>
-      </button>
-    )
-  }
-
-  return (
-    <div className="mx-2 mt-2 rounded-lg px-2 py-2">
-      <p className="text-[15px] font-medium text-ds-muted">{t('sidebarEmptyTitle')}</p>
-      <p className="mt-1 text-[13px] leading-5 text-ds-faint">
-        {runtimeReady ? t('sidebarEmptySub') : t('sidebarEmptySubOffline')}
-      </p>
-    </div>
-  )
 }

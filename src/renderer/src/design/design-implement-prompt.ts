@@ -33,6 +33,9 @@ export function buildImplementDesignPrompt(options: ImplementDesignOptions): str
     '',
     'How to proceed:',
     `- First read \`${options.artifactRelativePath}\` to understand its layout, components, states and interactions.`,
+    options.referenceDesignSystem && options.designSystemRelativePath
+      ? `- Read \`${options.designSystemRelativePath}\` before coding and reuse its exact valid color, typography, spacing, rounded, and component guidance. Do not infer a competing theme from generated handoff files.`
+      : '',
     options.designNotesRelativePath?.trim()
       ? `- Read the design notes \`${options.designNotesRelativePath.trim()}\` for intent, interactions and assumptions the static mockup can't express.`
       : '',

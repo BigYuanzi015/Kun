@@ -1,17 +1,19 @@
 import type { Dispatch, ReactElement, SetStateAction } from 'react'
-import { Archive, AudioLines, Bot, BrainCircuit, GitBranch, Bug, ChevronLeft, Globe, Keyboard, Mic, Palette, PencilLine, RefreshCw, ServerCog, Settings, ShieldCheck, Smartphone, Sparkles, TerminalSquare } from 'lucide-react'
+import { Archive, AudioLines, Bot, BrainCircuit, GitBranch, Bug, ChevronLeft, Globe, Keyboard, Mic, Palette, PencilLine, Puzzle, RefreshCw, ServerCog, Settings, ShieldCheck, Smartphone, Sparkles, TerminalSquare, UsersRound } from 'lucide-react'
 
-type SettingsCategory = 'general' | 'providers' | 'write' | 'design' | 'mediaGeneration' | 'speechToText' | 'agents' | 'archives' | 'permissions' | 'worktree' | 'memory' | 'shortcuts' | 'easterEgg' | 'claw' | 'updates' | 'debug' | 'terminal'
+type SettingsCategory = 'general' | 'providers' | 'write' | 'design' | 'mediaGeneration' | 'speechToText' | 'agents' | 'subagents' | 'archives' | 'permissions' | 'worktree' | 'memory' | 'shortcuts' | 'easterEgg' | 'claw' | 'updates' | 'debug' | 'terminal' | 'extensions'
 
 export function SettingsSidebar({
   category,
   goBack,
   setCategory,
+  extensionSettingsAvailable = false,
   t
 }: {
   category: SettingsCategory
   goBack: () => void
   setCategory: Dispatch<SetStateAction<SettingsCategory>>
+  extensionSettingsAvailable?: boolean
   t: (key: string) => string
 }): ReactElement {
   const catCls = (c: SettingsCategory): string =>
@@ -54,6 +56,17 @@ export function SettingsSidebar({
           <ServerCog className="h-4 w-4 shrink-0 opacity-70" strokeWidth={1.75} />
           {t('providers')}
         </button>
+        {extensionSettingsAvailable ? (
+          <button
+            type="button"
+            data-cursor-spotlight-target
+            className={catCls('extensions')}
+            onClick={() => setCategory('extensions')}
+          >
+            <Puzzle className="h-4 w-4 shrink-0 opacity-70" strokeWidth={1.75} />
+            {t('extensions')}
+          </button>
+        ) : null}
         <button
           type="button"
           data-cursor-spotlight-target
@@ -98,6 +111,15 @@ export function SettingsSidebar({
         >
           <Bot className="h-4 w-4 shrink-0 opacity-70" strokeWidth={1.75} />
           {t('agents')}
+        </button>
+        <button
+          type="button"
+          data-cursor-spotlight-target
+          className={catCls('subagents')}
+          onClick={() => setCategory('subagents')}
+        >
+          <UsersRound className="h-4 w-4 shrink-0 opacity-70" strokeWidth={1.75} />
+          {t('subagents')}
         </button>
         <button
           type="button"

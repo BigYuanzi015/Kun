@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   BACKGROUND_SHELL_OUTPUT_SUBDIR,
+  DEFAULT_BACKGROUND_SHELL_OUTPUT_MAX_BYTES,
   BACKGROUND_SHELL_OUTPUT_TRUNCATION_NOTICE,
   BackgroundShellOutputWriter,
   DEFAULT_BACKGROUND_SHELL_OUTPUT_SUMMARY_MAX_CHARS,
@@ -52,8 +53,23 @@ describe('background-shell-output', () => {
     await writer.close()
     const persisted = await readFile(live.output_file, 'utf-8')
     expect(persisted.startsWith('hello\n')).toBe(true)
+    expect((await stat(writer.paths.outputDir)).mode & 0o777).toBe(0o700)
+    expect((await stat(live.output_file)).mode & 0o777).toBe(0o600)
     const summary = await readBackgroundShellOutputSummary(live.output_file)
     expect(summary.truncated).toBe(true)
+  })
+
+  it('caps persisted background output and reports storage truncation', async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'kun-bg-shell-output-'))
+    const writer = new BackgroundShellOutputWriter(tempDir, 'thr_1', 'capped01', 5)
+    await writer.open()
+    writer.append('1234567')
+    await writer.close()
+    const fields = await writer.buildReturnFields()
+
+    expect(await readFile(fields.output_file, 'utf-8')).toBe('12345')
+    expect(fields.truncated).toBe(true)
+    expect(DEFAULT_BACKGROUND_SHELL_OUTPUT_MAX_BYTES).toBeGreaterThan(0)
   })
 
   it('creates an empty output file even when no bytes were written', async () => {

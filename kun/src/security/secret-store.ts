@@ -17,8 +17,8 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 export type SecretEncryptor = {
-  encrypt: (plaintext: string) => string
-  decrypt: (blob: string) => string
+  encrypt: (plaintext: string, additionalAuthenticatedData?: string | Buffer) => string
+  decrypt: (blob: string, additionalAuthenticatedData?: string | Buffer) => string
 }
 
 const ALGORITHM = 'aes-256-gcm'
@@ -28,24 +28,34 @@ const ENVELOPE_PREFIX = 'enc:v1:'
 export function createAesEncryptor(key: Buffer): SecretEncryptor {
   if (key.length !== 32) throw new Error('encryption key must be 32 bytes')
   return {
-    encrypt: (plaintext: string): string => {
+    encrypt: (plaintext: string, additionalAuthenticatedData?: string | Buffer): string => {
       const iv = randomBytes(12)
       const cipher = createCipheriv(ALGORITHM, key, iv)
+      if (additionalAuthenticatedData !== undefined) {
+        cipher.setAAD(asBuffer(additionalAuthenticatedData))
+      }
       const enc = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
       const tag = cipher.getAuthTag()
       return `${ENVELOPE_PREFIX}${iv.toString('base64')}:${tag.toString('base64')}:${enc.toString('base64')}`
     },
-    decrypt: (blob: string): string => {
+    decrypt: (blob: string, additionalAuthenticatedData?: string | Buffer): string => {
       if (!blob.startsWith(ENVELOPE_PREFIX)) return blob // legacy plaintext
       const [, , ivB64, tagB64, dataB64] = blob.split(':')
       const iv = Buffer.from(ivB64, 'base64')
       const tag = Buffer.from(tagB64, 'base64')
       const data = Buffer.from(dataB64, 'base64')
       const decipher = createDecipheriv(ALGORITHM, key, iv)
+      if (additionalAuthenticatedData !== undefined) {
+        decipher.setAAD(asBuffer(additionalAuthenticatedData))
+      }
       decipher.setAuthTag(tag)
       return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8')
     }
   }
+}
+
+function asBuffer(value: string | Buffer): Buffer {
+  return typeof value === 'string' ? Buffer.from(value, 'utf8') : value
 }
 
 export function isEncryptedEnvelope(value: string): boolean {

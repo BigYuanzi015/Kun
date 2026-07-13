@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDesignWorkspaceStore } from '../../design/design-workspace-store'
+import { flushDesignWorkspacePersistence } from '../../design/design-persistence-flush'
 import type { DesignHtmlElementContext } from '../../design/design-composer-context'
 import type { DesignArtifact } from '../../design/design-types'
 import type { DesignRuntimeQualityPayload } from '../../design/design-html-quality'
@@ -15,6 +16,12 @@ type Props = {
   onOpenAgentSettings?: () => void
   onImplementDesign?: (artifact: DesignArtifact) => void
   onScreenCreated?: (shapeId: string, userPrompt: string, brief?: string) => void
+  onSvgCreated?: (
+    artifactId: string,
+    shapeId: string,
+    userPrompt: string,
+    brief: string
+  ) => boolean | Promise<boolean>
   onUseElementAsContext?: (context: DesignHtmlElementContext | null, promptSeed?: string) => void
   onRuntimeQualityFindings?: (payload: DesignRuntimeQualityPayload) => void
   onRequestQualityRepair?: (payload: DesignRuntimeQualityPayload) => void
@@ -32,6 +39,7 @@ export function DesignWorkspaceView({
   onOpenAgentSettings,
   onImplementDesign,
   onScreenCreated,
+  onSvgCreated,
   onUseElementAsContext,
   onRuntimeQualityFindings,
   onRequestQualityRepair
@@ -43,6 +51,10 @@ export function DesignWorkspaceView({
 
   useEffect(() => {
     void loadDesignSettings()
+    return () => {
+      const workspaceRoot = useDesignWorkspaceStore.getState().workspaceRoot
+      if (workspaceRoot) void flushDesignWorkspacePersistence(workspaceRoot)
+    }
   }, [loadDesignSettings])
 
   return (
@@ -68,6 +80,7 @@ export function DesignWorkspaceView({
           onOpenAgentSettings={onOpenAgentSettings}
           onImplementDesign={onImplementDesign}
           onScreenCreated={onScreenCreated}
+          onSvgCreated={onSvgCreated}
           onUseElementAsContext={onUseElementAsContext}
           onRuntimeQualityFindings={onRuntimeQualityFindings}
           onRequestQualityRepair={onRequestQualityRepair}

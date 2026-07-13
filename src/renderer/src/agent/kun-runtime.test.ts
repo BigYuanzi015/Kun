@@ -51,10 +51,15 @@ function installDsGui(overrides: Partial<Window['kunGui']>): void {
     kunGui: {
       getSettings: vi.fn(async () => settings()),
       runtimeRequest: vi.fn(async () => ({ ok: true, status: 200, body: '{}' })),
+      resolveKunApproval: vi.fn(async () => ({
+        confirmed: true,
+        response: { ok: true, status: 200, body: '{}' }
+      })),
       startSse: vi.fn(async (_threadId: string, _sinceSeq: number, streamId?: string) => ({
         streamId: streamId ?? 'stream-1'
       })),
       stopSse: vi.fn(async () => true),
+      ackSse: vi.fn(async () => true),
       onSseEvent: vi.fn(() => () => undefined),
       onSseEnd: vi.fn(() => () => undefined),
       onSseError: vi.fn(() => () => undefined),
@@ -134,6 +139,7 @@ describe('KunRuntimeProvider', () => {
               status: 'completed',
               prompt: 'hi',
               createdAt: 't0',
+              guiDesignCanvas: true,
               items: [
                 {
                   id: 'item_user',
@@ -164,6 +170,10 @@ describe('KunRuntimeProvider', () => {
     const provider = new KunRuntimeProvider()
     const detail = await provider.getThreadDetail('thr_1')
     expect(detail.blocks.map((block) => block.kind)).toEqual(['user', 'assistant'])
+    expect(detail.blocks[0]).toMatchObject({
+      kind: 'user',
+      meta: { guiDesignCanvas: true }
+    })
     expect(detail.latestSeq).toBe(9)
     expect(detail.latestTurnId).toBe('turn_1')
     expect(detail.latestUserMessageId).toBe('item_user')
@@ -301,8 +311,8 @@ describe('KunRuntimeProvider', () => {
       'POST',
       JSON.stringify({
         prompt: 'hello',
-        approvalPolicy: 'auto',
-        sandboxMode: 'danger-full-access'
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write'
       })
     )
     expect(result.userMessageItemId).toBe('item_user_real')
@@ -327,8 +337,8 @@ describe('KunRuntimeProvider', () => {
         prompt: 'hello',
         model: 'mimo-v2.5',
         providerId: 'xiaomi-token-plan',
-        approvalPolicy: 'auto',
-        sandboxMode: 'danger-full-access'
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write'
       })
     )
   })
@@ -347,8 +357,8 @@ describe('KunRuntimeProvider', () => {
       'POST',
       JSON.stringify({
         prompt: 'hello',
-        approvalPolicy: 'auto',
-        sandboxMode: 'danger-full-access',
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write',
         workspaceCheckpointId: 'gcp_1'
       })
     )
@@ -362,15 +372,52 @@ describe('KunRuntimeProvider', () => {
     }))
     installDsGui({ runtimeRequest })
     const provider = new KunRuntimeProvider()
-    await provider.sendUserMessage('thr_1', 'design a screen', { guiDesignCanvas: true })
+    await provider.sendUserMessage('thr_1', 'design a screen', {
+      guiDesignCanvas: true,
+      guiDesignMode: true
+    })
     expect(runtimeRequest).toHaveBeenCalledWith(
       '/v1/threads/thr_1/turns',
       'POST',
       JSON.stringify({
         prompt: 'design a screen',
-        approvalPolicy: 'auto',
-        sandboxMode: 'danger-full-access',
-        guiDesignCanvas: true
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write',
+        guiDesignCanvas: true,
+        guiDesignMode: true
+      })
+    )
+  })
+
+  it('posts the reserved SVG artifact context for structured SVG turns', async () => {
+    const runtimeRequest = vi.fn(async () => ({
+      ok: true,
+      status: 202,
+      body: JSON.stringify({ threadId: 'thr_1', turnId: 'turn_svg', userMessageItemId: 'item_user_svg' })
+    }))
+    installDsGui({ runtimeRequest })
+    const provider = new KunRuntimeProvider()
+    await provider.sendUserMessage('thr_1', 'animate the mark', {
+      guiDesignMode: true,
+      guiDesignArtifact: {
+        kind: 'svg',
+        artifactId: 'motion',
+        relativePath: '.kun-design/doc/motion/v2.svg'
+      }
+    })
+    expect(runtimeRequest).toHaveBeenCalledWith(
+      '/v1/threads/thr_1/turns',
+      'POST',
+      JSON.stringify({
+        prompt: 'animate the mark',
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write',
+        guiDesignMode: true,
+        guiDesignArtifact: {
+          kind: 'svg',
+          artifactId: 'motion',
+          relativePath: '.kun-design/doc/motion/v2.svg'
+        }
       })
     )
   })
@@ -403,8 +450,8 @@ describe('KunRuntimeProvider', () => {
       'POST',
       JSON.stringify({
         prompt: 'describe this',
-        approvalPolicy: 'auto',
-        sandboxMode: 'danger-full-access',
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write',
         attachmentIds: ['att_1']
       })
     )
@@ -441,8 +488,8 @@ describe('KunRuntimeProvider', () => {
       'POST',
       JSON.stringify({
         prompt: 'explain these files',
-        approvalPolicy: 'auto',
-        sandboxMode: 'danger-full-access',
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write',
         fileReferences: [
           {
             path: '/workspace/deepseek-gui/src/App.tsx',
@@ -481,8 +528,8 @@ describe('KunRuntimeProvider', () => {
       JSON.stringify({
         prompt: 'think harder',
         model: 'auto',
-        approvalPolicy: 'auto',
-        sandboxMode: 'danger-full-access',
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write',
         reasoningEffort: 'max'
       })
     )
@@ -515,8 +562,8 @@ describe('KunRuntimeProvider', () => {
       'POST',
       JSON.stringify({
         prompt: 'refine the plan',
-        approvalPolicy: 'auto',
-        sandboxMode: 'danger-full-access',
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write',
         displayText: 'Generate implementation plan',
         mode: 'plan',
         guiPlan: {
@@ -836,7 +883,15 @@ describe('KunRuntimeProvider', () => {
 
     const forked = await provider.forkThread('thr_parent')
     await provider.forkThread('thr_parent', { turnId: 'turn_1' })
-    await provider.submitUserInputResponse('input_1', [{ id: 'choice', label: 'Yes', value: 'yes' }])
+    await provider.submitUserInputResponse('input_1', [
+      {
+        id: 'choice',
+        label: 'Yes, Maybe',
+        value: 'Yes, Maybe',
+        labels: ['Yes', 'Maybe'],
+        values: ['Yes', 'Maybe']
+      }
+    ])
     await provider.cancelUserInput('input_2')
 
     expect(forked).toMatchObject({ id: 'thr_fork', forkedFromThreadId: 'thr_parent' })
@@ -849,7 +904,17 @@ describe('KunRuntimeProvider', () => {
     expect(runtimeRequest).toHaveBeenCalledWith(
       '/v1/user-inputs/input_1',
       'POST',
-      JSON.stringify({ answers: [{ id: 'choice', label: 'Yes', value: 'yes' }] })
+      JSON.stringify({
+        answers: [
+          {
+            id: 'choice',
+            label: 'Yes, Maybe',
+            value: 'Yes, Maybe',
+            labels: ['Yes', 'Maybe'],
+            values: ['Yes', 'Maybe']
+          }
+        ]
+      })
     )
     expect(runtimeRequest).toHaveBeenCalledWith(
       '/v1/user-inputs/input_2',
@@ -885,8 +950,8 @@ describe('KunRuntimeProvider', () => {
     let onData: ((payload: { streamId: string; events: unknown[] }) => void) | null = null
     const ac = new AbortController()
     const sink: ThreadEventSink = {
-      onSeq: vi.fn(),
-      onDeltas: vi.fn(() => ac.abort()),
+      onSeq: vi.fn(() => ac.abort()),
+      onDeltas: vi.fn(),
       onUserMessage: vi.fn(),
       onTool: vi.fn(),
       onCompaction: vi.fn(),
@@ -934,9 +999,127 @@ describe('KunRuntimeProvider', () => {
     expect(sink.onDeltas).toHaveBeenCalledWith([{ text: 'he', kind: 'agent_message', seq: 3 }])
   })
 
+  it('acknowledges an SSE batch only after dispatching it and then advances the cursor', async () => {
+    let onData: ((payload: { streamId: string; events: unknown[]; batchId?: string }) => void) | null = null
+    let releaseAck: (() => void) | undefined
+    const ackGate = new Promise<void>((resolve) => {
+      releaseAck = resolve
+    })
+    const ackSse = vi.fn(async () => {
+      await ackGate
+      return true
+    })
+    const startSse = vi.fn(async (_threadId: string, _sinceSeq: number, streamId?: string) => {
+      queueMicrotask(() => {
+        onData?.({
+          streamId: streamId ?? 'stream-1',
+          batchId: 'batch_1',
+          events: [{ kind: 'assistant_text_delta', seq: 4, item: {
+            id: 'item_text', turnId: 'turn_1', threadId: 'thr_1', role: 'assistant',
+            status: 'running', createdAt: 't1', kind: 'assistant_text', text: 'ack me'
+          } }]
+        })
+      })
+      return { streamId: streamId ?? 'stream-1' }
+    })
+    const ac = new AbortController()
+    const sink: ThreadEventSink = {
+      onSeq: vi.fn(),
+      onDeltas: vi.fn(),
+      onUserMessage: vi.fn(),
+      onTool: vi.fn(),
+      onCompaction: vi.fn(),
+      onApproval: vi.fn(),
+      onUserInput: vi.fn(),
+      onUserInputStatus: vi.fn(),
+      onGoal: vi.fn(),
+      onTodos: vi.fn(),
+      onTurnComplete: vi.fn(),
+      onError: vi.fn()
+    }
+    installDsGui({
+      ackSse,
+      onSseEvent: vi.fn((handler) => {
+        onData = handler
+        return () => undefined
+      }),
+      startSse
+    })
+    const provider = new KunRuntimeProvider()
+    const subscription = provider.subscribeThreadEvents('thr_1', 0, sink, ac.signal)
+
+    await vi.waitFor(() => expect(sink.onDeltas).toHaveBeenCalledTimes(1))
+    expect(ackSse).toHaveBeenCalledWith(expect.any(String), 'batch_1')
+    expect(startSse).toHaveBeenCalledWith(
+      'thr_1',
+      0,
+      expect.any(String),
+      { acknowledgedBatches: true }
+    )
+    expect(sink.onSeq).not.toHaveBeenCalled()
+
+    releaseAck?.()
+    await vi.waitFor(() => expect(sink.onSeq).toHaveBeenCalledWith(4))
+    ac.abort()
+    await subscription
+  })
+
+  it('does not acknowledge or advance an SSE batch aborted during dispatch', async () => {
+    let onData: ((payload: { streamId: string; events: unknown[]; batchId?: string }) => void) | null = null
+    const ackSse = vi.fn(async () => true)
+    const stopSse = vi.fn(async () => true)
+    const ac = new AbortController()
+    const sink: ThreadEventSink = {
+      onSeq: vi.fn(),
+      onDeltas: vi.fn(() => ac.abort()),
+      onUserMessage: vi.fn(),
+      onTool: vi.fn(),
+      onCompaction: vi.fn(),
+      onApproval: vi.fn(),
+      onUserInput: vi.fn(),
+      onUserInputStatus: vi.fn(),
+      onGoal: vi.fn(),
+      onTodos: vi.fn(),
+      onTurnComplete: vi.fn(),
+      onError: vi.fn()
+    }
+    installDsGui({
+      ackSse,
+      stopSse,
+      onSseEvent: vi.fn((handler) => {
+        onData = handler
+        return () => undefined
+      }),
+      startSse: vi.fn(async (_threadId, _sinceSeq, streamId) => {
+        queueMicrotask(() => {
+          onData?.({
+            streamId: streamId ?? 'stream-1',
+            batchId: 'batch_abort',
+            events: [{ kind: 'assistant_text_delta', seq: 5, item: {
+              id: 'item_text', turnId: 'turn_1', threadId: 'thr_1', role: 'assistant',
+              status: 'running', createdAt: 't1', kind: 'assistant_text', text: 'abort me'
+            } }]
+          })
+        })
+        return { streamId: streamId ?? 'stream-1' }
+      })
+    })
+    const provider = new KunRuntimeProvider()
+
+    await provider.subscribeThreadEvents('thr_1', 0, sink, ac.signal)
+
+    expect(ackSse).not.toHaveBeenCalled()
+    expect(sink.onSeq).not.toHaveBeenCalled()
+    expect(stopSse).toHaveBeenCalled()
+  })
+
   it('auto-approves approval requests when policy is auto', async () => {
     let onData: ((payload: { streamId: string; events: unknown[] }) => void) | null = null
     const runtimeRequest = vi.fn(async () => ({ ok: true, status: 200, body: '{}' }))
+    const resolveKunApproval = vi.fn(async () => ({
+      confirmed: true as const,
+      response: { ok: true, status: 200, body: '{}' }
+    }))
     const ac = new AbortController()
     const sink: ThreadEventSink = {
       onSeq: vi.fn(),
@@ -959,6 +1142,7 @@ describe('KunRuntimeProvider', () => {
     installDsGui({
       getSettings: vi.fn(async () => autoSettings),
       runtimeRequest,
+      resolveKunApproval,
       onSseEvent: vi.fn((handler) => {
         onData = handler
         return () => undefined
@@ -978,17 +1162,21 @@ describe('KunRuntimeProvider', () => {
     })
     const provider = new KunRuntimeProvider()
     await provider.subscribeThreadEvents('thr_1', 0, sink, ac.signal)
-    expect(runtimeRequest).toHaveBeenCalledWith(
-      '/v1/approvals/appr_auto',
-      'POST',
-      JSON.stringify({ decision: 'allow' })
-    )
+    expect(resolveKunApproval).toHaveBeenCalledWith({
+      approvalId: 'appr_auto',
+      decision: 'allow',
+      source: 'policy'
+    })
     expect(sink.onApproval).not.toHaveBeenCalled()
   })
 
   it('uses the approval policy from runtime events before falling back to settings', async () => {
     let onData: ((payload: { streamId: string; events: unknown[] }) => void) | null = null
     const runtimeRequest = vi.fn(async () => ({ ok: true, status: 200, body: '{}' }))
+    const resolveKunApproval = vi.fn(async () => ({
+      confirmed: true as const,
+      response: { ok: true, status: 200, body: '{}' }
+    }))
     const getSettings = vi.fn(async (): Promise<AppSettingsV1> => ({
       ...settings(),
       agents: { kun: { ...defaultKunRuntimeSettings(), approvalPolicy: 'on-request' } }
@@ -1011,6 +1199,7 @@ describe('KunRuntimeProvider', () => {
     installDsGui({
       getSettings,
       runtimeRequest,
+      resolveKunApproval,
       onSseEvent: vi.fn((handler) => {
         onData = handler
         return () => undefined
@@ -1036,11 +1225,11 @@ describe('KunRuntimeProvider', () => {
     })
     const provider = new KunRuntimeProvider()
     await provider.subscribeThreadEvents('thr_1', 0, sink, ac.signal)
-    expect(runtimeRequest).toHaveBeenCalledWith(
-      '/v1/approvals/appr_event_auto',
-      'POST',
-      JSON.stringify({ decision: 'allow' })
-    )
+    expect(resolveKunApproval).toHaveBeenCalledWith({
+      approvalId: 'appr_event_auto',
+      decision: 'allow',
+      source: 'policy'
+    })
     expect(getSettings).not.toHaveBeenCalled()
     expect(sink.onApproval).not.toHaveBeenCalled()
   })
@@ -1049,6 +1238,10 @@ describe('KunRuntimeProvider', () => {
     for (const policy of ['suggest', 'untrusted'] as const) {
       let onData: ((payload: { streamId: string; events: unknown[] }) => void) | null = null
       const runtimeRequest = vi.fn(async () => ({ ok: true, status: 200, body: '{}' }))
+      const resolveKunApproval = vi.fn(async () => ({
+        confirmed: true as const,
+        response: { ok: true, status: 200, body: '{}' }
+      }))
       const ac = new AbortController()
       const sink: ThreadEventSink = {
         onSeq: vi.fn(),
@@ -1071,6 +1264,7 @@ describe('KunRuntimeProvider', () => {
       installDsGui({
         getSettings: vi.fn(async () => policySettings),
         runtimeRequest,
+        resolveKunApproval,
         onSseEvent: vi.fn((handler) => {
           onData = handler
           return () => undefined
@@ -1100,11 +1294,7 @@ describe('KunRuntimeProvider', () => {
         summary: `${policy} approval`,
         toolName: undefined
       })
-      expect(runtimeRequest).not.toHaveBeenCalledWith(
-        `/v1/approvals/appr_${policy}`,
-        'POST',
-        expect.any(String)
-      )
+      expect(resolveKunApproval).not.toHaveBeenCalled()
     }
   })
 })

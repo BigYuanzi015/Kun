@@ -334,7 +334,11 @@ export function ProcessSectionRow({
           {shouldRenderDetail ? (
             section.kind === 'reasoning' ? (
             <div className="ds-markdown text-[13.5px] leading-6 text-ds-faint">
-              <AssistantMarkdown text={reasoningText} streaming={active && processing} />
+              <AssistantMarkdown
+                text={reasoningText}
+                streaming={active && processing}
+                hideHtmlComments
+              />
             </div>
           ) : (
             <ProcessStackRows blocks={section.blocks} processing={processing} workspaceRoot={workspaceRoot} />
@@ -1192,7 +1196,7 @@ function ProcessEntryDetail({
     const streamReason = block.id === 'live-reasoning' && processing
     return (
       <div className="ds-markdown text-[13.5px] leading-6 text-ds-muted">
-        <AssistantMarkdown text={detail.text} streaming={streamReason} />
+        <AssistantMarkdown text={detail.text} streaming={streamReason} hideHtmlComments />
       </div>
     )
   }

@@ -47,6 +47,22 @@ export function executeDesignSystemShapeOp(
       }
       break
     }
+    case 'delete-token': {
+      const ds = useDesignSystemStore.getState()
+      ds.deleteToken(op.name)
+      for (const id of listShapeIds()) {
+        const shape = findShape(id)
+        if (!shape?.tokenBindings) continue
+        const tokenBindings = Object.fromEntries(
+          Object.entries(shape.tokenBindings).filter(([, tokenName]) => tokenName !== op.name)
+        )
+        if (Object.keys(tokenBindings).length !== Object.keys(shape.tokenBindings).length) {
+          store.updateShape(id, { tokenBindings })
+          affectedIds.add(id)
+        }
+      }
+      break
+    }
     case 'apply-token': {
       const ds = useDesignSystemStore.getState()
       const token = ds.getToken(op.token)
@@ -104,6 +120,60 @@ export function executeDesignSystemShapeOp(
       // Defining a component does not mutate the canvas; nothing affected.
       break
     }
+    case 'delete-component': {
+      const ds = useDesignSystemStore.getState()
+      const component = ds.getComponent(op.name)
+      if (!component) break
+      ds.deleteComponent(op.name)
+      for (const id of listShapeIds()) {
+        const shape = findShape(id)
+        if (shape?.componentId !== component.id) continue
+        store.updateShape(id, {
+          componentId: undefined,
+          componentVersion: undefined,
+          componentVariant: undefined
+        })
+        affectedIds.add(id)
+      }
+      break
+    }
+    case 'set-component-variant': {
+      const ds = useDesignSystemStore.getState()
+      const component = ds.getComponent(op.name)
+      if (!component) {
+        errors.push({ code: 'INVALID_OP', message: `Unknown component "${op.name}"` })
+        break
+      }
+      const shapeIds = new Set(component.tree.map((shape) => shape.id))
+      const forbidden = new Set(['id', 'type', 'name', 'parentId', 'frameId', 'children', 'componentId', 'componentVersion', 'htmlArtifactId', 'embeddedArtifact', 'runningApp', 'agentNote'])
+      const invalid = Object.entries(op.overrides).find(([shapeId, override]) =>
+        !shapeIds.has(shapeId) || Object.keys(override).some((key) => forbidden.has(key))
+      )
+      if (invalid) {
+        errors.push({ code: 'INVALID_OP', message: `Invalid variant override for component layer "${invalid[0]}"` })
+        break
+      }
+      ds.setComponent({
+        ...component,
+        version: component.version + 1,
+        variantAxes: Object.fromEntries(
+          Object.entries(op.selection).map(([axis, value]) => {
+            const current = component.variantAxes?.[axis]
+            return [axis, {
+              values: current?.values.includes(value) ? current.values : [...(current?.values ?? []), value],
+              defaultValue: current?.defaultValue ?? value
+            }]
+          }).concat(
+            Object.entries(component.variantAxes ?? {}).filter(([axis]) => !(axis in op.selection))
+          )
+        ),
+        variants: {
+          ...(component.variants ?? {}),
+          [op.key]: { selection: op.selection, overrides: op.overrides }
+        }
+      })
+      break
+    }
     case 'instantiate': {
       const ds = useDesignSystemStore.getState()
       const comp = ds.getComponent(op.name)
@@ -128,7 +198,7 @@ export function executeDesignSystemShapeOp(
       }
       const parentId = op.parentId ?? store.document.rootId
       const at = op.at ?? { x: 0, y: 0 }
-      affectedIds.add(materializeComponentInstance(comp, at, parentId, op.overrides ?? {}))
+      affectedIds.add(materializeComponentInstance(comp, at, parentId, op.overrides ?? {}, op.variant))
       break
     }
     case 'instantiate-many': {
@@ -171,7 +241,7 @@ export function executeDesignSystemShapeOp(
         const col = i % cols
         const row = Math.floor(i / cols)
         const cellAt = { x: at.x + col * (itemW + gap), y: at.y + row * (itemH + gap) }
-        affectedIds.add(materializeComponentInstance(comp, cellAt, parentId, op.data[i]))
+        affectedIds.add(materializeComponentInstance(comp, cellAt, parentId, op.data[i], op.variant))
       }
       break
     }
@@ -188,6 +258,7 @@ export function executeDesignSystemShapeOp(
       store.updateShape(op.id, {
         componentId: undefined,
         componentVersion: undefined,
+        componentVariant: undefined,
         overrides: undefined
       })
       affectedIds.add(op.id)
@@ -224,8 +295,9 @@ export function executeDesignSystemShapeOp(
         const at = { x: inst.x, y: inst.y }
         const parentId = inst.parentId ?? store.document.rootId
         const overrides = (inst.overrides as ComponentOverrides | undefined) ?? {}
+        const variant = inst.componentVariant
         store.deleteShape(inst.id)
-        affectedIds.add(materializeComponentInstance(updated, at, parentId, overrides))
+        affectedIds.add(materializeComponentInstance(updated, at, parentId, overrides, variant))
       }
       break
     }

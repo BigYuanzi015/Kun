@@ -62,10 +62,23 @@ export type ComponentDef = {
   version: number
   tree: CanvasShape[]
   slots: ComponentSlot[]
+  variantAxes?: Record<string, ComponentVariantAxis>
+  variants?: Record<string, ComponentVariant>
 }
 
 /** slotPath → override value (text string / image url / color hex / boolean / number). */
 export type ComponentOverrides = Record<string, unknown>
+
+export type ComponentVariantAxis = {
+  values: string[]
+  defaultValue: string
+}
+
+export type ComponentVariant = {
+  selection: Record<string, string>
+  /** Stable component-layer id -> visual/content override. */
+  overrides: Record<string, Partial<CanvasShape>>
+}
 
 export type DesignSystem = {
   tokens: Record<string, DesignToken>

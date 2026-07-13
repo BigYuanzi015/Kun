@@ -1,6 +1,6 @@
 import { LocalToolHost, type LocalTool } from './local-tool-host.js'
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from './truncate.js'
-import type { ReadLocalToolOptions, TextSlice } from './builtin-tool-types.js'
+import { DEFAULT_READ_MAX_FILE_BYTES, type ReadLocalToolOptions, type TextSlice } from './builtin-tool-types.js'
 import { defaultReadLocalToolOperations } from './builtin-tool-operations.js'
 import {
   formatDimensionNote,
@@ -18,6 +18,7 @@ export function createReadLocalTool(options: ReadLocalToolOptions = {}): LocalTo
     options.operations?.detectImageMimeType ?? defaultReadLocalToolOperations.detectImageMimeType!
   const resizeImageOp = options.operations?.resizeImage
   const autoResizeImages = options.autoResizeImages ?? true
+  const maxFileBytes = normalizePositiveInteger(options.maxFileBytes, DEFAULT_READ_MAX_FILE_BYTES)
   return LocalToolHost.defineTool({
     name: 'read',
     description: 'Read a file from the workspace. Supports optional line offset and limit for large files.',
@@ -50,8 +51,38 @@ export function createReadLocalTool(options: ReadLocalToolOptions = {}): LocalTo
         }
       }
       const { absolutePath, relativePath } = await resolveWorkspacePath(rawPath, context)
-      await statOp(absolutePath)
+      const fileStat = await statOp(absolutePath)
+      if (typeof fileStat.size === 'number' && fileStat.size > maxFileBytes) {
+        return {
+          output: {
+            code: 'file_too_large',
+            error: `refusing to read ${formatSize(fileStat.size)} file (maximum ${formatSize(maxFileBytes)})`,
+            path: absolutePath,
+            relative_path: relativePath,
+            byte_size: fileStat.size,
+            max_file_bytes: maxFileBytes,
+            hint: 'Use grep, a narrower file, or a byte-limited command after explicit approval.'
+          },
+          isError: true
+        }
+      }
       const fileBuffer = await readFileOp(absolutePath)
+      // A file can grow between stat() and readFile(). Never continue to
+      // transform or base64-encode an unexpectedly large buffer.
+      if (fileBuffer.length > maxFileBytes) {
+        return {
+          output: {
+            code: 'file_too_large',
+            error: `refusing to read ${formatSize(fileBuffer.length)} file (maximum ${formatSize(maxFileBytes)})`,
+            path: absolutePath,
+            relative_path: relativePath,
+            byte_size: fileBuffer.length,
+            max_file_bytes: maxFileBytes,
+            hint: 'Use grep, a narrower file, or a byte-limited command after explicit approval.'
+          },
+          isError: true
+        }
+      }
       const classification = getReadClassification(absolutePath, context.workspace)
       const image = detectImageMimeTypeOp(fileBuffer)
       if (image) {

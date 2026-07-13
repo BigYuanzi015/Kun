@@ -13,13 +13,13 @@ import { snapshotToCompactJson } from "../canvas/canvas-snapshot"
 import type { OpError } from "../canvas/shape-ops"
 import { useDesignSystemStore } from "../canvas/design-system-store"
 import type { DesignSystem, DesignToken } from "../canvas/design-system-types"
+import { PROJECT_DESIGN_MD_PATH } from '../design-md/design-md-paths'
 import { takeLastLintFindings } from "../canvas/design-lint"
 import type { DerivedTokens } from "../design-token-extract"
 import type { DesignContextLocation, DesignHtmlElementContext } from "../design-composer-context"
 import { formatDesignHtmlQualityFindings, type DesignHtmlQualityFinding } from "../design-html-quality"
 import type { DesignFrameContext, DesignTurnOptions, ScreenTurnOptions } from './shared'
 import { formatCanvasTargetFrameLines, formatContextLocationLines, formatDerivedTokenLines, formatDesignTargetFrameLines, formatScreenManifestLines } from './shared'
-import { formatDesignModeContextLines } from './design-mode-context'
 
 /**
  * Screen-target turn prompt: generate HTML for a specific screen frame on the
@@ -36,6 +36,7 @@ export function buildScreenTurnPrompt(options: ScreenTurnOptions): string {
       ? `Kun is asking you to ITERATE on an existing screen design: "${options.screenName}".`
       : `Kun is asking you to design a new screen: "${options.screenName}".`,
     `Workspace: ${options.workspaceRoot}`,
+    ...formatProjectDesignSystemLines(options),
     ...formatDesignTargetFrameLines(options.designContext),
     ...(typeof options.screenWidth === 'number' && typeof options.screenHeight === 'number'
       ? [`Selected screen frame: ${Math.round(options.screenWidth)}x${Math.round(options.screenHeight)} canvas pixels.`]
@@ -57,7 +58,6 @@ export function buildScreenTurnPrompt(options: ScreenTurnOptions): string {
           'Read it first, reproduce it, then apply ONLY the changes in the brief below — preserve everything else (structure, content, styling).'
         ]
       : []),
-    ...formatDesignModeContextLines(options.designModeManifest),
     `Reserved artifact file: ${options.artifactRelativePath}`,
     ...(options.designNotesPath ? [`Design notes file: ${options.designNotesPath}`] : []),
     '',
@@ -69,7 +69,7 @@ export function buildScreenTurnPrompt(options: ScreenTurnOptions): string {
     '- Make the HTML responsive to arbitrary selected frame sizes: use fluid layout, min/max constraints, media queries, and avoid fixed viewport wrappers unless the brief explicitly asks for one.',
     '- Treat the selected frame size above as the real webview viewport. Lay out the page to that viewport; content may scroll vertically when needed, but do not shrink the design to compensate for overflowing content.',
     ...DESIGN_RESIZE_RESPONSIVE_LINES,
-    '- Build it INCREMENTALLY to stay inside your output limit: use focused `edit` calls or small `write` replacements and keep every tool call payload under ~4000 characters.',
+    '- Build the complete document efficiently: prefer one coherent `write` when it fits the available tool limits; otherwise use a small bounded number of section-level `edit` calls. Do not fragment the page into dozens of micro-edits.',
     '- Write HTML ONLY through Write/Edit tool calls to the artifact file — never dump HTML into assistant text or into `design_canvas` blocks.',
     ...formatHtmlIterationEditDisciplineLines(options),
     '- Wrap each major section (nav, hero, each card group, footer…) in a top-level element carrying `data-ds-section="<short label>"` — e.g. `<header data-ds-section="导航栏">` — and write sections top-to-bottom. The canvas reads these to show a live "AI is drawing here" cursor as the page builds; they are inert in the final design.',
@@ -117,6 +117,24 @@ export function buildScreenTurnPrompt(options: ScreenTurnOptions): string {
     lines.push('', 'Brief:', text.slice(0, WRITE_PROTOTYPE_MAX_TEXT_CHARS))
   }
   return lines.join('\n')
+}
+
+export function formatProjectDesignSystemLines(options: DesignTurnOptions): string[] {
+  if (options.canvasSurface === 'code') return []
+  if (!options.projectDesignMdSourceHash) return []
+  const system = options.canvasDesignSystem
+  if (!system) return []
+  const tokenNames = Object.keys(system.tokens)
+  const componentNames = Object.keys(system.components)
+  if (tokenNames.length === 0 && componentNames.length === 0) return []
+  return [
+    `Project design system: ${PROJECT_DESIGN_MD_PATH} (read this Google-compatible file before designing; it is the single source of truth).`,
+    `- Current exact source hash: ${options.projectDesignMdSourceHash}. Pass it as \`expectedHash\` to \`design_system\` updates.`,
+    `- Available tokens (${tokenNames.length}): ${tokenNames.slice(0, 20).join(', ') || 'none'}.`,
+    `- Available components (${componentNames.length}): ${componentNames.slice(0, 12).join(', ') || 'none'}.`,
+    '- Reuse its exact token values and semantic component guidance. Patch YAML structurally and preserve Markdown prose. Do not replace it with an HTML/SVG style guide.',
+    ''
+  ]
 }
 
 export function formatFrameContextLines(frame: DesignFrameContext | undefined): string[] {
@@ -310,18 +328,17 @@ export function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
       ? 'Kun is asking you to operate the Code sidebar whiteboard with the dedicated canvas tools.'
       : 'Kun is asking you to operate the design canvas with the dedicated design tools.',
     `Workspace: ${options.workspaceRoot}`,
+    ...formatProjectDesignSystemLines(options),
     ...formatCanvasTargetFrameLines(options.designContext, options.canvasSurface ?? 'design'),
     '',
-    ...formatDesignModeContextLines(codeCanvasMode ? undefined : options.designModeManifest),
     ...errorLines,
     ...formatLintFindingsLines(options.canvasFeedbackKey),
     ...editHintLines,
     ...selectionLines,
     'How to respond:',
-    '- Reply with a short plain-text plan (1-3 sentences) describing what you will do.',
     codeCanvasMode
-      ? '- Then call the real canvas tools one or more times. Choose the dedicated tool that matches the lane below; use legacy `design_canvas` only for backwards-compatible simple calls.'
-      : '- Then call the real design tools one or more times. Choose the dedicated tool that matches the lane below; use legacy `design_canvas` only for backwards-compatible simple calls.',
+      ? '- Call the real canvas tool that directly produces the requested outcome. Use legacy `design_canvas` only for backwards-compatible simple calls.'
+      : '- Infer the requested Design outcome, then call the real design tool that directly produces it. Use legacy `design_canvas` only for backwards-compatible simple calls.',
     '- Do not emit markdown/fenced JSON blocks and do not ask the user to manually create a canvas first.',
     '- Before EVERY canvas tool call, inspect the current canvas snapshot below: existing shapes, images, frames, selected bounds, content bounds, occupied frames, and recommended slots are the factual layout. Preserve existing canvas objects unless the user explicitly asks to replace/delete them.',
     '- For new screens, style-kit/design-system boards, generated images, frames, groups, or annotations, choose a non-overlapping placement from `placement.recommendedSlots`, `placement.contentBounds`, `placement.selectedBounds`, or the listed shape x/y/w/h values. Do not place a new large object over an existing image or frame just because the viewport is empty-looking.',
@@ -329,27 +346,37 @@ export function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
       ? '- NEVER paste raw HTML into assistant text and NEVER put HTML/`write`/`content` payloads inside design tools. This Code whiteboard is editable shapes; for UI sketches, compose frames/text/rects/images instead of writing files.'
       : '- NEVER paste raw HTML into assistant text and NEVER put HTML/`write`/`content` payloads inside design tools. Screen HTML is written by the system via Write/Edit tools after a screen frame is created.',
     '- The renderer validates each tool call, applies it atomically (one undo entry per call), and visually highlights the affected shapes for ~1s.',
-    '- RENDER LIVE: each tool call is executed as soon as its tool result returns — not at the end of your reply. So emit MANY focused calls progressively as you build (a frame, then its children, then the next section), instead of one giant batch. Keep them flowing so the user watches the design materialize piece by piece. Never bundle the whole design into a single call — stream it.',
-    '- You can drive several parts of the layout in the same turn: fire successive design tool calls back to back (each lands immediately), so independent sections of the draft fill in one after another without waiting for a round trip.',
+    '- Keep tool use bounded: prefer the fewest calls that complete the requested visible outcome. Batch related screens in one `design_create_screen.screens` call and related shape operations in one focused `design_update_shapes.ops` call. Do not emit one call per shape.',
     '',
-    'FIRST classify the request and commit to ONE lane (do not mix lanes):',
+    'FIRST classify the request and commit to ONE primary lane:',
     '- EDIT AN EXISTING IMAGE — the user wants to change/edit/restyle/redo/recolor/fix/transform a picture that is ALREADY on the canvas, and the snapshot has a SELECTED `image` shape carrying an `imageUrl`. Phrasings like "change X into Y", "把这张图改成…", "改成 X", or "改一下这张图" all land here when the selected picture is the thing being changed. → call `generate_image` with `reference_image_paths` set to that `imageUrl`, then `design_update_shapes` that same shape (full rules under "Editing or restyling an EXISTING image" below). In this lane you MUST NOT use `design_create_screen` / `add-screen` and MUST NOT write or edit any HTML file.',
     '- FILL AN EMPTY SLOT — a selected empty holder / frame / rect (no `imageUrl`) needs a fresh picture. → `generate_image` from text only, then place it (see "Filling a selected panel" below).',
-    '- CREATE A STANDALONE IMAGE ASSET — the user asks for a logo, icon, illustration, poster, photo, brand mark, mascot, or reusable visual material, not a full page/screen. → call `generate_image`, then add/update an `image` shape on the canvas with the saved workspace-relative path. Keep it as a reusable whiteboard asset for later page drafts. Do NOT call `design_create_screen` and do NOT write or edit HTML.',
+    ...(codeCanvasMode ? [] : [
+      '- CREATE AN SVG OR SVG-MOTION ASSET — the user asks for a vector logo/icon/loader/illustration, path animation, animated mark, or reusable animated vector asset. → call `design_svg_create` exactly once with a clear name, self-contained brief, and optional dimensions. The system then opens a dedicated SVG turn with structured element and animation tools. Do NOT draw it with ShapeOps, generate a PNG, or create an HTML page.'
+    ]),
+    '- CREATE A STANDALONE RASTER IMAGE ASSET — the user asks for a photo, textured/painterly illustration, poster, mascot, or other raster visual material, not a full page/screen. → call `generate_image`, then add/update an `image` shape on the canvas with the saved workspace-relative path. Keep it as a reusable whiteboard asset for later page drafts. Do NOT call `design_create_screen` and do NOT write or edit HTML.',
     ...(codeCanvasMode
       ? [
-          '- MAP CODE / ARCHITECTURE / FLOW — the user asks for system architecture, code structure, module relationships, data flow, API flow, state machine, database/schema map, sequence diagram, dependency graph, implementation plan, or debugging notes. → use `design_update_shapes` / `design_arrange` with normal frames, rects, text, arrows, lines, groups, and auto-layout. Do NOT use `design_create_screen` unless they explicitly ask for a UI screen mockup.'
+          '- MAP CODE / ARCHITECTURE / FLOW — the user asks for system architecture, code structure, module relationships, data flow, API flow, state machine, database/schema map, sequence diagram, dependency graph, implementation plan, or debugging notes. → use `design_update_shapes` / `design_arrange` with normal frames, rects, text, arrows, lines, groups, and auto-layout. Do NOT use `design_create_screen` unless they explicitly ask for a UI screen mockup. If they also ask for an image/PNG/SVG/file, finish the editable diagram first and then call `design_export_canvas`.'
         ]
       : []),
     codeCanvasMode
       ? '- SKETCH A SCREEN OR UI FRAME — the user wants a page/screen/UI mockup on the Code whiteboard. → call `design_create_screen` to create a plain editable frame, then add normal child shapes with `design_update_shapes`. No HTML artifact is generated in Code mode. A selected image in this lane is only a visual reference — do NOT overwrite it.'
-      : '- BUILD OR REDESIGN A SCREEN — the user wants a new page / screen / UI mockup ("做个页面", "设计一个…", "基于这张图做个落地页"). → call `design_create_screen`; the system generates its HTML afterwards. A selected image in this lane is only a visual reference — do NOT overwrite it.',
-    '- CREATE OR UPDATE A DESIGN SYSTEM — the user asks for a unified template, theme, style guide, design system, tokens, palette, typography, or "make pages consistent". → call `design_system_template` first, then use `design_validate`.',
+      : '- BUILD A SINGLE SCREEN — the user asks for one page, screen, state, component demo, or focused redesign ("做一个登录页", "设计一个详情页"). → make exactly one `design_create_screen` call with `name` and a self-contained `brief`. Do not add extra pages, directions, logos, or a design-system board unless requested.',
+    ...(codeCanvasMode
+      ? []
+      : [
+          '- BUILD A COMPLETE MULTI-SCREEN EXPERIENCE — the user explicitly asks for a complete product, a set of pages, an end-to-end flow, multiple named screens, or wording such as "整套", "完整", "多页面", or "全套". → make one `design_create_screen` call with a `screens` array containing all necessary named screens and a self-contained brief for each. If pages are not named, choose the smallest coherent set that covers the main product flow.',
+          '- SCOPE AMBIGUITY — if it is genuinely unclear whether the user wants one screen or a complete multi-screen experience and that choice materially changes the work, ask one concise question with `user_input` and wait. Otherwise choose the narrowest reasonable scope and act.'
+        ]),
+    codeCanvasMode
+      ? '- CREATE OR UPDATE A DESIGN SYSTEM — use `design_system` only when the user explicitly asks for reusable whiteboard tokens/components. It updates structured state and never draws a separate style-kit board.'
+      : '- CREATE OR UPDATE A DESIGN SYSTEM — the user asks for a unified template, theme, style guide, design system, tokens, palette, typography, or "make pages consistent". → call `design_system`; it updates root `DESIGN.md`, which the built-in fixed specimen board renders automatically. Then use `design_validate`. Never draw a separate HTML/SVG/style-kit board.',
     '- EDIT THE CANVAS — add, move, restyle, group, annotate, or replace images. → use `design_update_shapes` with the structural ops below.',
     '- ARRANGE THE WHITEBOARD — align, distribute, stack, grid, or responsive reflow existing objects. → use `design_arrange` instead of hand-writing many move ops.',
     codeCanvasMode
       ? 'When a filled `image` is selected and the verb is change/edit-like, choose EDIT AN EXISTING IMAGE over SKETCH A SCREEN OR UI FRAME.'
-      : 'When a filled `image` is selected and the verb is change/edit-like, choose EDIT AN EXISTING IMAGE over BUILD OR REDESIGN A SCREEN.',
+      : 'When a filled `image` is selected and the verb is change/edit-like, choose EDIT AN EXISTING IMAGE over either screen-building lane.',
     '',
     'Dedicated design tool schemas:',
     codeCanvasMode
@@ -357,8 +384,16 @@ export function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
       : '- `design_create_screen`: { "name": "Screen Name", "brief"?, "x"?, "y"?, "width"?, "height"?, "devicePreset"?: "mobile"|"tablet"|"desktop" } OR { "screens": [ ... ] }. Omit width/height/devicePreset unless the user asks for a custom device or breakpoint; omitted x/y are placed in the current viewport, and omitted dimensions follow the current target (Web -> desktop 1280x800, App -> mobile 390x844). The system auto-generates HTML afterwards.',
     '- `design_update_shapes`: { "ops": [ ShapeOp, ... ] }. Edits vector layers/images on the active board.',
     '- `design_arrange`: { "operation": "align"|"distribute"|"stack"|"grid"|"responsive_reflow", ... }. Use for layout mechanics and whiteboard cleanup.',
-    '- `design_system_template`: { "operation": "create"|"update"|"apply"|"validate", "name"?, "seedColor"?, "mode"?: "light"|"dark"|"both", "template"?: "app"|"saas"|"game"|"editor"|"mobile"|"portfolio", "tone"?: "clean"|"playful"|"premium"|"technical"|"editorial", "targetIds"?, "x"?, "y"? }. Creates a reusable style-kit board and writes token bindings, like a real design-system template. Omitted template follows the current target (Web -> saas/web components, App -> mobile/app components). Omit x/y unless the snapshot shows a clear empty slot; if you set x/y, choose coordinates that do not overlap existing snapshot shapes.',
+    ...(codeCanvasMode
+      ? ['- `design_export_canvas`: { "format"?: "png"|"svg", "name"?: "short-file-stem" }. Call only after the editable diagram exists and only when the user explicitly asks for an image/export/file. PNG is the default.']
+      : []),
+    codeCanvasMode
+      ? '- `design_system`: { "operation": "create"|"update"|"apply"|"validate", ... }. Updates thread-scoped structured tokens/components without drawing a board.'
+      : '- `design_system`: { "operation": "create"|"update"|"apply"|"validate", "expectedHash"?, "name"?, "seedColor"?, "mode"?: "light"|"dark"|"both", "template"?: "app"|"saas"|"game"|"editor"|"mobile"|"portfolio", "tone"?: "clean"|"playful"|"premium"|"technical"|"editorial", "targetIds"? }. Updates root DESIGN.md; pass the exact source hash when known. Its fixed board appears automatically.',
     '- `design_validate`: { "targetIds"? }. Runs design-system lint so the next turn sees off-token colors, contrast issues, and tap-target problems; pass targetIds only when the user selected a specific screen/component to validate.',
+    ...(codeCanvasMode ? [] : [
+      '- `design_svg_create`: { "name": "Animated Logo", "brief": "...", "x"?, "y"?, "width"?, "height"? }. Creates one first-class .svg artifact and hands it to the dedicated SVG tools in the next automatic turn.'
+    ]),
     '- Legacy `design_canvas`: { "action": "create_board"|"add_screen"|"update_shapes", ... } remains accepted, but prefer the dedicated tools above.',
     '',
     'ShapeOp vocabulary for `update_shapes.ops` (each op is a JSON object inside the array):',
@@ -382,9 +417,12 @@ export function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
     '',
     'Design-system ops (use these for cohesion + batch — they make "change the brand color" or "12 identical cards" one call instead of N edits):',
     '- { "op": "define-token", "name": "brand/primary", "kind": "color"|"gradient"|"type"|"space"|"radius"|"shadow", "value": <by kind> }  // color: "#3b82d8"; gradient: a full gradient fill; type: { fontSize?, fontWeight?, fontFamily?, lineHeight?, textAlign?, fontColor? }; space/radius: a number; shadow: a shadows array. Redefining an existing token re-flows every shape bound to it.',
+    '- { "op": "delete-token", "name": "brand/primary" }  // removes the project token and safely unbinds it from live shapes without changing their last resolved visual value.',
     '- { "op": "apply-token", "ids": ["<id>",...], "prop": "fill"|"stroke"|"text-color"|"font"|"radius"|"shadow"|"gap"|"padding", "token": "brand/primary" }  // binds the shapes to the token (so a later define-token edit updates them). Prefer this over hardcoding a hex you used elsewhere.',
     '- { "op": "define-component", "name": "ProductCard", "fromId": "<shape-id>", "slots": [{ "path": "<descendant shape name>", "kind": "text"|"image"|"color"|"visible" }] }  // turn a well-made shape/subtree into a reusable component; `slots` name the parts each instance can override (matched by the descendant\'s name).',
-    '- { "op": "instantiate", "name": "ProductCard", "at": { "x": N, "y": N }, "parentId"?, "overrides"?: { "<slot name>": <value> } }  // stamp one instance; overrides feed the slots (text→textContent, image→imageUrl, color→hex fill, visible→bool).',
+    '- { "op": "delete-component", "name": "ProductCard" }  // removes the component definition; existing instances keep their current appearance and are detached.',
+    '- { "op": "set-component-variant", "name": "ProductCard", "key": "size=compact", "selection": { "size": "compact" }, "overrides": { "<stable layer id>": { "width"?: N, "height"?: N, "fills"?: [...], "textContent"?: "..." } } }  // stores variant properties as overrides on the base component tree; identity/hierarchy fields cannot be overridden.',
+    '- { "op": "instantiate", "name": "ProductCard", "variant"?: "size=compact", "at": { "x": N, "y": N }, "parentId"?, "overrides"?: { "<slot name>": <value> } }  // stamp one instance; overrides feed the slots (text→textContent, image→imageUrl, color→hex fill, visible→bool).',
     '- { "op": "instantiate-many", "name": "ProductCard", "data": [ { "<slot>": <value> }, ... ], "layout": { "kind": "grid"|"row"|"column", "cols"?: N, "gap"?: N }, "at"?: { "x": N, "y": N }, "parentId"? }  // BATCH: one instance per data row, auto-placed on a grid. Use this for card walls / lists / repeated rows instead of N add ops.',
     '- { "op": "update-component", "name": "ProductCard", "fromId": "<edited shape-id>" }  // re-snapshot the master from an edited instance/subtree; every other instance re-flows, keeping its own overrides.',
     '- { "op": "detach", "id": "<instance root id>" }  // cut an instance loose from its component so it can diverge freely.',
@@ -408,10 +446,11 @@ export function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
     'Rules:',
     codeCanvasMode
       ? '- Use `design_create_screen` / `add-screen` ONLY when the user actually wants a UI screen/frame sketch on the Code whiteboard. It creates an editable frame placeholder only; there is no follow-up HTML generation in Code mode. Do NOT call write/edit tools to create HTML files for this whiteboard.'
-      : '- Use `design_create_screen` ONLY when the user actually wants a new page / screen (the BUILD OR REDESIGN A SCREEN lane). If a filled `image` is selected and the user asked to change / edit / restyle it, do NOT create a screen / add-screen — edit that image instead. Screen creation only creates the frame placeholder; the system will AUTOMATICALLY generate the HTML content for the screen in a follow-up step. Do NOT call write/edit tools to create HTML files in this turn.',
+      : '- Use `design_create_screen` ONLY when the user actually wants one new screen or a complete multi-screen experience (the two BUILD lanes above). If a filled `image` is selected and the user asked to change / edit / restyle it, do NOT create a screen / add-screen — edit that image instead. Screen creation only creates the frame placeholder; the system will AUTOMATICALLY generate the HTML content for the screen in a follow-up step. Do NOT call write/edit tools to create HTML files in this turn.',
     ...(codeCanvasMode
       ? [
-          '- For code/architecture diagrams, prefer semantic boxes and labeled arrows: services/modules as frames or rects, files/functions as smaller rects, data/events as arrows, notes as text, and related parts grouped with auto-layout. Keep labels short enough to fit.'
+          '- For code/architecture diagrams, prefer semantic boxes and labeled arrows: services/modules as frames or rects, files/functions as smaller rects, data/events as arrows, notes as text, and related parts grouped with auto-layout. Keep labels short enough to fit.',
+          '- `design_export_canvas` exports the actual editable whiteboard rendering. Never substitute `generate_image` for diagram export. Do not export automatically when the user asked only for an editable diagram.'
         ]
       : []),
     '- Coordinates are in CANVAS pixels (not screen pixels); 1 unit ≈ 1px at 100% zoom.',
@@ -424,7 +463,9 @@ export function buildCanvasTurnPrompt(options: DesignTurnOptions): string {
       ? '- If exactly one empty `frame` is selected and the user asks for a new UI frame/screen, use `design_create_screen` WITHOUT x/y/width/height; the renderer will reuse that selected frame instead of creating a loose frame elsewhere.'
       : '- If exactly one empty `frame` is selected and the user asks for a new page/screen, use `design_create_screen` WITHOUT x/y/width/height; the renderer will convert that selected canvas frame into the HTML screen instead of creating a loose screen elsewhere.',
     '- For `design_create_screen`, prefer omitting `x`/`y` so the system chooses the current empty viewport slot. If you must set explicit coordinates, copy a `placement.recommendedSlots[...]` rect or align deliberately with `placement.occupiedFrames`; do not invent far-off, negative, or overlapping coordinates.',
-    '- For `design_system_template`, also prefer omitting `x`/`y`; the renderer will auto-place the style-kit board away from existing content. If you explicitly set x/y, first compare against the snapshot shape bounds and leave at least one visual gap from existing images/frames.',
+    codeCanvasMode
+      ? '- Do not draw a style-kit board unless the user explicitly asks for a visual diagram of the design system.'
+      : '- The project design-system board is a fixed file projection. Do not add, position, move, or recreate it with shape operations.',
     '- Refer to shapes by their `id` from the snapshot below. New shapes you add get auto-named uniquely per parent.',
     '- Prefer composing larger features as a frame containing children (use add for the frame, then add children with `parentId`); position each child within the frame’s absolute bounds.',
     '- Keep batches focused — one batch per logical change so undo granularity stays useful.',

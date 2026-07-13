@@ -21,6 +21,23 @@ function artifact(id: string): DesignArtifact {
   }
 }
 
+function svgArtifact(id: string): DesignArtifact {
+  return {
+    id,
+    kind: 'svg',
+    title: 'Orbit loader',
+    relativePath: `.kun-design/doc/${id}/v2.svg`,
+    designMdPath: `.kun-design/doc/${id}/DESIGN.md`,
+    createdAt: now,
+    updatedAt: now,
+    versions: [
+      { id: `${id}-v1`, relativePath: `.kun-design/doc/${id}/v1.svg`, createdAt: now, summary: 'Base motion' },
+      { id: `${id}-v2`, relativePath: `.kun-design/doc/${id}/v2.svg`, createdAt: now, summary: '' }
+    ],
+    node: { x: 0, y: 0, width: 320, height: 240, sizeMode: 'manual', viewMode: 'preview' }
+  }
+}
+
 function resolvedTarget(patch: Partial<ResolvedDesignTurnTarget> = {}): ResolvedDesignTurnTarget {
   return {
     target: 'html',
@@ -87,6 +104,47 @@ describe('prepareDesignTurnFiles', () => {
     }))
     expect(api.writeWorkspaceFile).toHaveBeenCalledWith(expect.objectContaining({
       content: expect.stringContaining('[html-artifact] Home - v2')
+    }))
+  })
+
+  it('verifies the already-reserved SVG version and writes its design notes before the SVG turn', async () => {
+    const baseSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240"><title>Orbit</title><desc>Loader</desc><g id="artwork" /></svg>'
+    const api = {
+      readWorkspaceFile: vi.fn(async ({ path }: { path: string }) => ({
+        ok: true as const,
+        path,
+        content: baseSvg,
+        size: baseSvg.length,
+        truncated: false
+      })),
+      writeWorkspaceFile: vi.fn(async ({ path }: { path: string }) => ({ ok: true as const, path, savedAt: now }))
+    }
+    const svg = svgArtifact('orbit')
+    const result = await prepareDesignTurnFiles({
+      workspaceRoot: '/workspace',
+      promptText: 'Add a calmer loop',
+      resolvedTarget: resolvedTarget({
+        target: 'svg',
+        artifactRelativePath: '.kun-design/doc/orbit/v2.svg',
+        basePath: '.kun-design/doc/orbit/v1.svg',
+        htmlArtifactId: undefined,
+        svgArtifactId: 'orbit',
+        designNotesPath: '.kun-design/doc/orbit/DESIGN.md'
+      }),
+      artifacts: [svg],
+      api
+    })
+
+    expect(result).toEqual({ ok: true, previewSource: 'base', notesWritten: true })
+    expect(api.readWorkspaceFile).toHaveBeenCalledWith(expect.objectContaining({
+      path: '.kun-design/doc/orbit/v2.svg'
+    }))
+    expect(api.writeWorkspaceFile).not.toHaveBeenCalledWith(expect.objectContaining({
+      path: '.kun-design/doc/orbit/v2.svg'
+    }))
+    expect(api.writeWorkspaceFile).toHaveBeenCalledWith(expect.objectContaining({
+      path: '.kun-design/doc/orbit/DESIGN.md',
+      content: expect.stringContaining('Add a calmer loop')
     }))
   })
 

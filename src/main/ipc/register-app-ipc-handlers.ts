@@ -1,4 +1,12 @@
-import { app, dialog, ipcMain, shell, type BrowserWindow, type WebContents } from 'electron'
+import {
+  app,
+  dialog,
+  ipcMain,
+  shell,
+  type BrowserWindow,
+  type IpcMainInvokeEvent,
+  type WebContents
+} from 'electron'
 import { watch, type FSWatcher } from 'node:fs'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -6,6 +14,7 @@ import { basename, dirname, extname, join, resolve } from 'node:path'
 import { access, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { z } from 'zod'
 import {
+  getKunRuntimeSettings,
   type AppSettingsPatch,
   type AppSettingsV1,
   type ClawRunResult,
@@ -52,6 +61,7 @@ import {
   notificationPayloadSchema,
   openEditorPathPayloadSchema,
   providerProbePayloadSchema,
+  projectDesignMdLintPayloadSchema,
   promptOptimizationPayloadSchema,
   rootPathSchema,
   worktreeCommitSchema,
@@ -63,6 +73,7 @@ import {
   worktreeOptionalRootSchema,
   worktreePathSchema,
   runtimeRequestPayloadSchema,
+  kunProtectedApprovalPayloadSchema,
   scheduleTaskFromTextPayloadSchema,
   shellOpenExternalUrlSchema,
   skillGithubImportPayloadSchema,
@@ -107,11 +118,22 @@ import {
   legacySessionImportPayloadSchema
 } from './app-ipc-schemas'
 import {
+  createApprovalConsentToken,
+  KUN_APPROVAL_CONSENT_HEADER
+} from '../approval-consent'
+import {
+  KunExecutionSettingsConsentService,
+  executionSettingsEqual,
+  kunExecutionSettingsChange,
+  type KunExecutionSettingsConsentAction
+} from '../execution-settings-consent'
+import {
   DEFAULT_KUN_DATA_DIR,
   resolveKunRuntimeSettings,
   resolveModelProviderProxyUrl
 } from '../../shared/app-settings'
 import { detectLegacySessions, importLegacySessions } from '../services/legacy-session-import-service'
+import { lintProjectDesignMd } from '../services/project-design-md-lint'
 import { claudeSubscriptionStatus, runClaudeSetupToken } from '../claude-subscription-auth'
 import { fetchSdkModels } from '../claude-subscription-models'
 import {
@@ -222,8 +244,14 @@ import {
 import { exportMemoryMarkdown } from '../services/memory-export-service'
 import { importGithubSkillsToRoot } from '../services/github-skill-import-service'
 import { readLocalPdfText } from '../services/write-pdf-text-service'
+import { ensurePptMaster } from '../services/ppt-master-service'
 import { saveGuiSkillPackage } from '../services/skill-save-service'
-import { listGuiSkillRoots, listGuiSkills } from '../services/skill-service'
+import {
+  comparableSkillRootPath,
+  listGuiSkillRoots,
+  listGuiSkills,
+  normalizeSkillRootPath
+} from '../services/skill-service'
 
 type GuiUpdaterModule = typeof import('../gui-updater')
 
@@ -235,6 +263,11 @@ type WorkspaceFileWatchRecord = {
   timer: ReturnType<typeof setTimeout> | null
 }
 
+type WorkspaceFileWatchSenderRecord = {
+  sender: WebContents
+  onDestroyed: () => void
+}
+
 type RegisterAppIpcHandlersOptions = {
   store: JsonSettingsStore
   getMainWindow: () => BrowserWindow | null
@@ -243,7 +276,8 @@ type RegisterAppIpcHandlersOptions = {
   runtimeRequest: (
     path: string,
     method?: string,
-    body?: string
+    body?: string,
+    headers?: Record<string, string>
   ) => Promise<RuntimeRequestResult>
   restartRuntime: () => Promise<void>
   fetchUpstreamModels: () => Promise<UpstreamModelsResult>
@@ -271,6 +305,26 @@ function parseIpcPayload<T>(channel: string, schema: z.ZodType<T>, payload: unkn
   if (parsed.success) return parsed.data
   const issue = parsed.error.issues[0]
   throw new Error(`Invalid payload for ${channel}: ${issue?.message ?? 'Bad request.'}`)
+}
+
+function assertTrustedWorkbenchSender(
+  event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>,
+  getMainWindow: () => BrowserWindow | null
+): void {
+  const window = getMainWindow()
+  const senderFrame = event.senderFrame
+  const mainFrame = window?.webContents.mainFrame
+  if (
+    !window ||
+    window.isDestroyed() ||
+    event.sender.id !== window.webContents.id ||
+    !senderFrame ||
+    !mainFrame ||
+    senderFrame.processId !== mainFrame.processId ||
+    senderFrame.routingId !== mainFrame.routingId
+  ) {
+    throw new Error('Approval IPC sender is not the trusted workbench frame.')
+  }
 }
 
 // node:fs/promises 没有内置 pathExists;用 access 实现。
@@ -456,6 +510,79 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     getMainWindow()?.webContents.send('speech:local-whisper:progress', payload)
   })
   const workspaceFileWatchers = new Map<string, WorkspaceFileWatchRecord>()
+  const workspaceFileWatchSenders = new Map<number, WorkspaceFileWatchSenderRecord>()
+  const executionSettingsConsents = new KunExecutionSettingsConsentService()
+
+  const applyProtectedSettingsPatch = async (
+    event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>,
+    partial: AppSettingsPatch,
+    persist: (patch: AppSettingsPatch) => Promise<AppSettingsV1>
+  ): Promise<AppSettingsV1> => {
+    const current = await store.load()
+    const change = kunExecutionSettingsChange(current, partial)
+    if (!change) return persist(partial)
+
+    assertTrustedWorkbenchSender(event, getMainWindow)
+    const parent = getMainWindow()
+    const senderFrame = event.senderFrame
+    if (!parent || parent.isDestroyed() || !senderFrame) {
+      throw new Error('Protected execution-settings window is unavailable.')
+    }
+    const confirmation = await dialog.showMessageBox(parent, {
+      type: 'warning',
+      title: 'Change Kun execution permissions',
+      message: 'Apply this tool approval and sandbox configuration?',
+      detail: [
+        `Current approval policy: ${change.current.approvalPolicy}`,
+        `Current sandbox: ${change.current.sandboxMode}`,
+        `New approval policy: ${change.next.approvalPolicy}`,
+        `New sandbox: ${change.next.sandboxMode}`,
+        '',
+        'This protected native prompt cannot be confirmed by extension Webviews or Direct DOM content scripts.'
+      ].join('\n'),
+      buttons: ['Apply change', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+      normalizeAccessKeys: true
+    })
+    if (confirmation.response !== 0) return current
+
+    // Fail closed if another settings write raced the native decision. The
+    // consent is for one exact transition, not whichever values are current
+    // when the dialog eventually closes.
+    const latest = await store.load()
+    const latestExecution = {
+      approvalPolicy: latest.agents.kun.approvalPolicy,
+      sandboxMode: latest.agents.kun.sandboxMode
+    }
+    if (!executionSettingsEqual(latestExecution, change.current)) {
+      throw new Error('Kun execution settings changed while confirmation was open; retry the change.')
+    }
+
+    const action: KunExecutionSettingsConsentAction = {
+      ...change,
+      senderId: event.sender.id,
+      senderProcessId: senderFrame.processId,
+      senderRoutingId: senderFrame.routingId
+    }
+    const consent = executionSettingsConsents.issue(action)
+    if (!executionSettingsConsents.consume(consent, action)) {
+      throw new Error('Protected execution-settings consent is invalid or expired.')
+    }
+    return persist(partial)
+  }
+
+  const releaseWorkspaceFileWatchSender = (sender: WebContents): void => {
+    const stillUsed = Array.from(workspaceFileWatchers.values()).some(
+      (record) => record.sender.id === sender.id
+    )
+    if (stillUsed) return
+    const record = workspaceFileWatchSenders.get(sender.id)
+    if (!record) return
+    record.sender.removeListener('destroyed', record.onDestroyed)
+    workspaceFileWatchSenders.delete(sender.id)
+  }
 
   const disposeWorkspaceFileWatch = (watchId: string): boolean => {
     const record = workspaceFileWatchers.get(watchId)
@@ -470,6 +597,7 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       })
     }
     workspaceFileWatchers.delete(watchId)
+    releaseWorkspaceFileWatchSender(record.sender)
     return true
   }
 
@@ -479,6 +607,16 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
         disposeWorkspaceFileWatch(watchId)
       }
     }
+  }
+
+  const retainWorkspaceFileWatchSender = (sender: WebContents): void => {
+    if (workspaceFileWatchSenders.has(sender.id)) return
+    const onDestroyed = (): void => {
+      workspaceFileWatchSenders.delete(sender.id)
+      disposeWorkspaceFileWatchesForSender(sender)
+    }
+    workspaceFileWatchSenders.set(sender.id, { sender, onDestroyed })
+    sender.once('destroyed', onDestroyed)
   }
 
   const emitWorkspaceFileChange = async (watchId: string): Promise<void> => {
@@ -572,20 +710,66 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       binaryPath: claudeSubBinary()
     })
   )
-  ipcMain.handle('settings:set', async (_, partial: unknown) =>
-    applySettingsPatch(
-      parseIpcPayload('settings:set', settingsPatchSchema, partial) as AppSettingsPatch
-    )
-  )
-  ipcMain.handle('settings:save-silent', async (_, partial: unknown) =>
-    saveSettingsPatch(
-      parseIpcPayload('settings:save-silent', settingsPatchSchema, partial) as AppSettingsPatch
-    )
-  )
+  ipcMain.handle('settings:set', async (event, partial: unknown) =>
+    applyProtectedSettingsPatch(
+      event,
+      parseIpcPayload('settings:set', settingsPatchSchema, partial) as AppSettingsPatch,
+      applySettingsPatch
+    ))
+  ipcMain.handle('settings:save-silent', async (event, partial: unknown) =>
+    applyProtectedSettingsPatch(
+      event,
+      parseIpcPayload('settings:save-silent', settingsPatchSchema, partial) as AppSettingsPatch,
+      saveSettingsPatch
+    ))
 
   ipcMain.handle('runtime:request', async (_, payload: unknown) => {
     const request = parseIpcPayload('runtime:request', runtimeRequestPayloadSchema, payload)
     return runtimeRequest(request.path, request.method, request.body)
+  })
+
+  ipcMain.handle('approval:decide', async (event, payload: unknown) => {
+    assertTrustedWorkbenchSender(event, getMainWindow)
+    const request = parseIpcPayload(
+      'approval:decide',
+      kunProtectedApprovalPayloadSchema,
+      payload
+    )
+    if (request.source === 'user') {
+      const parent = getMainWindow()
+      if (!parent || parent.isDestroyed()) throw new Error('Protected approval window is unavailable.')
+      const allow = request.decision === 'allow'
+      const confirmation = await dialog.showMessageBox(parent, {
+        type: 'warning',
+        title: allow ? 'Approve tool action' : 'Deny tool action',
+        message: allow
+          ? 'Allow this pending Kun tool action once?'
+          : 'Deny this pending Kun tool action?',
+        detail: `Approval: ${request.approvalId}\n\nThis protected native prompt cannot be controlled by extension Webviews or Direct DOM content scripts.`,
+        buttons: [allow ? 'Allow once' : 'Deny', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+        normalizeAccessKeys: true
+      })
+      if (confirmation.response !== 0) return { confirmed: false as const }
+    }
+
+    const settings = await store.load()
+    const runtimeToken = getKunRuntimeSettings(settings).runtimeToken.trim()
+    const consentToken = createApprovalConsentToken({
+      runtimeToken,
+      approvalId: request.approvalId,
+      decision: request.decision,
+      expiresAt: Date.now() + 30_000
+    })
+    const response = await runtimeRequest(
+      `/v1/approvals/${encodeURIComponent(request.approvalId)}`,
+      'POST',
+      JSON.stringify({ decision: request.decision }),
+      { [KUN_APPROVAL_CONSENT_HEADER]: consentToken }
+    )
+    return { confirmed: true as const, response }
   })
 
   ipcMain.handle('runtime:restart', async () => restartRuntime())
@@ -945,6 +1129,33 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     return importGithubSkillsToRoot(request)
   })
 
+  ipcMain.handle('ppt-master:ensure', async () => {
+    const settings = await store.load()
+    if (isManagedPptMasterSkillRootDisabled(settings)) {
+      return {
+        ok: false as const,
+        message: 'PPT Master uses ~/.kun/skills, which is disabled in Settings → Agents → Skills. Enable that skill directory, then try again.'
+      }
+    }
+    const result = await ensurePptMaster({
+      kunHomeDir: join(homedir(), '.kun'),
+      proxyUrl: resolveModelProviderProxyUrl(settings)
+    })
+    if (!result.ok) return result
+    try {
+      // SkillRuntime discovers both skill entries and local tools only at
+      // construction time. Reload even after a repair-only ensure: a prior
+      // dependency install may have failed after the venv was created.
+      await restartRuntime()
+      return result
+    } catch (error) {
+      return {
+        ok: false as const,
+        message: `PPT Master installed, but Kun could not restart: ${error instanceof Error ? error.message : String(error)}`
+      }
+    }
+  })
+
   ipcMain.handle('skill:list', async (_, payload: unknown) => {
     const request = parseIpcPayload('skill:list', skillListPayloadSchema, payload)
     const settings = await store.load()
@@ -1256,6 +1467,8 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       dataDir: await resolveKunThreadsDataDir(),
       checkpointId: request.checkpointId,
       ...(request.allowPartialRestore ? { allowPartialRestore: true } : {}),
+      ...(request.expectedThreadId ? { expectedThreadId: request.expectedThreadId } : {}),
+      ...(request.expectedWorkspaceRoot ? { expectedWorkspaceRoot: request.expectedWorkspaceRoot } : {}),
       storage: resolveCheckpointStorageOptions(settings.checkpointCleanup),
       // Bridge the main-process runtimeRequest into the shape restoreGitCheckpoint
       // expects ((path, {method, body}) => {ok,status,body}). On a transport-level
@@ -1409,6 +1622,8 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       pageCount: result.pageCount,
       text: result.pages.map((page) => page.text).join('\n\n'),
       hasText: result.hasText,
+      ocrApplied: result.ocrApplied,
+      ocrPageCount: result.ocrPageCount,
       truncated: result.truncated
     }
   })
@@ -1484,7 +1699,14 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
 
     const watchId = randomUUID()
     try {
-      const watcher = watch(watchedPath, { persistent: false }, () => {
+      const watchedDirectory = dirname(watchedPath)
+      const watchedName = basename(watchedPath)
+      // Watch the containing directory rather than the file inode. Workspace
+      // writes are atomic (`rename(temp, target)`), which replaces the inode and
+      // permanently detaches a file-level watcher after its first update on
+      // macOS/Linux. The directory remains stable across every replacement.
+      const watcher = watch(watchedDirectory, { persistent: false }, (_eventType, filename) => {
+        if (filename && basename(filename.toString()) !== watchedName) return
         scheduleWorkspaceFileChange(watchId)
       })
       workspaceFileWatchers.set(watchId, {
@@ -1494,7 +1716,28 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
         workspaceRoot: request.workspaceRoot,
         timer: null
       })
-      event.sender.once('destroyed', () => disposeWorkspaceFileWatchesForSender(event.sender))
+      retainWorkspaceFileWatchSender(event.sender)
+      // Close the read → watch race: a file can be atomically replaced after
+      // the first read but before the directory watch starts. Re-read only
+      // after the watch is live, so callers never bootstrap a stale SVG and a
+      // later write is still delivered by the watcher.
+      if (initial.ok) {
+        const refreshed = await readWorkspaceFile(request)
+        if (!refreshed.ok) {
+          disposeWorkspaceFileWatch(watchId)
+          return refreshed
+        }
+        initialContent = refreshed.content
+        initialSize = refreshed.size
+        initialTruncated = refreshed.truncated
+      } else {
+        const refreshed = await readWorkspaceImage(request)
+        if (!refreshed.ok) {
+          disposeWorkspaceFileWatch(watchId)
+          return refreshed
+        }
+        initialSize = refreshed.size
+      }
       return {
         ok: true as const,
         watchId,
@@ -1532,6 +1775,10 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
       { parentWindow: getMainWindow() }
     )
   )
+  ipcMain.handle('design:lint-project-design-md', async (_, payload: unknown) => {
+    const request = parseIpcPayload('design:lint-project-design-md', projectDesignMdLintPayloadSchema, payload)
+    return lintProjectDesignMd(request.content)
+  })
   ipcMain.handle('write:copy-rich-text', async (_, payload: unknown) =>
     copyWriteDocumentAsRichText(
       parseIpcPayload('write:copy-rich-text', writeRichClipboardPayloadSchema, payload)
@@ -1725,4 +1972,16 @@ export function registerAppIpcHandlers(options: RegisterAppIpcHandlersOptions): 
     if (error) return { ok: false, message: error }
     return { ok: true }
   })
+}
+
+function isManagedPptMasterSkillRootDisabled(settings: AppSettingsV1): boolean {
+  const target = comparableSkillRootPath(join(homedir(), '.kun', 'skills'))
+  const disabledDirectories = [
+    ...settings.claw.skills.disabledDirs,
+    ...settings.schedule.skills.disabledDirs
+  ]
+  return disabledDirectories.some((entry) =>
+    entry.trim().toLowerCase() === 'global-deepseek' ||
+    comparableSkillRootPath(normalizeSkillRootPath(entry)) === target
+  )
 }

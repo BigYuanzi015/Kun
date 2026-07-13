@@ -24,7 +24,7 @@ export function createBackgroundShellTool(options: BackgroundShellToolOptions = 
   return LocalToolHost.defineTool({
     name: 'background_shell',
     description:
-      'Manage shell sessions started with bash background=true. The bash tool assigns an 8-character session_id when starting a background command; use that id here. action="list" lists running sessions by default (set include_finished=true to also show completed/stopped/failed sessions; optional thread_only). action="read" returns a non-blocking output snapshot. action="poll" waits up to yield_seconds for more output or exit. action="write" sends stdin via input. action="stop" terminates a running session.',
+      'Manage shell sessions started with bash background=true in the current thread. The bash tool assigns an 8-character session_id when starting a background command; use that id here. action="list" lists this thread\'s running sessions by default (set include_finished=true to also show completed/stopped/failed sessions). action="read" returns a non-blocking output snapshot. action="poll" waits up to yield_seconds for more output or exit. action="write" sends stdin via input. action="stop" terminates a running session.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -38,6 +38,9 @@ export function createBackgroundShellTool(options: BackgroundShellToolOptions = 
         },
         yield_seconds: { type: 'number' },
         include_finished: { type: 'boolean', default: false },
+        // Kept only to tolerate old model transcripts. Listing is always
+        // scoped to the invoking thread; false must never expose other
+        // threads' commands, working directories, output, or log paths.
         thread_only: { type: 'boolean', default: true },
         input: { type: 'string' }
       },
@@ -45,16 +48,18 @@ export function createBackgroundShellTool(options: BackgroundShellToolOptions = 
       additionalProperties: false
     },
     policy: 'auto',
-    toolKind: 'tool_call',
+    // `write` sends arbitrary stdin to a live shell, which can execute a
+    // command even if the shell was created before a sandbox-policy change.
+    // Keep the whole multipurpose tool in the command-execution class until
+    // read-only observation actions are split into a separate tool.
+    toolKind: 'command_execution',
     execute: async (args, context) =>
       withToolBoundary(async () => {
         const action = typeof args.action === 'string' ? args.action.trim() : ''
         if (action === 'list') {
-          const threadOnly = args.thread_only !== false
-          const threadId = threadOnly ? context.threadId : undefined
           let sessions = options.listBackgroundSessions
-            ? [...options.listBackgroundSessions(threadId)]
-            : await listBashSessionRecords(threadId)
+            ? [...options.listBackgroundSessions(context.threadId)]
+            : await listBashSessionRecords(context.threadId)
           if (args.include_finished !== true) {
             sessions = sessions.filter((session) => session.status === 'running')
           }
@@ -94,7 +99,7 @@ export function createBackgroundShellTool(options: BackgroundShellToolOptions = 
         }
 
         if (action === 'read') {
-          const payload = await readBashSessionPayload(sessionId)
+          const payload = await readBashSessionPayload(sessionId, context.threadId)
           if (!payload) {
             return { output: { error: 'background shell session not found', session_id: sessionId }, isError: true }
           }
@@ -102,8 +107,8 @@ export function createBackgroundShellTool(options: BackgroundShellToolOptions = 
         }
 
         if (action === 'stop') {
-          const stopped = await stopBashSessionById(sessionId)
-          const payload = await readBashSessionPayload(sessionId)
+          const stopped = await stopBashSessionById(sessionId, context.threadId)
+          const payload = await readBashSessionPayload(sessionId, context.threadId)
           if (!payload) {
             return {
               output: { error: 'background shell session not found', session_id: sessionId, stopped },
@@ -120,7 +125,8 @@ export function createBackgroundShellTool(options: BackgroundShellToolOptions = 
           const payload = await writeBashSessionStdin(
             sessionId,
             typeof args.input === 'string' ? args.input : '',
-            normalizeYieldSeconds(args.yield_seconds)
+            normalizeYieldSeconds(args.yield_seconds),
+            context.threadId
           )
           if (!payload) {
             return { output: { error: 'background shell session not found', session_id: sessionId }, isError: true }
@@ -129,7 +135,7 @@ export function createBackgroundShellTool(options: BackgroundShellToolOptions = 
         }
 
         if (action === 'poll') {
-          const payload = await pollBashSession(sessionId, normalizeYieldSeconds(args.yield_seconds))
+          const payload = await pollBashSession(sessionId, normalizeYieldSeconds(args.yield_seconds), context.threadId)
           if (!payload) {
             return { output: { error: 'background shell session not found', session_id: sessionId }, isError: true }
           }

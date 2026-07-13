@@ -114,11 +114,8 @@ export function createChildAgentExecutor(options: ChildAgentExecutorOptions): Ch
     // it can edit/run shell exactly like the parent. The capability registry
     // enforces an explicit list twice (dropped from the model's tool schema
     // and rejected at execute), but `inherit` leaves it undefined so nothing
-    // is forced. The child is not an escalation: it runs under the parent
-    // thread's approvalPolicy/sandboxMode (set on the thread below from
-    // options.approvalPolicy/sandboxMode, which the runtime factory threads
-    // from the parent runtime), so a read-only parent still yields a
-    // read-only child.
+    // is forced. The child is not an escalation: the per-run parent security
+    // snapshot below takes precedence over broader runtime defaults.
     const forcedAllowedToolNames = input.allowedTools
       ? [...input.allowedTools]
       : input.toolPolicy === 'readOnly'
@@ -172,14 +169,16 @@ export function createChildAgentExecutor(options: ChildAgentExecutorOptions): Ch
     })
 
     const model = input.model?.trim() || options.defaultModel
+    const approvalPolicy = input.approvalPolicy ?? options.approvalPolicy ?? 'auto'
+    const sandboxMode = input.sandboxMode ?? options.sandboxMode
     const title = childThreadTitle(input.childId, input.label, input.profile)
     const thread = await threads.create({
       title,
       workspace: input.workspace?.trim() || '~',
       model,
       mode: 'agent',
-      approvalPolicy: options.approvalPolicy ?? 'auto',
-      ...(options.sandboxMode ? { sandboxMode: options.sandboxMode } : {}),
+      approvalPolicy,
+      ...(sandboxMode ? { sandboxMode } : {}),
       // Route the child to the profile's provider. ThreadService threads
       // providerId into every ModelRequest, and the executor's model is the
       // MultiProviderModelClient, so this single field is all routing needs.
@@ -206,6 +205,7 @@ export function createChildAgentExecutor(options: ChildAgentExecutorOptions): Ch
       request: {
         prompt,
         model,
+        ...(input.providerId ? { providerId: input.providerId } : {}),
         mode: 'agent',
         reasoningEffort: normalizeRoleReasoningEffort(input.reasoningEffort),
         ...(input.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
@@ -214,19 +214,26 @@ export function createChildAgentExecutor(options: ChildAgentExecutorOptions): Ch
       }
     })
     const abortChild = (): void => {
+      console.warn(`[kun] foreground subagent parent abort received child=${thread.id} turn=${started.turnId} parentThread=${input.parentThreadId} parentTurn=${input.parentTurnId}`)
       void turns.interruptTurn({
         threadId: thread.id,
         turnId: started.turnId
       }).catch(() => undefined)
     }
-    if (input.signal.aborted) abortChild()
-    else input.signal.addEventListener('abort', abortChild, { once: true })
+    if (input.signal.aborted) {
+      console.warn(`[kun] foreground subagent started with aborted parent signal child=${thread.id} turn=${started.turnId}`)
+      abortChild()
+    } else {
+      console.warn(`[kun] foreground subagent abort bridge armed child=${thread.id} turn=${started.turnId} parentThread=${input.parentThreadId} parentTurn=${input.parentTurnId}`)
+      input.signal.addEventListener('abort', abortChild, { once: true })
+    }
     let status: 'completed' | 'failed' | 'aborted'
     try {
       status = await loop.runTurn(thread.id, started.turnId)
     } finally {
       input.signal.removeEventListener('abort', abortChild)
     }
+    console.warn(`[kun] foreground subagent turn settled child=${thread.id} turn=${started.turnId} status=${status}`)
     // Only a FATAL error fails the child. Recoverable tool errors — a tool
     // rejected by the child's read-only policy, or a tool that crashed — are
     // recorded as `severity: 'warning'` error events but the loop hands the

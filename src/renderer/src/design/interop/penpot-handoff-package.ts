@@ -23,10 +23,13 @@ export type PenpotHandoffComponent = {
 export type PenpotHandoffFrame = {
   id: string
   name: string
-  kind: 'frame' | 'html-frame'
+  kind: 'frame' | 'html-frame' | 'svg-frame'
   bounds?: { x: number; y: number; width: number; height: number }
+  artifactId?: string
+  artifactKind?: 'html' | 'svg'
   htmlArtifactId?: string
   htmlPath?: string
+  svgPath?: string
   designMdPath?: string
   direction?: { id: string; name: string; status: string }
   prototypeLinks?: DesignPrototypeLink[]
@@ -108,17 +111,24 @@ function buildFrames(options: BuildPenpotHandoffPackageOptions): PenpotHandoffFr
     updatedAt: options.updatedAt
   })
   return Object.values(graph.objects)
-    .filter((object) => object.kind === 'frame' || object.kind === 'html-frame')
+    .filter((object) => object.kind === 'frame' || object.kind === 'html-frame' || object.kind === 'svg-frame')
     .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
     .map((object) => {
-      const artifact = object.source?.htmlArtifactId ? artifactsById.get(object.source.htmlArtifactId) : undefined
+      const artifactId = object.source?.artifactId ?? object.source?.htmlArtifactId
+      const artifact = artifactId ? artifactsById.get(artifactId) : undefined
       return {
         id: object.id,
         name: object.name,
-        kind: object.kind === 'html-frame' ? 'html-frame' : 'frame',
+        kind: object.kind === 'html-frame'
+          ? 'html-frame'
+          : object.kind === 'svg-frame'
+            ? 'svg-frame'
+            : 'frame',
         ...(object.bounds ? { bounds: object.bounds } : {}),
+        ...(artifact?.kind === 'svg' && artifactId ? { artifactId, artifactKind: 'svg' as const } : {}),
         ...(object.source?.htmlArtifactId ? { htmlArtifactId: object.source.htmlArtifactId } : {}),
-        ...(artifact?.relativePath ? { htmlPath: artifact.relativePath } : {}),
+        ...(artifact?.kind === 'html' ? { htmlPath: artifact.relativePath } : {}),
+        ...(artifact?.kind === 'svg' ? { svgPath: artifact.relativePath } : {}),
         ...(artifact?.designMdPath ? { designMdPath: artifact.designMdPath } : {}),
         ...(artifact?.direction ? { direction: {
           id: artifact.direction.id,

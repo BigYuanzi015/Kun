@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname } from 'node:path'
 import type { KunCapabilitiesConfig } from '../../contracts/capabilities.js'
 import { detectImage } from '../../attachments/attachment-store.js'
 import type { ToolExecutionUpdate, ToolHostContext } from '../../ports/tool-host.js'
 import type { CapabilityToolProvider } from './capability-registry.js'
 import { ImageGenHttpError, describeNetworkError } from './image-gen-tool-provider.js'
+import { resolveWorkspacePath } from './builtin-tool-utils.js'
 import { LocalToolHost } from './local-tool-host.js'
 
 const GENERATED_SPEECH_DIR = '.deepseekgui-audio'
@@ -137,6 +138,7 @@ export function buildSpeechGenToolProviders(
 
   const tool = LocalToolHost.defineTool({
     name: 'generate_speech',
+    toolKind: 'file_change',
     description: [
       'Generate spoken audio from text using the configured text-to-speech provider.',
       `The generated audio is saved under ${GENERATED_SPEECH_DIR}/ in the workspace and returned as a generated file.`,
@@ -222,6 +224,7 @@ export function buildMusicGenToolProviders(
 
   const tool = LocalToolHost.defineTool({
     name: 'generate_music',
+    toolKind: 'file_change',
     description: [
       'Generate a song or instrumental audio using the configured music provider.',
       `The generated audio is saved under ${GENERATED_MUSIC_DIR}/ in the workspace and returned as a generated file.`,
@@ -312,6 +315,7 @@ export function buildVideoGenToolProviders(
 
   const tool = LocalToolHost.defineTool({
     name: 'generate_video',
+    toolKind: 'file_change',
     description: [
       'Generate a video from a text prompt using the configured video provider.',
       'Optionally pass workspace-relative first_frame_image_path and last_frame_image_path for image-to-video guidance.',
@@ -738,8 +742,11 @@ async function writeGeneratedMediaFile(input: {
   const stamp = (input.nowIso?.() ?? new Date().toISOString()).replace(/\D/g, '').slice(0, 14)
   const fileName = `${input.prefix}-${stamp}-${randomBytes(2).toString('hex')}.${input.extension}`
   const relativePath = `${input.dir}/${fileName}`
-  const absolutePath = join(input.context.workspace, input.dir, fileName)
-  await mkdir(join(input.context.workspace, input.dir), { recursive: true })
+  const target = await resolveWorkspacePath(relativePath, input.context, { enforceWorkspaceBoundary: true })
+  await mkdir(dirname(target.absolutePath), { recursive: true })
+  const absolutePath = (await resolveWorkspacePath(relativePath, input.context, {
+    enforceWorkspaceBoundary: true
+  })).absolutePath
   await writeFile(absolutePath, input.data)
   return {
     relativePath,
@@ -759,9 +766,10 @@ async function collectFrameImage(
 ): Promise<FrameImageResult | FrameImageError> {
   const rawPath = pickString(value)
   if (!rawPath) return {}
-  const resolved = resolve(context.workspace, rawPath)
-  const rel = relative(context.workspace, resolved)
-  if (rel.startsWith('..') || isAbsolute(rel)) {
+  let resolved: string
+  try {
+    resolved = (await resolveWorkspacePath(rawPath, context, { enforceWorkspaceBoundary: true })).absolutePath
+  } catch {
     return { error: toolError('invalid_reference_path', `${fieldName} must be inside the workspace: ${rawPath}`) }
   }
   let data: Buffer

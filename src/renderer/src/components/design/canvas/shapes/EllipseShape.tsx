@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import type { CanvasShape } from '../../../../design/canvas/canvas-types'
-import { ShapePaintDefs, primaryFillPaint } from './shape-paint'
+import { ShapePaintDefs, primaryFillPaint, strokeDasharray } from './shape-paint'
 
 function EllipseShapeInner({ shape }: { shape: CanvasShape }) {
   const cx = shape.width / 2
@@ -24,6 +24,8 @@ function EllipseShapeInner({ shape }: { shape: CanvasShape }) {
           stroke={s.color}
           strokeWidth={s.width}
           strokeOpacity={s.opacity}
+          strokeDasharray={strokeDasharray(s.dash, s.width)}
+          strokeLinecap="round"
         />
       ))}
     </>

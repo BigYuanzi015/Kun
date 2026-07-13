@@ -16,6 +16,7 @@ import {
 } from '../workbench-composer-attachments'
 import { useWorkbenchAttachmentController } from './useWorkbenchAttachmentController'
 import type { RightPanelMode } from '../chat/WorkbenchTopBar'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../../extensions/contribution-ids'
 
 function base64ToFile(dataBase64: string, name: string, mimeType: string): File {
   const binary = atob(dataBase64)
@@ -102,7 +103,7 @@ export function useWorkbenchAttachmentRuntime({
 
   const activeComposerWorkspace = (): string | undefined => {
     const sddDraft = useSddDraftStore.getState().activeDraft
-    if (rightPanelMode === 'sdd-ai' && sddDraft?.workspaceRoot) return sddDraft.workspaceRoot
+    if (rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.sddAi && sddDraft?.workspaceRoot) return sddDraft.workspaceRoot
     const designWorkspace = useDesignWorkspaceStore.getState().workspaceRoot
     if (route === 'design' && designWorkspace.trim()) return designWorkspace
     const writeWorkspace = useWriteWorkspaceStore.getState().workspaceRoot

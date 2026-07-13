@@ -31,6 +31,7 @@ import {
 import type { ComposerFileReference } from '../chat/FloatingComposer'
 import type { ComposerAttachmentScope } from '../workbench-composer-attachments'
 import type { RightPanelMode } from '../chat/WorkbenchTopBar'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../../extensions/contribution-ids'
 import type { CodeCanvasOutboundPromptInput } from '../design/canvas/useCodeCanvasPromptController'
 import {
   COMPOSER_DIRECTORY_CONTEXT_MAX_FILES,
@@ -423,7 +424,7 @@ export function useWorkbenchComposerSubmitController({
         }
       }
 
-      if (activeSddDraft && rightPanelMode === 'sdd-ai') {
+      if (activeSddDraft && rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.sddAi) {
         void sendSddAssistantPrompt(v)
         return
       }
@@ -561,7 +562,7 @@ export function useWorkbenchComposerSubmitController({
         preparedText: prepared.text,
         preparedDisplayText: prepared.displayText,
         emptyPrompt,
-        whiteboardOpen: rightPanelMode === 'canvas',
+        whiteboardOpen: rightPanelMode === BUILTIN_RIGHT_PANEL_IDS.canvas,
         hasSelection: useCanvasSelectionStore.getState().selectedIds.size > 0
       })
       if (codeCanvasRoute) {
@@ -584,7 +585,6 @@ export function useWorkbenchComposerSubmitController({
   }, [
     activeClawChannelId,
     activeClawChannelModel,
-    activeClawChannelProviderId,
     activeSddDraft,
     activeThreadId,
     appendLocalClawTurn,
@@ -597,6 +597,7 @@ export function useWorkbenchComposerSubmitController({
     composerAttachments,
     composerFileReferences,
     composerMode,
+    composerModelGroups,
     composerReasoningEffort,
     getAttachmentScope,
     handleGuiPlanCommand,

@@ -12,7 +12,7 @@ import {
 import { jsonResponse, type JsonResponse } from '../response.js'
 import { readJsonBody } from '../read-json-body.js'
 import { ERRORS } from './runtime-error.js'
-import type { TurnService } from '../../services/turn-service.js'
+import { TurnCapacityError, TurnConflictError, type TurnService } from '../../services/turn-service.js'
 
 export async function startTurn(
   turns: TurnService,
@@ -34,6 +34,10 @@ export async function startTurn(
     onStarted?.(response)
     return jsonResponse(response, 202)
   } catch (error) {
+    if (error instanceof TurnCapacityError) {
+      return ERRORS.rateLimited(error.message, { maxConcurrentTurns: error.maxConcurrentTurns })
+    }
+    if (error instanceof TurnConflictError) return ERRORS.conflict(error.message)
     if (error instanceof Error && /not found/i.test(error.message)) {
       return ERRORS.notFound(error.message)
     }
@@ -53,13 +57,19 @@ export async function steerTurn(
   if (!parsed.success) {
     return ERRORS.validation('invalid steer turn body', parsed.error.issues)
   }
-  await turns.steerTurn({
-    threadId,
-    turnId,
-    text: parsed.data.text,
-    ...(parsed.data.displayText ? { displayText: parsed.data.displayText } : {}),
-    ...(parsed.data.messageSource ? { messageSource: parsed.data.messageSource } : {})
-  })
+  try {
+    await turns.steerTurn({
+      threadId,
+      turnId,
+      text: parsed.data.text,
+      ...(parsed.data.displayText ? { displayText: parsed.data.displayText } : {}),
+      ...(parsed.data.messageSource ? { messageSource: parsed.data.messageSource } : {})
+    })
+  } catch (error) {
+    if (error instanceof TurnConflictError) return ERRORS.conflict(error.message)
+    if (error instanceof Error && /not found/i.test(error.message)) return ERRORS.notFound(error.message)
+    throw error
+  }
   return jsonResponse({ ok: true })
 }
 
@@ -75,7 +85,14 @@ export async function interruptTurn(
   if (!parsed.success) {
     return ERRORS.validation('invalid interrupt turn body', parsed.error.issues)
   }
-  const result = await turns.interruptTurn({ threadId, turnId, discard: parsed.data.discard })
+  let result: { status: InterruptTurnResponse['status'] }
+  try {
+    result = await turns.interruptTurn({ threadId, turnId, discard: parsed.data.discard })
+  } catch (error) {
+    if (error instanceof TurnConflictError) return ERRORS.conflict(error.message)
+    if (error instanceof Error && /not found/i.test(error.message)) return ERRORS.notFound(error.message)
+    throw error
+  }
   const payload: InterruptTurnResponse = {
     threadId,
     turnId,
@@ -128,6 +145,7 @@ export async function rewindThread(
     })
     return jsonResponse(response)
   } catch (error) {
+    if (error instanceof TurnConflictError) return ERRORS.conflict(error.message)
     if (error instanceof Error && /not found/i.test(error.message)) {
       return ERRORS.notFound(error.message)
     }

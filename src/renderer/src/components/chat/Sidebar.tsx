@@ -8,6 +8,7 @@ import {
   LayoutGrid,
   Moon,
   Plus,
+  Puzzle,
   Settings,
   Smartphone,
   Sun,
@@ -42,6 +43,7 @@ type Props = {
   activeView: 'chat' | 'write' | 'claw' | 'schedule' | 'workflow' | 'subagents'
   connectPhoneSidebarOpen: boolean
   pluginsActive: boolean
+  extensionsActive: boolean
   runtimeReady: boolean
   threadSearch: string
   showArchivedThreads: boolean
@@ -58,6 +60,7 @@ type Props = {
   onOpenRequirementDraft: (draft: SddDraft) => void
   onOpenSettings: (section?: SettingsRouteSection) => void
   onOpenPlugins: () => void
+  onOpenExtensions: () => void
   onToggleTheme: () => void
   focusModeEnabled: boolean
   onFocusModeChange: (enabled: boolean) => void
@@ -76,6 +79,7 @@ export function Sidebar({
   activeView,
   connectPhoneSidebarOpen,
   pluginsActive,
+  extensionsActive,
   runtimeReady,
   threadSearch,
   showArchivedThreads,
@@ -92,6 +96,7 @@ export function Sidebar({
   onOpenRequirementDraft,
   onOpenSettings,
   onOpenPlugins,
+  onOpenExtensions,
   onToggleTheme,
   focusModeEnabled,
   onFocusModeChange,
@@ -232,6 +237,12 @@ export function Sidebar({
           label={t('plugins')}
           onClick={onOpenPlugins}
           active={pluginsActive}
+        />
+        <SidebarCommandRow
+          icon={<Puzzle className="h-4 w-4" strokeWidth={1.75} />}
+          label={i18n.language.toLowerCase().startsWith('zh') ? '扩展' : 'Extensions'}
+          onClick={onOpenExtensions}
+          active={extensionsActive}
         />
         <SidebarCommandRow
           icon={<Clock3 className="h-4 w-4" strokeWidth={1.75} />}

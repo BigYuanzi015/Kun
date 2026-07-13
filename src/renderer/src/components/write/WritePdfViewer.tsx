@@ -497,12 +497,12 @@ export function WritePdfViewer({
     })
   }, [])
 
-  const scrollToPage = (page: number): void => {
+  const scrollToPage = useCallback((page: number): void => {
     const clamped = Math.max(1, Math.min(pageCount || 1, Math.round(page)))
     setCurrentPage(clamped)
     setPageInput(String(clamped))
     pageRefs.current.get(clamped)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
-  }
+  }, [pageCount])
 
   const updateCurrentPageFromScroll = useCallback((): void => {
     const scroller = scrollerRef.current
@@ -545,7 +545,7 @@ export function WritePdfViewer({
   useEffect(() => {
     setSearchIndex(0)
     if (searchMatches.length > 0) scrollToPage(searchMatches[0])
-  }, [searchMatches.join(',')])
+  }, [scrollToPage, searchMatches])
 
   const syncSelection = useCallback((): void => {
     const root = rootRef.current

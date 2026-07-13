@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactElement } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactElement } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Check,
@@ -16,6 +16,7 @@ import {
   kunToolPermissionModeFromSettings,
   kunToolPermissionModeSettings
 } from '@shared/app-settings'
+import { runTrustedUserActivation } from '../../extensions/protected-user-activation'
 
 export type ComposerExecutionSettings = {
   approvalPolicy: ApprovalPolicy
@@ -190,7 +191,11 @@ export function FloatingComposerExecutionPicker({
             description={t(option.descriptionKey)}
             Icon={option.Icon}
             iconClass={option.iconClass}
-            onClick={() => update(kunToolPermissionModeSettings(option.value))}
+            onClick={(event) => applyTrustedComposerExecutionChange(
+              event,
+              kunToolPermissionModeSettings(option.value),
+              update
+            )}
           />
         ))}
       </div>
@@ -207,7 +212,10 @@ export function FloatingComposerExecutionPicker({
           ref={approvalButtonRef}
           type="button"
           disabled={disabled || applying}
-          onClick={() => toggleMenu('approval')}
+          onClick={(event) => runTrustedUserActivation(
+            event,
+            () => toggleMenu('approval')
+          )}
           className={`inline-flex min-h-7 items-center gap-1.5 rounded-lg border px-2.5 py-0.5 text-[12.5px] font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-55 ${
             bypass
               ? 'border-orange-300/70 bg-orange-50 text-orange-700 hover:bg-orange-100 dark:border-orange-800/70 dark:bg-orange-950/30 dark:text-orange-200'
@@ -232,6 +240,14 @@ export function FloatingComposerExecutionPicker({
   )
 }
 
+export function applyTrustedComposerExecutionChange(
+  event: { isTrusted: boolean },
+  patch: Partial<ComposerExecutionSettings>,
+  onChange: (patch: Partial<ComposerExecutionSettings>) => void
+): boolean {
+  return runTrustedUserActivation(event, () => onChange(patch))
+}
+
 function ExecutionRow({
   selected,
   label,
@@ -245,7 +261,7 @@ function ExecutionRow({
   description: string
   Icon: typeof Hand
   iconClass: string
-  onClick: () => void
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void
 }): ReactElement {
   return (
     <button

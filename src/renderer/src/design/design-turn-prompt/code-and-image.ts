@@ -1,7 +1,5 @@
 import { WRITE_PROTOTYPE_DEFAULT_PROMPT, WRITE_PROTOTYPE_MAX_TEXT_CHARS } from '@shared/write-prototype'
 import {
-  DESIGN_CRAFT_LINES,
-  DESIGN_DELIVERY_LINES,
   DESIGN_RESIZE_RESPONSIVE_LINES,
   defaultFrameSizeForDesignTarget,
   formatDesignContextLines,
@@ -14,10 +12,9 @@ import type { OpError } from "../canvas/shape-ops"
 import { useDesignSystemStore } from "../canvas/design-system-store"
 import type { DesignSystem, DesignToken } from "../canvas/design-system-types"
 import { takeLastLintFindings } from "../canvas/design-lint"
-import type { DerivedTokens } from "../design-token-extract"
 import type { DesignContextLocation, DesignHtmlElementContext } from "../design-composer-context"
 import { formatDesignHtmlQualityFindings, type DesignHtmlQualityFinding } from "../design-html-quality"
-import { formatDerivedTokenLines, formatDesignTargetAssetLines, formatDesignTargetFrameLines } from './shared'
+import { formatDesignTargetAssetLines } from './shared'
 import { buildCanvasTurnPrompt } from './html-and-canvas'
 
 /**
@@ -52,7 +49,10 @@ export function buildCodeCanvasTurnPrompt(options: {
     '',
     'Code-mode whiteboard override:',
     '- This is the Code sidebar whiteboard, not Design mode. `design_create_screen` / `add-screen` creates plain editable frame shapes here; it does NOT trigger follow-up HTML screen generation.',
-    '- For architecture maps, flows, notes, diagrams, image slots, and UI sketches, prefer `design_update_shapes` with normal frame/rect/text/arrow/image ops.'
+    '- For architecture maps, flows, notes, diagrams, image slots, and UI sketches, prefer `design_update_shapes` with normal frame/rect/text/arrow/image ops.',
+    '- Build architecture diagrams from editable rounded rect/frame nodes (usually 12-16px radius), short text labels, and arrow connectors. Use a restrained palette, consistent 2px strokes, clear hierarchy, and generous spacing; avoid stacking loose text over unlabeled boxes.',
+    '- If the user explicitly asks for an image, PNG, SVG, export, or file copy of the diagram, create/update the editable shapes first and then call `design_export_canvas` (default PNG). This produces a real workspace file and conversation preview; do not call `generate_image` to redraw or rasterize the architecture diagram.',
+    '- If the user asks only for an editable diagram, do not export automatically. Briefly tell them it is open in the whiteboard and can also be exported later from the toolbar.'
   ].join('\n')
 }
 
@@ -85,41 +85,5 @@ export function buildDesignImageNodePrompt(options: DesignImageNodeOptions): str
   if (contextLines.length > 0) lines.push('', ...contextLines)
   const text = options.text?.trim()
   if (text) lines.push('', 'Brief:', text.slice(0, WRITE_PROTOTYPE_MAX_TEXT_CHARS))
-  return lines.join('\n')
-}
-
-export type DesignFromCodeOptions = {
-  /** Workspace-relative (or absolute) path to the existing UI code to reverse-design. */
-  sourceRelativePath: string
-  artifactRelativePath: string
-  workspaceRoot: string
-  designContext?: DesignContext
-  derivedTokens?: DerivedTokens
-}
-
-/**
- * Code → design: produce an HTML design exploration from existing UI code. The
- * agent reads the real component and renders a clean, iterable design of what it
- * produces — the reverse of buildImplementDesignPrompt, closing the round trip.
- */
-export function buildDesignFromCodePrompt(options: DesignFromCodeOptions): string {
-  const lines = [
-    'Kun is asking you to produce a design exploration based on existing code.',
-    `Workspace: ${options.workspaceRoot}`,
-    `Source UI code: ${options.sourceRelativePath}`,
-    `Reserved artifact file: ${options.artifactRelativePath}`,
-    ...formatDesignTargetFrameLines(options.designContext),
-    '',
-    'How to proceed:',
-    `- Read \`${options.sourceRelativePath}\` (and the components/styles it imports) to understand what it renders — layout, components, states, interactions.`,
-    `- Produce ONE complete standalone HTML document at \`${options.artifactRelativePath}\` that faithfully reproduces what that code renders, as a clean design you can iterate on. Inline all CSS/JS; never reference local files.`,
-    '- Build it incrementally: write a small valid skeleton first, then extend with edit calls. Keep every tool call payload under ~4000 characters.',
-    '- Do NOT modify the source code or any other file.',
-    '- Finish with the document ending in `</html>`, then reply with a one-paragraph summary.'
-  ]
-  const contextLines = formatDesignContextLines(options.designContext)
-  if (contextLines.length > 0) lines.push('', ...contextLines)
-  lines.push(...formatDerivedTokenLines(options.derivedTokens))
-  lines.push('', ...DESIGN_DELIVERY_LINES, '', ...DESIGN_CRAFT_LINES)
   return lines.join('\n')
 }

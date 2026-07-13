@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createDefaultShape, createEmptyDocument, createHtmlFrameShape } from '../canvas/canvas-types'
+import { createDefaultShape, createEmptyDocument, createHtmlFrameShape, createSvgFrameShape } from '../canvas/canvas-types'
 import { createRunningAppFrameShape } from '../canvas/running-app-frame'
 import type { DesignSystem } from '../canvas/design-system-types'
 import { buildDesignGraphFromCanvasDocument } from './design-graph-from-canvas'
@@ -29,6 +29,43 @@ function htmlArtifact(id: string): DesignArtifact {
 }
 
 describe('design graph', () => {
+  it('projects first-class SVG frames with a generic artifact source', () => {
+    const doc = createEmptyDocument()
+    const frame = createSvgFrameShape('Orbit loader', 48, 72, 'motion', 320, 240)
+    doc.objects[frame.id] = { ...frame, parentId: doc.rootId }
+    doc.objects[doc.rootId] = { ...doc.objects[doc.rootId], children: [frame.id] }
+    const motion: DesignArtifact = {
+      id: 'motion',
+      kind: 'svg',
+      title: 'Orbit loader',
+      relativePath: '.kun-design/doc/motion/v1.svg',
+      designMdPath: '.kun-design/doc/motion/DESIGN.md',
+      createdAt,
+      updatedAt: createdAt,
+      versions: [{ id: 'motion-v1', relativePath: '.kun-design/doc/motion/v1.svg', createdAt, summary: '' }]
+    }
+
+    const graph = buildDesignGraphFromCanvasDocument(doc, {
+      projectId: 'project_1',
+      artifacts: [motion]
+    })
+
+    expect(graph.objects[frame.id]).toMatchObject({
+      kind: 'svg-frame',
+      name: 'Orbit loader',
+      source: {
+        canvasShapeId: frame.id,
+        artifactId: 'motion',
+        artifactKind: 'svg'
+      },
+      metadata: {
+        artifactPath: '.kun-design/doc/motion/v1.svg',
+        artifactDesignMdPath: '.kun-design/doc/motion/DESIGN.md'
+      }
+    })
+    expect(graph.objects[frame.id]?.source?.htmlArtifactId).toBeUndefined()
+  })
+
   it('projects canvas HTML frames into graph objects and directions', () => {
     const doc = createEmptyDocument()
     const frame = createHtmlFrameShape('Draft', 120, 80, 'checkout', 'desktop')

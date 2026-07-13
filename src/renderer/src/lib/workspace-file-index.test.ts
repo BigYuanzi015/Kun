@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  clearWorkspaceFileIndexCaches,
   loadWorkspaceDirectoryContextFiles,
   loadWorkspaceFileIndex,
   loadWorkspaceMentionPathSuggestions,
+  MAX_WORKSPACE_FILE_INDEX_CACHE_ENTRIES,
+  MAX_WORKSPACE_MENTION_DIRECTORY_CACHE_ENTRIES,
   mentionQueryDirectory,
-  mergeMentionCandidates
+  mergeMentionCandidates,
+  workspaceFileIndexCacheSizes
 } from './workspace-file-index'
 import {
   composerFileReferenceFromPath,
@@ -32,7 +36,9 @@ function installListDirectory(
 }
 
 afterEach(() => {
+  clearWorkspaceFileIndexCaches()
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 describe('composerFileReferenceFromPath', () => {
@@ -150,6 +156,40 @@ describe('loadWorkspaceFileIndex design document references', () => {
       type: 'directory',
       workspaceRoot: root
     }))
+  })
+
+  it('bounds cached indexes across many visited workspaces', async () => {
+    const list = installListDirectory((options) => ({
+      ok: true,
+      root: options.workspaceRoot,
+      entries: []
+    }))
+    for (let index = 0; index < MAX_WORKSPACE_FILE_INDEX_CACHE_ENTRIES + 5; index += 1) {
+      await loadWorkspaceFileIndex(`/cache-workspace-${index}`)
+    }
+
+    expect(workspaceFileIndexCacheSizes().indexes).toBe(MAX_WORKSPACE_FILE_INDEX_CACHE_ENTRIES)
+    const callsBeforeReload = list.mock.calls.length
+    await loadWorkspaceFileIndex('/cache-workspace-0')
+    expect(list.mock.calls.length).toBe(callsBeforeReload + 1)
+  })
+})
+
+describe('workspace mention directory cache', () => {
+  it('bounds path-specific directory results during deep typing', async () => {
+    vi.useFakeTimers()
+    installListDirectory((options) => ({
+      ok: true,
+      root: `${options.workspaceRoot}/${options.path ?? ''}`,
+      entries: []
+    }))
+
+    for (let index = 0; index < MAX_WORKSPACE_MENTION_DIRECTORY_CACHE_ENTRIES + 5; index += 1) {
+      await loadWorkspaceMentionPathSuggestions('/mention-cache', `dir-${index}/file`)
+    }
+
+    expect(workspaceFileIndexCacheSizes().mentionDirectories)
+      .toBe(MAX_WORKSPACE_MENTION_DIRECTORY_CACHE_ENTRIES)
   })
 })
 

@@ -5,6 +5,7 @@ import {
   createEmptyComposerAttachmentsByScope,
   updateComposerAttachmentsByScope
 } from './workbench-composer-attachments'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../extensions/contribution-ids'
 
 function image(id: string): AttachmentReference {
   return { id, kind: 'image', name: `${id}.png`, mimeType: 'image/png' }
@@ -15,7 +16,7 @@ describe('workbench composer attachment scopes', () => {
     expect(composerAttachmentScopeForSurface('chat', null)).toBe('chat')
     expect(composerAttachmentScopeForSurface('write', null)).toBe('write')
     expect(composerAttachmentScopeForSurface('design', null)).toBe('design')
-    expect(composerAttachmentScopeForSurface('chat', 'sdd-ai')).toBe('sdd')
+    expect(composerAttachmentScopeForSurface('chat', BUILTIN_RIGHT_PANEL_IDS.sddAi)).toBe('sdd')
     expect(composerAttachmentScopeForSurface('claw', null)).toBe('inactive')
   })
 

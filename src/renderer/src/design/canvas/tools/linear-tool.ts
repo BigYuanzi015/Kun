@@ -1,7 +1,7 @@
 import { useCanvasSelectionStore } from '../canvas-selection-store'
 import { useCanvasShapeStore } from '../canvas-shape-store'
 import { useCanvasViewportStore } from '../canvas-viewport-store'
-import { createDefaultShape } from '../canvas-types'
+import { createDefaultShape, type CanvasShapePreset } from '../canvas-types'
 import type { Point } from '../canvas-types'
 import type { CanvasPointerEvent, CanvasToolHandler } from './tool-types'
 import { snapCanvasPoint } from './point-snap'
@@ -26,7 +26,7 @@ const DBLCLICK_NEAR_PX = 6
  *     finalises the polyline (the preview tail is dropped). Catmull-Rom in
  *     LinearShape smooths ≥3 points into a curve.
  */
-function createPolylineTool(shapeType: 'arrow' | 'line'): CanvasToolHandler {
+function createPolylineTool(shapeType: 'arrow' | 'line', preset?: CanvasShapePreset): CanvasToolHandler {
   // Committed vertices in absolute canvas coords. In multi-point mode the
   // *previewed* last point is appended only when we sync to the store, not here.
   let raw: Point[] = []
@@ -98,7 +98,7 @@ function createPolylineTool(shapeType: 'arrow' | 'line'): CanvasToolHandler {
     onPointerDown(e: CanvasPointerEvent) {
       if (mode === 'idle') {
         const start = snapCanvasPoint({ x: e.canvasX, y: e.canvasY }, null)
-        const shape = createDefaultShape(shapeType, start.x, start.y)
+        const shape = createDefaultShape(shapeType, start.x, start.y, preset)
         shape.width = 0
         shape.height = 0
         shape.points = [
@@ -215,10 +215,10 @@ function createPolylineTool(shapeType: 'arrow' | 'line'): CanvasToolHandler {
   }
 }
 
-export function createArrowTool(): CanvasToolHandler {
-  return createPolylineTool('arrow')
+export function createArrowTool(preset?: CanvasShapePreset): CanvasToolHandler {
+  return createPolylineTool('arrow', preset)
 }
 
-export function createLineTool(): CanvasToolHandler {
-  return createPolylineTool('line')
+export function createLineTool(preset?: CanvasShapePreset): CanvasToolHandler {
+  return createPolylineTool('line', preset)
 }

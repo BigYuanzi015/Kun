@@ -1,0 +1,195 @@
+import { readFile } from 'node:fs/promises'
+import { describe, expect, it } from 'vitest'
+import { toJSONSchema } from 'zod'
+import {
+  ExtensionManifestSchema,
+  ModelUsageSchema,
+  RESULT_PREVIEW_OPEN_CHANNEL,
+  ResultPreviewOpenPayloadSchema,
+  negotiateApiVersion,
+  parseExtensionManifest,
+  permissionMatches
+} from '../src/index.js'
+
+const manifest = {
+  manifestVersion: 1,
+  apiVersion: '1.0.0',
+  name: 'issues',
+  publisher: 'acme',
+  version: '1.2.3',
+  engines: { kun: '^0.1.0' },
+  main: 'dist/main.js',
+  browser: 'dist/webview/index.html',
+  activationEvents: ['onView:issues', 'onTool:create-issue'],
+  contributes: {
+    'views.rightSidebar': [{ id: 'issues', title: 'Issues', entry: 'dist/webview/index.html' }],
+    tools: [{ id: 'create-issue', description: 'Create an issue', inputSchema: { type: 'object' } }]
+  },
+  permissions: ['ui.views', 'webview', 'tools.register', 'network:api.example.com'],
+  stateSchemaVersion: 1
+}
+
+describe('ExtensionManifestSchema', () => {
+  it('parses a canonical manifest and applies safe defaults', () => {
+    const parsed = parseExtensionManifest(manifest)
+    expect(parsed.publisher).toBe('acme')
+    expect(parsed.contributes['views.rightSidebar'][0].order).toBe(0)
+    expect(parsed.contributes.tools[0].sideEffects).toBe('none')
+  })
+
+  it('requires an entrypoint and rejects unrecognized contribution keys', () => {
+    const { main: _main, browser: _browser, ...withoutEntrypoint } = manifest
+    expect(ExtensionManifestSchema.safeParse(withoutEntrypoint).success).toBe(false)
+    expect(
+      ExtensionManifestSchema.safeParse({
+        ...manifest,
+        contributes: { ...manifest.contributes, arbitraryReactComponent: [] }
+      }).success
+    ).toBe(false)
+  })
+
+  it('requires a Node entrypoint for headless contributions', () => {
+    const { main: _main, ...browserOnlyWithTool } = manifest
+    expect(ExtensionManifestSchema.safeParse(browserOnlyWithTool).success).toBe(false)
+    expect(
+      ExtensionManifestSchema.safeParse({
+        ...browserOnlyWithTool,
+        activationEvents: ['onView:issues'],
+        contributes: {
+          'views.rightSidebar': [
+            { id: 'issues', title: 'Issues', entry: 'dist/webview/index.html' }
+          ]
+        },
+        permissions: ['ui.views', 'webview']
+      }).success
+    ).toBe(true)
+  })
+
+  it('requires permissions implied by entrypoints and contributions', () => {
+    expect(
+      ExtensionManifestSchema.safeParse({
+        ...manifest,
+        permissions: ['ui.views', 'webview', 'network:api.example.com']
+      }).success
+    ).toBe(false)
+  })
+
+  it('rejects Direct DOM matching for the protected Settings surface', () => {
+    expect(ExtensionManifestSchema.safeParse({
+      ...manifest,
+      activationEvents: ['onStartup'],
+      contributes: {
+        hostContentScripts: [{
+          id: 'settings-reader',
+          matches: ['workbench:settings'],
+          scripts: ['dist/settings-reader.js']
+        }]
+      },
+      permissions: ['hostDom']
+    }).success).toBe(false)
+  })
+
+  it('requires exact activation references and rejects dangling or ambiguous contributions', () => {
+    expect(ExtensionManifestSchema.safeParse({
+      ...manifest,
+      activationEvents: ['onView:issues']
+    }).success).toBe(false)
+    expect(ExtensionManifestSchema.safeParse({
+      ...manifest,
+      activationEvents: ['onStartup']
+    }).success).toBe(true)
+    expect(ExtensionManifestSchema.safeParse({
+      ...manifest,
+      activationEvents: [...manifest.activationEvents, 'onCommand:missing']
+    }).success).toBe(false)
+    expect(ExtensionManifestSchema.safeParse({
+      ...manifest,
+      contributes: {
+        ...manifest.contributes,
+        'views.leftSidebar': [{ id: 'issues', title: 'Duplicate', entry: 'dist/webview/index.html' }]
+      }
+    }).success).toBe(false)
+  })
+
+  it('requires model Provider authentication references to resolve inside the Manifest', () => {
+    expect(ExtensionManifestSchema.safeParse({
+      ...manifest,
+      activationEvents: [...manifest.activationEvents, 'onProvider:custom'],
+      contributes: {
+        ...manifest.contributes,
+        modelProviders: [{
+          id: 'custom',
+          displayName: 'Custom',
+          authenticationProviderId: 'missing'
+        }]
+      },
+      permissions: [...manifest.permissions, 'providers.register']
+    }).success).toBe(false)
+  })
+
+  it('keeps scoped permissions exact and supports wildcard host matching', () => {
+    expect(permissionMatches('network:*.example.com', 'network:api.example.com')).toBe(true)
+    expect(permissionMatches('network:*.example.com', 'network:example.net')).toBe(false)
+  })
+
+  it('has a checked-in JSON Schema generated from the canonical source', async () => {
+    const checkedIn = JSON.parse(
+      await readFile(new URL('../schema/kun-extension.schema.json', import.meta.url), 'utf8')
+    )
+    const generated = toJSONSchema(ExtensionManifestSchema, {
+      target: 'draft-2020-12',
+      unrepresentable: 'throw',
+      reused: 'ref'
+    })
+    expect(checkedIn.anyOf ?? checkedIn.oneOf).toEqual(generated.anyOf ?? generated.oneOf)
+  })
+})
+
+describe('ModelUsageSchema', () => {
+  it('requires cost and currency as one attributable pair', () => {
+    expect(ModelUsageSchema.safeParse({ cost: 0.1 }).success).toBe(false)
+    expect(ModelUsageSchema.safeParse({ currency: 'EUR' }).success).toBe(false)
+    expect(ModelUsageSchema.safeParse({ cost: 0.1, currency: 'EUR' }).success).toBe(true)
+  })
+})
+
+describe('API major negotiation fixtures', () => {
+  it('admits current and previous majors and fails closed otherwise', async () => {
+    const fixture = JSON.parse(
+      await readFile(new URL('../fixtures/api-major-negotiation.json', import.meta.url), 'utf8')
+    )
+    for (const testCase of fixture.cases) {
+      const result = negotiateApiVersion({
+        declaredApiVersion: testCase.declaredApiVersion,
+        supportedApiVersions: [fixture.host.current, fixture.host.previous],
+        requiredCapabilities: testCase.requiredCapabilities,
+        capabilitiesByVersion: fixture.host.capabilitiesByVersion
+      })
+      expect(result.compatible, testCase.name).toBe(testCase.compatible)
+      if (result.compatible) expect(result.adapter, testCase.name).toBe(testCase.adapter)
+      else expect(result.code, testCase.name).toBe(testCase.code)
+    }
+  })
+})
+
+describe('result preview context contract', () => {
+  it('accepts bounded workspace-relative metadata and rejects absolute paths', () => {
+    expect(RESULT_PREVIEW_OPEN_CHANNEL).toBe('kun.resultPreview.open')
+    const input = {
+      schemaVersion: 1,
+      threadId: 'thread_1',
+      turnId: 'turn_1',
+      result: {
+        sourceId: 'tool_1:file_1',
+        mimeType: 'application/json',
+        name: 'summary.json',
+        relativePath: 'reports/summary.json'
+      }
+    }
+    expect(ResultPreviewOpenPayloadSchema.parse(input)).toEqual(input)
+    expect(ResultPreviewOpenPayloadSchema.safeParse({
+      ...input,
+      result: { ...input.result, relativePath: '/private/summary.json' }
+    }).success).toBe(false)
+  })
+})

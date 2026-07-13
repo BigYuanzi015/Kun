@@ -42,6 +42,7 @@ let getSelectedChannel: (() => GuiUpdateChannel | Promise<GuiUpdateChannel>) | n
 let getSelectedLocale: (() => 'en' | 'zh' | Promise<'en' | 'zh'>) | null = null
 let beforeInstallUpdate: (() => void | Promise<void>) | null = null
 let beforeInstallUpdatePromise: Promise<void> | null = null
+let setUpdateInstallQuitting: ((active: boolean) => void) | null = null
 let pendingVersionStateWrite: Promise<void> | null = null
 let backgroundCheckTimer: NodeJS.Timeout | null = null
 let backgroundCheckPromise: Promise<void> | null = null
@@ -408,6 +409,10 @@ function runBeforeInstallUpdate(): Promise<void> {
   return beforeInstallUpdatePromise
 }
 
+function markUpdateInstallQuitting(active: boolean): void {
+  setUpdateInstallQuitting?.(active)
+}
+
 function clearBackgroundCheckTimer(): void {
   if (backgroundCheckTimer) {
     clearTimeout(backgroundCheckTimer)
@@ -549,12 +554,14 @@ export function initializeGuiUpdater(
   windowGetter: () => BrowserWindow | null,
   channelGetter?: () => GuiUpdateChannel | Promise<GuiUpdateChannel>,
   beforeInstall?: () => void | Promise<void>,
-  localeGetter?: () => 'en' | 'zh' | Promise<'en' | 'zh'>
+  localeGetter?: () => 'en' | 'zh' | Promise<'en' | 'zh'>,
+  updateInstallQuittingSetter?: (active: boolean) => void
 ): void {
   getMainWindow = windowGetter
   getSelectedChannel = channelGetter ?? null
   beforeInstallUpdate = beforeInstall ?? null
   getSelectedLocale = localeGetter ?? null
+  setUpdateInstallQuitting = updateInstallQuittingSetter ?? null
   if (initialized) return
   initialized = true
 
@@ -613,6 +620,7 @@ export function initializeGuiUpdater(
   })
 
   nativeAutoUpdater?.on?.('before-quit-for-update', () => {
+    markUpdateInstallQuitting(true)
     void runBeforeInstallUpdate().catch((error) => {
       console.warn('[kun-gui updater] failed to stop runtimes before update quit:', error)
     })
@@ -749,6 +757,7 @@ export async function downloadGuiUpdate(channel?: GuiUpdateChannel): Promise<Gui
 }
 
 export async function installGuiUpdate(): Promise<GuiUpdateInstallResult> {
+  let updateInstallQuitMarked = false
   try {
     if (!downloaded) {
       return {
@@ -760,9 +769,12 @@ export async function installGuiUpdate(): Promise<GuiUpdateInstallResult> {
     }
     emitGuiUpdateState({ status: 'installing', info: lastInfo ?? undefined })
     await Promise.all([pendingVersionStateWrite, runBeforeInstallUpdate()])
+    markUpdateInstallQuitting(true)
+    updateInstallQuitMarked = true
     autoUpdater.quitAndInstall(false, true)
     return { ok: true }
   } catch (e) {
+    if (updateInstallQuitMarked) markUpdateInstallQuitting(false)
     const message = e instanceof Error ? e.message : String(e)
     emitGuiUpdateState({ status: 'error', info: lastInfo ?? undefined, message, code: 'install_failed' })
     return {

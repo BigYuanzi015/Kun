@@ -1,9 +1,11 @@
 import { useState, useEffect, type ReactElement } from 'react'
 import {
   CUSTOM_IMAGE_GENERATION_PROVIDER_ID,
+  DEFAULT_IMAGE_GENERATION_RESOLUTION,
   DEFAULT_IMAGE_GENERATION_PROTOCOL,
   IMAGE_GENERATION_QUALITIES,
   IMAGE_GENERATION_PROTOCOLS,
+  IMAGE_GENERATION_RESOLUTIONS,
   resolveKunImageGenerationSettings
 } from '@shared/app-settings'
 import { InlineNoticeView, ModelSelect, SecretInput, SettingsCard, SettingRow, Toggle } from './settings-controls'
@@ -15,6 +17,7 @@ const DEFAULT_IMAGE_GENERATION = {
   baseUrl: '',
   apiKey: '',
   model: '',
+  defaultResolution: DEFAULT_IMAGE_GENERATION_RESOLUTION,
   defaultSize: '',
   quality: 'auto',
   timeoutMs: 180000
@@ -214,6 +217,23 @@ export function ImageGenerationSettingsSection({ ctx }: { ctx: Record<string, an
                 {IMAGE_GENERATION_QUALITIES.map((quality) => (
                   <option key={quality} value={quality}>
                     {t(`imageGenQuality_${quality}`)}
+                  </option>
+                ))}
+              </select>
+            }
+          />
+          <SettingRow
+            title={t('imageGenDefaultResolution')}
+            description={t('imageGenDefaultResolutionDesc')}
+            control={
+              <select
+                className={selectControlClass}
+                value={imageGeneration.defaultResolution}
+                onChange={(e) => updateImageGeneration({ defaultResolution: e.target.value })}
+              >
+                {IMAGE_GENERATION_RESOLUTIONS.map((resolution) => (
+                  <option key={resolution} value={resolution}>
+                    {t(`imageGenDefaultResolution_${resolution}`)}
                   </option>
                 ))}
               </select>

@@ -145,6 +145,7 @@ function createRuntime(initial: AppSettingsV1, runtimeRequest = vi.fn()) {
 describe('ScheduleRuntime', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.useRealTimers()
   })
 
   it('computes nextRunAt for supported schedule kinds', () => {
@@ -597,6 +598,56 @@ describe('ScheduleRuntime', () => {
     await (runtime as unknown as { tick: () => Promise<void> }).tick()
 
     expect(runtimeRequest).not.toHaveBeenCalled()
+  })
+
+  it('cancels an active result monitor and rejects new work after stop', async () => {
+    vi.useFakeTimers()
+    const task = makeTask()
+    let monitorSignal: AbortSignal | undefined
+    let monitorStarted!: () => void
+    const started = new Promise<void>((resolve) => { monitorStarted = resolve })
+    const runtimeRequest = vi.fn(async (
+      _settings: AppSettingsV1,
+      path: string,
+      init: { method?: string; signal?: AbortSignal }
+    ) => {
+      if (path === '/v1/threads') {
+        return { ok: true, status: 201, body: JSON.stringify({ id: 'thr_stop' }) }
+      }
+      if (path === '/v1/threads/thr_stop/turns') {
+        return { ok: true, status: 202, body: JSON.stringify({ turnId: 'turn_stop' }) }
+      }
+      if (path === '/v1/threads/thr_stop' && init.method === 'GET') {
+        monitorSignal = init.signal
+        monitorStarted()
+        return new Promise<{ ok: boolean; status: number; body: string }>((resolve) => {
+          init.signal?.addEventListener('abort', () => {
+            resolve({ ok: false, status: 0, body: 'aborted' })
+          }, { once: true })
+        })
+      }
+      throw new Error(`unexpected path ${path}`)
+    })
+    const { runtime } = createRuntime(settingsWith([task]), runtimeRequest)
+
+    await expect(runtime.runTask(task.id)).resolves.toMatchObject({
+      ok: true,
+      threadId: 'thr_stop',
+      turnId: 'turn_stop'
+    })
+    await vi.advanceTimersByTimeAsync(1_500)
+    await started
+    await runtime.stop()
+
+    expect(monitorSignal?.aborted).toBe(true)
+    await expect(runtime.status()).resolves.toMatchObject({
+      runningTaskIds: [],
+      queuedTaskIds: []
+    })
+    await expect(runtime.runTask(task.id)).resolves.toEqual({
+      ok: false,
+      message: 'Schedule runtime stopped.'
+    })
   })
 
   it('marks interrupted running tasks as errors during next-run recovery', async () => {

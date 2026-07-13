@@ -66,7 +66,10 @@ function framePayload(object: DesignGraphObject, artifact: DesignArtifact | unde
     childIds: object.children,
     bounds: object.bounds,
     source: object.source,
-    htmlPath: artifact?.relativePath,
+    artifactPath: artifact?.relativePath,
+    artifactKind: artifact?.kind,
+    htmlPath: artifact?.kind === 'html' ? artifact.relativePath : undefined,
+    svgPath: artifact?.kind === 'svg' ? artifact.relativePath : undefined,
     designMdPath: artifact?.designMdPath,
     runningApp: object.metadata?.runningApp,
     direction: artifact?.direction,
@@ -88,10 +91,11 @@ function buildFrameResources(
     updatedAt: options.updatedAt
   })
   return Object.values(graph.objects)
-    .filter((object) => object.kind === 'frame' || object.kind === 'html-frame' || object.kind === 'running-app-frame')
+    .filter((object) => object.kind === 'frame' || object.kind === 'html-frame' || object.kind === 'svg-frame' || object.kind === 'running-app-frame')
     .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
     .map((object) => {
-      const artifact = object.source?.htmlArtifactId ? artifactsById.get(object.source.htmlArtifactId) : undefined
+      const artifactId = object.source?.artifactId ?? object.source?.htmlArtifactId
+      const artifact = artifactId ? artifactsById.get(artifactId) : undefined
       return {
         uri: resourceUri(documentId, 'frame', object.id),
         name: object.name,

@@ -82,6 +82,8 @@ const FILE_MENTION_MAX_DIRECTORIES = 200
 const FILE_MENTION_MAX_FILES = 1600
 const FILE_MENTION_MAX_DIRECTORY_SUGGESTIONS = 400
 const FILE_MENTION_CACHE_TTL_MS = 30_000
+export const MAX_WORKSPACE_FILE_INDEX_CACHE_ENTRIES = 16
+export const MAX_WORKSPACE_MENTION_DIRECTORY_CACHE_ENTRIES = 128
 const DESIGN_DOCUMENTS_INDEX_PATH = '.kun-design/documents.json'
 
 export type WorkspaceFileIndex = {
@@ -91,6 +93,29 @@ export type WorkspaceFileIndex = {
 }
 
 const workspaceFileIndexCache = new Map<string, WorkspaceFileIndex | Promise<WorkspaceFileIndex>>()
+
+function trimCache<T>(cache: Map<string, T>, maxEntries: number, protectedKey?: string): void {
+  while (cache.size > maxEntries) {
+    const oldestKey = cache.keys().next().value
+    if (!oldestKey) return
+    if (oldestKey === protectedKey) {
+      const protectedValue = cache.get(oldestKey)
+      cache.delete(oldestKey)
+      if (protectedValue !== undefined) cache.set(oldestKey, protectedValue)
+      continue
+    }
+    cache.delete(oldestKey)
+  }
+}
+
+function pruneWorkspaceFileIndexCache(now = Date.now()): void {
+  for (const [key, value] of workspaceFileIndexCache) {
+    if (!(value instanceof Promise) && now - value.loadedAt >= FILE_MENTION_CACHE_TTL_MS) {
+      workspaceFileIndexCache.delete(key)
+    }
+  }
+  trimCache(workspaceFileIndexCache, MAX_WORKSPACE_FILE_INDEX_CACHE_ENTRIES)
+}
 
 type DesignDocumentIndexJson = {
   id?: unknown
@@ -204,17 +229,23 @@ async function buildWorkspaceFileIndex(root: string): Promise<WorkspaceFileIndex
 
 export async function loadWorkspaceFileIndex(workspaceRoot: string): Promise<WorkspaceFileIndex> {
   const root = workspaceRoot.trim()
+  pruneWorkspaceFileIndexCache()
   const cached = workspaceFileIndexCache.get(root)
   if (cached && !(cached instanceof Promise) && Date.now() - cached.loadedAt < FILE_MENTION_CACHE_TTL_MS) {
+    workspaceFileIndexCache.delete(root)
+    workspaceFileIndexCache.set(root, cached)
     return cached
   }
   if (cached instanceof Promise) return cached
 
   const task = buildWorkspaceFileIndex(root)
   workspaceFileIndexCache.set(root, task)
+  trimCache(workspaceFileIndexCache, MAX_WORKSPACE_FILE_INDEX_CACHE_ENTRIES, root)
   try {
     const result = await task
+    workspaceFileIndexCache.delete(root)
     workspaceFileIndexCache.set(root, result)
+    trimCache(workspaceFileIndexCache, MAX_WORKSPACE_FILE_INDEX_CACHE_ENTRIES, root)
     return result
   } catch (error) {
     workspaceFileIndexCache.delete(root)
@@ -314,7 +345,11 @@ export async function loadWorkspaceMentionPathSuggestions(
 
   const cacheKey = `${root}::${dir}`
   const cached = workspaceMentionDirectoryCache.get(cacheKey)
-  if (cached) return cached
+  if (cached) {
+    workspaceMentionDirectoryCache.delete(cacheKey)
+    workspaceMentionDirectoryCache.set(cacheKey, cached)
+    return cached
+  }
 
   const task = (async () => {
     const result = await window.kunGui.listWorkspaceDirectory({ workspaceRoot: root, path: dir })
@@ -332,15 +367,42 @@ export async function loadWorkspaceMentionPathSuggestions(
   })()
 
   workspaceMentionDirectoryCache.set(cacheKey, task)
+  trimCache(
+    workspaceMentionDirectoryCache,
+    MAX_WORKSPACE_MENTION_DIRECTORY_CACHE_ENTRIES,
+    cacheKey
+  )
   try {
     const references = await task
+    workspaceMentionDirectoryCache.delete(cacheKey)
     workspaceMentionDirectoryCache.set(cacheKey, references)
+    trimCache(
+      workspaceMentionDirectoryCache,
+      MAX_WORKSPACE_MENTION_DIRECTORY_CACHE_ENTRIES,
+      cacheKey
+    )
     // Bound the cache; deep typing can touch many directories.
-    setTimeout(() => workspaceMentionDirectoryCache.delete(cacheKey), FILE_MENTION_CACHE_TTL_MS)
+    setTimeout(() => {
+      if (workspaceMentionDirectoryCache.get(cacheKey) === references) {
+        workspaceMentionDirectoryCache.delete(cacheKey)
+      }
+    }, FILE_MENTION_CACHE_TTL_MS)
     return references
   } catch (error) {
     workspaceMentionDirectoryCache.delete(cacheKey)
     throw error
+  }
+}
+
+export function clearWorkspaceFileIndexCaches(): void {
+  workspaceFileIndexCache.clear()
+  workspaceMentionDirectoryCache.clear()
+}
+
+export function workspaceFileIndexCacheSizes(): { indexes: number; mentionDirectories: number } {
+  return {
+    indexes: workspaceFileIndexCache.size,
+    mentionDirectories: workspaceMentionDirectoryCache.size
   }
 }
 

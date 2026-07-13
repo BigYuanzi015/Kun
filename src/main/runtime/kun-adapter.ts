@@ -86,6 +86,7 @@ export type RuntimeRequestInit = {
   method?: string
   body?: string
   headers?: Record<string, string>
+  signal?: AbortSignal
 }
 
 export async function runtimeRequestViaHost(
@@ -94,7 +95,9 @@ export async function runtimeRequestViaHost(
   init: RuntimeRequestInit,
   ensureRuntime: (settings: AppSettingsV1) => Promise<AppSettingsV1 | void>
 ): Promise<{ ok: boolean; status: number; body: string }> {
+  init.signal?.throwIfAborted()
   const ensuredSettings = await ensureRuntime(settings)
+  init.signal?.throwIfAborted()
   const requestSettings = ensuredSettings ?? settings
   const method = (init.method ?? 'GET').toUpperCase()
   const base = getRuntimeBaseUrlForSettings(requestSettings)
@@ -102,7 +105,9 @@ export async function runtimeRequestViaHost(
   try {
     return await fetchRuntimeRequest(requestSettings, base, pathNorm, method, init)
   } catch (error) {
+    if (init.signal?.aborted) throw error
     const retrySettings = await ensureRuntime(requestSettings)
+    init.signal?.throwIfAborted()
     const nextSettings = retrySettings ?? requestSettings
     const nextBase = getRuntimeBaseUrlForSettings(nextSettings)
     const safeToRetry =
@@ -134,10 +139,15 @@ async function fetchRuntimeRequest(
     method,
     headers: hdrs,
     body: init.body,
-    signal: AbortSignal.timeout(method === 'POST' ? 60_000 : 15_000)
+    signal: requestSignal(init.signal, method === 'POST' ? 60_000 : 15_000)
   })
   const text = await res.text()
   return { ok: res.ok, status: res.status, body: text }
+}
+
+function requestSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs)
+  return signal ? AbortSignal.any([signal, timeout]) : timeout
 }
 
 function isRuntimeConnectionFailure(error: unknown): boolean {

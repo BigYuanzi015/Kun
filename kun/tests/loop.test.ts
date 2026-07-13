@@ -14,6 +14,7 @@ import { COMPACTION_SYSTEM_PROMPT } from '../src/loop/compaction-summary.js'
 import { effectiveHistoryAfterLatestCompaction } from '../src/loop/compaction-history.js'
 import { resolveModelContextProfile } from '../src/loop/model-context-profile.js'
 import { isPlanClarifyingQuestion } from '../src/loop/agent-loop.js'
+import { LoopTelemetry } from '../src/loop/loop-telemetry.js'
 import {
   makeApprovalItem,
   makeAssistantReasoningItem,
@@ -28,6 +29,7 @@ import { createImmutablePrefix, setSystemPrompt } from '../src/cache/immutable-p
 import { InflightTracker } from '../src/loop/inflight-tracker.js'
 import { SteeringQueue } from '../src/loop/steering-queue.js'
 import { SequentialIdGenerator } from '../src/ports/id-generator.js'
+import type { SessionStore } from '../src/ports/session-store.js'
 import { TurnService } from '../src/services/turn-service.js'
 import type { TurnItem } from '../src/contracts/items.js'
 import type { ModelRequest, ModelStreamChunk } from '../src/ports/model-client.js'
@@ -48,7 +50,84 @@ describe('AgentLoop', () => {
     expect(h.inflight.size()).toBe(0)
   })
 
-  it('injects the current shell runtime when bash is available', async () => {
+  it('clears turn-scoped manual skill activation after terminal settlement', async () => {
+    const clearTurnActivation = vi.fn()
+    const skillRuntime = {
+      resolveTurn: async () => ({
+        activeSkillIds: [],
+        activations: [],
+        instructions: [],
+        injectedBytes: 0
+      }),
+      clearTurnActivation
+    }
+    const h = makeHarness(makeSilentModel(), { skillRuntime: skillRuntime as never })
+    await bootstrapThread(h)
+
+    await expect(h.loop.runTurn(h.threadId, h.turnId)).resolves.toBe('completed')
+    expect(clearTurnActivation).toHaveBeenCalledWith(h.threadId, h.turnId)
+  })
+
+  it('runs delegated SDK turns through the shared steering lifecycle', async () => {
+    let h!: ReturnType<typeof makeHarness>
+    let observedSteering = false
+    const sdkRuntime = {
+      handlesProvider: () => true,
+      runTurn: async (threadId: string, turnId: string) => {
+        observedSteering = (await h.sessionStore.loadItems(threadId)).some(
+          (item) => item.turnId === turnId && item.kind === 'user_message' && item.text === 'Also do this'
+        )
+        await h.turns.finishTurn({ threadId, turnId, status: 'completed' })
+        return 'completed' as const
+      }
+    }
+    h = makeHarness(makeSilentModel(), { sdkRuntime: sdkRuntime as never })
+    await bootstrapThread(h)
+    h.steering.enqueue(h.turnId, { text: 'Also do this' })
+
+    await expect(h.loop.runTurn(h.threadId, h.turnId)).resolves.toBe('completed')
+
+    expect(observedSteering).toBe(true)
+    const events = await h.sessionStore.loadEventsSince(h.threadId, 0)
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'pipeline_stage', stage: 'post_start' }))
+  })
+
+  it('uses the durable terminal winner when an SDK turn is interrupted first', async () => {
+    let h!: ReturnType<typeof makeHarness>
+    const sdkRuntime = {
+      handlesProvider: () => true,
+      runTurn: async (threadId: string, turnId: string) => {
+        await h.turns.interruptTurn({ threadId, turnId })
+        // Simulate a stale SDK completion reported after the interrupt won.
+        return 'completed' as const
+      }
+    }
+    h = makeHarness(makeSilentModel(), { sdkRuntime: sdkRuntime as never })
+    await bootstrapThread(h)
+
+    await expect(h.loop.runTurn(h.threadId, h.turnId)).resolves.toBe('aborted')
+    const events = await h.sessionStore.loadEventsSince(h.threadId, 0)
+    expect(events.filter((event) =>
+      event.kind === 'turn_completed' || event.kind === 'turn_failed' || event.kind === 'turn_aborted'
+    )).toEqual([expect.objectContaining({ kind: 'turn_aborted' })])
+  })
+
+  it('bounds cached prompt-pressure hydration markers', () => {
+    const telemetry = new LoopTelemetry({} as unknown as SessionStore) as unknown as {
+      rememberHydratedPressureThread(threadId: string): void
+      hydratedPressureThreads: Set<string>
+    }
+
+    for (let index = 0; index <= 512; index += 1) {
+      telemetry.rememberHydratedPressureThread(`thread_${index}`)
+    }
+
+    expect(telemetry.hydratedPressureThreads).toHaveLength(512)
+    expect(telemetry.hydratedPressureThreads.has('thread_0')).toBe(false)
+    expect(telemetry.hydratedPressureThreads.has('thread_512')).toBe(true)
+  })
+
+  it('injects the current shell runtime under the full-access sandbox', async () => {
     let observedRequest: ModelRequest | null = null
     const h = makeHarness({
       provider: 'shell-context',
@@ -58,7 +137,7 @@ describe('AgentLoop', () => {
         yield { kind: 'completed', stopReason: 'stop' }
       }
     })
-    await bootstrapThread(h)
+    await bootstrapThread(h, { request: { prompt: 'hello', sandboxMode: 'danger-full-access' } })
 
     await h.loop.runTurn(h.threadId, h.turnId)
 
@@ -143,15 +222,19 @@ describe('AgentLoop', () => {
   })
 
   it('includes the failure reason on turn_failed events', async () => {
-    const h = makeHarness({
+    const model = {
       provider: 'throwing',
       model: 'throwing',
+      config: { baseUrl: 'https://user:secret@example.invalid/v1', model: 'throwing' },
       async *stream(): AsyncIterable<ModelStreamChunk> {
         const chunks: ModelStreamChunk[] = []
         for (const chunk of chunks) yield chunk
         throw new Error('model stream exploded')
       }
-    })
+    } satisfies import('../src/ports/model-client.js').ModelClient & {
+      config: { baseUrl: string; model: string }
+    }
+    const h = makeHarness(model)
     await bootstrapThread(h)
 
     const status = await h.loop.runTurn(h.threadId, h.turnId)
@@ -164,6 +247,8 @@ describe('AgentLoop', () => {
       message: expect.stringContaining('model stream exploded')
     })
     expect(failed?.kind === 'turn_failed' ? failed.message : '').toContain('[Kun turn failed]')
+    expect(failed?.kind === 'turn_failed' ? failed.message : '').not.toContain('user:secret')
+    expect(failed?.kind === 'turn_failed' ? failed.message : '').not.toContain('secret')
   })
 
   it('fails the turn when the model stream yields an error chunk', async () => {
@@ -265,6 +350,29 @@ describe('AgentLoop', () => {
         providerBaseUrl: 'https://api.minimaxi.com/anthropic'
       }
     })
+  })
+
+  it('redacts credentials from malformed provider URLs in pipeline diagnostics', async () => {
+    const model = {
+      provider: 'compat',
+      model: 'test-model',
+      config: { baseUrl: 'https://user:secret@%', endpointFormat: 'messages', model: 'test-model' },
+      async *stream(): AsyncIterable<ModelStreamChunk> {
+        yield { kind: 'completed', stopReason: 'stop' }
+      }
+    } satisfies import('../src/ports/model-client.js').ModelClient & {
+      config: { baseUrl: string; endpointFormat: string; model: string }
+    }
+    const h = makeHarness(model)
+    await bootstrapThread(h)
+
+    await h.loop.runTurn(h.threadId, h.turnId)
+
+    const events = await h.sessionStore.loadEventsSince(h.threadId, 0)
+    const preSend = events.find((event) => event.kind === 'pipeline_stage' && event.stage === 'pre_send')
+    const diagnostics = JSON.stringify(preSend)
+    expect(diagnostics).not.toContain('user:secret')
+    expect(diagnostics).not.toContain('secret')
   })
 
   it('aborts the turn when the abort signal fires', async () => {
@@ -1334,7 +1442,98 @@ describe('AgentLoop', () => {
     })
     const events = await h.sessionStore.loadEventsSince(h.threadId, 0)
     expect(events.some((event) => event.kind === 'user_input_requested')).toBe(true)
-    expect(events.some((event) => event.kind === 'user_input_resolved')).toBe(true)
+    expect(events.filter((event) => event.kind === 'user_input_resolved')).toHaveLength(1)
+  })
+
+  it('arms the user-input gate before publishing the request event', async () => {
+    let calls = 0
+    const h = makeHarness({
+      provider: 'immediate-input',
+      model: 'immediate-input',
+      async *stream(): AsyncIterable<ModelStreamChunk> {
+        calls += 1
+        if (calls === 1) {
+          yield {
+            kind: 'tool_call_complete',
+            callId: 'call_input',
+            toolName: 'request_user_input',
+            arguments: { prompt: 'Continue?' }
+          }
+          yield { kind: 'completed', stopReason: 'tool_calls' }
+          return
+        }
+        yield { kind: 'completed', stopReason: 'stop' }
+      }
+    })
+    await bootstrapThread(h)
+    let immediatelyResolved = false
+    const unsubscribe = h.bus.subscribe(h.threadId, (event) => {
+      if (event.kind !== 'user_input_requested') return
+      immediatelyResolved = h.userInputGate.resolve(event.inputId, {
+        status: 'submitted',
+        answers: []
+      })
+    })
+
+    const status = await h.loop.runTurn(h.threadId, h.turnId)
+    unsubscribe()
+
+    expect(status).toBe('completed')
+    expect(immediatelyResolved).toBe(true)
+  })
+
+  it('arms the approval gate before publishing the request event', async () => {
+    const executed: string[] = []
+    const tool = LocalToolHost.defineTool({
+      name: 'requires_approval',
+      description: 'Requires approval',
+      inputSchema: { type: 'object', properties: {} },
+      policy: 'on-request',
+      execute: async () => {
+        executed.push('requires_approval')
+        return { output: { ok: true } }
+      }
+    })
+    let calls = 0
+    const h = makeHarness({
+      provider: 'immediate-approval',
+      model: 'immediate-approval',
+      async *stream(): AsyncIterable<ModelStreamChunk> {
+        calls += 1
+        if (calls === 1) {
+          yield {
+            kind: 'tool_call_complete',
+            callId: 'call_approval',
+            toolName: 'requires_approval',
+            arguments: {}
+          }
+          yield { kind: 'completed', stopReason: 'tool_calls' }
+          return
+        }
+        yield { kind: 'completed', stopReason: 'stop' }
+      }
+    }, { tools: [tool] })
+    await h.threadStore.upsert(createThreadRecord({
+      id: h.threadId,
+      title: 'demo',
+      workspace: '/tmp',
+      model: 'fake',
+      approvalPolicy: 'always'
+    }))
+    const started = await h.turns.startTurn({ threadId: h.threadId, request: { prompt: 'hello' } })
+    h.turnId = started.turnId
+    let immediatelyAllowed = false
+    const unsubscribe = h.bus.subscribe(h.threadId, (event) => {
+      if (event.kind !== 'approval_requested') return
+      immediatelyAllowed = h.approvalGate.decide(event.approvalId, 'allow')
+    })
+
+    const status = await h.loop.runTurn(h.threadId, h.turnId)
+    unsubscribe()
+
+    expect(status).toBe('completed')
+    expect(immediatelyAllowed).toBe(true)
+    expect(executed).toEqual(['requires_approval'])
   })
 
   it('uses the thread approval policy when executing auto tools', async () => {
@@ -2477,6 +2676,201 @@ describe('AgentLoop', () => {
       .toContain('Model summary: preserve alpha.txt')
   })
 
+  it('uses heuristic compaction when an extension run with budget 1 has reserved its main request', async () => {
+    const requests: ModelRequest[] = []
+    const h = makeHarness(
+      {
+        provider: 'budget-one',
+        model: 'budget-one',
+        async *stream(request: ModelRequest): AsyncIterable<ModelStreamChunk> {
+          requests.push(request)
+          yield { kind: 'completed', stopReason: 'stop' }
+        }
+      },
+      {
+        compactor: new ContextCompactor({ softThreshold: 8, hardThreshold: 16 }),
+        contextCompaction: { summaryMode: 'model', summaryTimeoutMs: 5_000 }
+      }
+    )
+    await bootstrapThread(h)
+    const thread = await h.threadStore.get(h.threadId)
+    if (!thread) throw new Error('expected extension budget thread')
+    await h.threadStore.upsert({
+      ...thread,
+      ownerExtensionId: 'acme.budget-one',
+      extensionBudget: {
+        maxTokens: 1_000_000,
+        maxElapsedMs: 60_000,
+        maxConcurrentRuns: 1,
+        maxModelRequests: 1,
+        maxToolInvocations: 10,
+        maxRetainedEvents: 1_000
+      },
+      turns: thread.turns.map((turn) =>
+        turn.id === h.turnId
+          ? { ...turn, extensionBudgetTokenBaseline: 0, extensionModelRequests: 0 }
+          : turn
+      )
+    })
+    for (let index = 0; index < 10; index += 1) {
+      await h.sessionStore.appendItem(h.threadId, makeUserItem({
+        id: `budget_one_history_${index}`,
+        turnId: h.turnId,
+        threadId: h.threadId,
+        text: `private budget one history ${index} ${'x'.repeat(24)}`
+      }))
+    }
+
+    await expect(h.loop.runTurn(h.threadId, h.turnId)).resolves.toBe('completed')
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.systemPrompt).not.toBe(COMPACTION_SYSTEM_PROMPT)
+    expect((await h.threadStore.get(h.threadId))?.turns[0]?.extensionModelRequests).toBe(1)
+    const items = await h.sessionStore.loadItems(h.threadId)
+    expect(items).toContainEqual(expect.objectContaining({
+      kind: 'compaction',
+      summary: expect.stringContaining('Conversation and work summary:')
+    }))
+    const events = await h.sessionStore.loadEventsSince(h.threadId, 0)
+    expect(events).toContainEqual(expect.objectContaining({
+      kind: 'error',
+      code: 'compaction_summary_fallback',
+      message: expect.stringContaining('model-request budget exhausted')
+    }))
+  })
+
+  it('atomically charges summary and main requests to an extension run with budget 2', async () => {
+    const requests: ModelRequest[] = []
+    const h = makeHarness(
+      {
+        provider: 'budget-two',
+        model: 'budget-two',
+        async *stream(request: ModelRequest): AsyncIterable<ModelStreamChunk> {
+          requests.push(request)
+          if (request.systemPrompt === COMPACTION_SYSTEM_PROMPT) {
+            yield { kind: 'assistant_text_delta', text: 'budget two model summary' }
+          }
+          yield { kind: 'completed', stopReason: 'stop' }
+        }
+      },
+      {
+        compactor: new ContextCompactor({ softThreshold: 8, hardThreshold: 16 }),
+        contextCompaction: { summaryMode: 'model', summaryTimeoutMs: 5_000 }
+      }
+    )
+    await bootstrapThread(h)
+    const thread = await h.threadStore.get(h.threadId)
+    if (!thread) throw new Error('expected extension budget thread')
+    await h.threadStore.upsert({
+      ...thread,
+      ownerExtensionId: 'acme.budget-two',
+      extensionBudget: {
+        maxTokens: 1_000_000,
+        maxElapsedMs: 60_000,
+        maxConcurrentRuns: 1,
+        maxModelRequests: 2,
+        maxToolInvocations: 10,
+        maxRetainedEvents: 1_000
+      },
+      turns: thread.turns.map((turn) =>
+        turn.id === h.turnId
+          ? { ...turn, extensionBudgetTokenBaseline: 0, extensionModelRequests: 0 }
+          : turn
+      )
+    })
+    for (let index = 0; index < 10; index += 1) {
+      await h.sessionStore.appendItem(h.threadId, makeUserItem({
+        id: `budget_two_history_${index}`,
+        turnId: h.turnId,
+        threadId: h.threadId,
+        text: `private budget two history ${index} ${'x'.repeat(24)}`
+      }))
+    }
+
+    await expect(h.loop.runTurn(h.threadId, h.turnId)).resolves.toBe('completed')
+
+    expect(requests).toHaveLength(2)
+    expect(requests[0]?.systemPrompt).toBe(COMPACTION_SYSTEM_PROMPT)
+    expect(requests[1]?.systemPrompt).not.toBe(COMPACTION_SYSTEM_PROMPT)
+    expect((await h.threadStore.get(h.threadId))?.turns[0]?.extensionModelRequests).toBe(2)
+    const items = await h.sessionStore.loadItems(h.threadId)
+    expect(items).toContainEqual(expect.objectContaining({
+      kind: 'compaction',
+      summary: expect.stringContaining('budget two model summary')
+    }))
+  })
+
+  it('does not send a reserved main request after compaction exhausts the extension token budget', async () => {
+    const requests: ModelRequest[] = []
+    const h = makeHarness(
+      {
+        provider: 'budget-summary-tokens',
+        model: 'budget-summary-tokens',
+        async *stream(request: ModelRequest): AsyncIterable<ModelStreamChunk> {
+          requests.push(request)
+          if (request.systemPrompt === COMPACTION_SYSTEM_PROMPT) {
+            yield { kind: 'assistant_text_delta', text: 'summary consumed the remaining token budget' }
+            yield {
+              kind: 'usage',
+              usage: {
+                promptTokens: 8,
+                completionTokens: 4,
+                totalTokens: 12,
+                cacheHitRate: null,
+                turns: 1
+              }
+            }
+          }
+          yield { kind: 'completed', stopReason: 'stop' }
+        }
+      },
+      {
+        compactor: new ContextCompactor({ softThreshold: 8, hardThreshold: 16 }),
+        contextCompaction: { summaryMode: 'model', summaryTimeoutMs: 5_000 }
+      }
+    )
+    await bootstrapThread(h)
+    const thread = await h.threadStore.get(h.threadId)
+    if (!thread) throw new Error('expected extension budget thread')
+    await h.threadStore.upsert({
+      ...thread,
+      ownerExtensionId: 'acme.budget-summary-tokens',
+      extensionBudget: {
+        maxTokens: 10,
+        maxElapsedMs: 60_000,
+        maxConcurrentRuns: 1,
+        maxModelRequests: 2,
+        maxToolInvocations: 10,
+        maxRetainedEvents: 1_000
+      },
+      turns: thread.turns.map((turn) =>
+        turn.id === h.turnId
+          ? { ...turn, extensionBudgetTokenBaseline: 0, extensionModelRequests: 0 }
+          : turn
+      )
+    })
+    for (let index = 0; index < 10; index += 1) {
+      await h.sessionStore.appendItem(h.threadId, makeUserItem({
+        id: `budget_summary_tokens_history_${index}`,
+        turnId: h.turnId,
+        threadId: h.threadId,
+        text: `token budget history ${index} ${'x'.repeat(24)}`
+      }))
+    }
+
+    await expect(h.loop.runTurn(h.threadId, h.turnId)).resolves.toBe('completed')
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.systemPrompt).toBe(COMPACTION_SYSTEM_PROMPT)
+    expect((await h.threadStore.get(h.threadId))?.turns[0]?.extensionModelRequests).toBe(2)
+    const items = await h.sessionStore.loadItems(h.threadId)
+    expect(items).toContainEqual(expect.objectContaining({
+      kind: 'error',
+      code: 'extension_budget_exhausted',
+      message: expect.stringContaining('token budget exhausted')
+    }))
+  })
+
   it('records a visible fallback event when configured model compaction summaries fail', async () => {
     const requests: ModelRequest[] = []
     const h = makeHarness(
@@ -2855,7 +3249,7 @@ describe('AgentLoop', () => {
     expect(replay.some((event) => event.kind === 'usage')).toBe(true)
   })
 
-  it('persists assistant text deltas for SSE replay before the final item', async () => {
+  it('persists coalesced assistant text deltas for SSE replay before the final item', async () => {
     const h = makeHarness(
       makeFakeModel([
         { kind: 'assistant_text_delta', text: 'he' },
@@ -2867,7 +3261,12 @@ describe('AgentLoop', () => {
     await h.loop.runTurn(h.threadId, h.turnId)
     const replay = await h.sessionStore.loadEventsSince(h.threadId, 0)
     const deltas = replay.filter((event) => event.kind === 'assistant_text_delta')
-    expect(deltas).toHaveLength(2)
+    expect(deltas).toHaveLength(1)
+    expect(deltas[0]).toMatchObject({ item: { text: 'hello', status: 'running' } })
+    const finalItemEvent = replay.find((event) =>
+      event.kind === 'item_created' && event.item.kind === 'assistant_text'
+    )
+    expect(finalItemEvent?.seq).toBeGreaterThan(deltas[0]!.seq)
     const items = await h.sessionStore.loadItems(h.threadId)
     expect(items.some((item) => item.kind === 'assistant_text' && item.text === 'hello')).toBe(true)
   })

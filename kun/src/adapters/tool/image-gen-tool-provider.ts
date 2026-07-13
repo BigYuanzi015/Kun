@@ -1,10 +1,15 @@
 import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve } from 'node:path'
-import type { KunCapabilitiesConfig } from '../../contracts/capabilities.js'
+import { dirname } from 'node:path'
+import type {
+  ImageGenerationResolution,
+  KunCapabilitiesConfig
+} from '../../contracts/capabilities.js'
 import type { AttachmentStore } from '../../attachments/attachment-store.js'
 import { detectImage } from '../../attachments/attachment-store.js'
+import type { ToolHostContext } from '../../ports/tool-host.js'
 import type { CapabilityToolProvider } from './capability-registry.js'
+import { resolveWorkspacePath } from './builtin-tool-utils.js'
 import { LocalToolHost } from './local-tool-host.js'
 
 const GENERATED_IMAGE_DIR = '.deepseekgui-images'
@@ -12,6 +17,7 @@ const MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024
 const REFERENCE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const ASPECT_RATIOS = new Set(['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9'])
 const SIZE_TIERS: Record<string, number> = { '1K': 1024, '2K': 2048 }
+const COMPATIBLE_SIZE_FALLBACK = SIZE_TIERS['1K']
 const SIZE_STEP = 64
 const MIN_EDGE = 256
 const CODEX_IMAGE_RESPONSES_MODEL = 'gpt-5.5'
@@ -121,23 +127,54 @@ export type ImageGenToolProviderBuildResult = {
 
 /**
  * Map UI-friendly aspect ratio + size tier to an OpenAI-compatible "WxH"
- * size string. Long edge anchors to the tier (1K→1024, 2K→2048), short edge
- * follows the ratio snapped to multiples of 64 with a 256px floor. Both args
- * absent → fall back to the configured default (may be undefined or 'auto').
+ * size string. Long edge anchors to the explicit tier first, then a custom
+ * default size, then the configured default resolution. Short edge follows the
+ * ratio snapped to multiples of 64 with a 256px floor. `auto` is passed through
+ * when no ratio is requested; a ratio needs concrete dimensions, so an `auto`
+ * resolution uses a compatible 1K fallback.
  */
 export function mapImageSize(
   aspectRatio: string | undefined,
   imageSize: string | undefined,
-  defaultSize: string | undefined
+  defaultSize: string | undefined,
+  defaultResolution: ImageGenerationResolution = '1K'
 ): string | undefined {
-  if (!aspectRatio && !imageSize) return defaultSize
-  const tier = SIZE_TIERS[imageSize ?? ''] ?? SIZE_TIERS['1K']
+  if (imageSize) {
+    return sizeForLongEdge(aspectRatio, SIZE_TIERS[imageSize] ?? COMPATIBLE_SIZE_FALLBACK)
+  }
+
+  if (defaultSize) {
+    if (!aspectRatio) return defaultSize
+    const longEdge = parseSizeLongEdge(defaultSize)
+    if (longEdge) return sizeForLongEdge(aspectRatio, longEdge)
+  }
+
+  if (!aspectRatio && defaultResolution === 'auto') return 'auto'
+  return sizeForLongEdge(
+    aspectRatio,
+    SIZE_TIERS[defaultResolution] ?? COMPATIBLE_SIZE_FALLBACK
+  )
+}
+
+function sizeForLongEdge(aspectRatio: string | undefined, longEdge: number): string {
   const parsed = parseRatio(aspectRatio)
-  if (!parsed) return `${tier}x${tier}`
+  if (!parsed) return `${longEdge}x${longEdge}`
   const { w, h } = parsed
-  if (w === h) return `${tier}x${tier}`
-  const short = Math.max(MIN_EDGE, Math.round((tier * Math.min(w, h)) / Math.max(w, h) / SIZE_STEP) * SIZE_STEP)
-  return w > h ? `${tier}x${short}` : `${short}x${tier}`
+  if (w === h) return `${longEdge}x${longEdge}`
+  const short = Math.max(
+    MIN_EDGE,
+    Math.round((longEdge * Math.min(w, h)) / Math.max(w, h) / SIZE_STEP) * SIZE_STEP
+  )
+  return w > h ? `${longEdge}x${short}` : `${short}x${longEdge}`
+}
+
+function parseSizeLongEdge(size: string): number | undefined {
+  const match = /^(\d+)x(\d+)$/.exec(size.trim())
+  if (!match) return undefined
+  const width = Number(match[1])
+  const height = Number(match[2])
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return undefined
+  return Math.max(width, height)
 }
 
 function parseRatio(aspectRatio: string | undefined): { w: number; h: number } | null {
@@ -194,6 +231,7 @@ export function buildImageGenToolProviders(
 
   const tool = LocalToolHost.defineTool({
     name: 'generate_image',
+    toolKind: 'file_change',
     description: [
       'Generate an image from a text prompt using the configured image provider.',
       supportsEdit
@@ -201,14 +239,23 @@ export function buildImageGenToolProviders(
         : '',
       `The generated image is saved under ${GENERATED_IMAGE_DIR}/ in the workspace and returned as an inline attachment preview.`,
       'Generates exactly one image per call; call again for variations.',
+      'Image quality is applied automatically from Settings and is independent of resolution.',
       'If you can see images, the generated result is shown back to you — inspect it and call again to refine if it does not match what was asked.'
     ].filter(Boolean).join(' '),
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Detailed description of the image to generate' },
-        aspect_ratio: { type: 'string', enum: [...ASPECT_RATIOS] },
-        image_size: { type: 'string', enum: Object.keys(SIZE_TIERS), description: 'Resolution tier, defaults to 1K' },
+        aspect_ratio: {
+          type: 'string',
+          enum: [...ASPECT_RATIOS],
+          description: 'Optional output aspect ratio. It changes proportions while preserving the selected or default resolution.'
+        },
+        image_size: {
+          type: 'string',
+          enum: Object.keys(SIZE_TIERS),
+          description: 'Optional resolution override. Set it only when the user explicitly requests 1K or 2K; otherwise omit it so the Settings default resolution is used. Resolution is independent of image quality.'
+        },
         ...(supportsEdit
           ? {
               reference_image_paths: {
@@ -231,11 +278,11 @@ export function buildImageGenToolProviders(
 
       const aspectRatio = pickString(args.aspect_ratio)
       const imageSize = pickString(args.image_size)
-      const size = mapImageSize(aspectRatio, imageSize, config.defaultSize)
+      const size = mapImageSize(aspectRatio, imageSize, config.defaultSize, config.defaultResolution)
 
       const references = await collectReferenceImages(
         args.reference_image_paths,
-        context.workspace,
+        context,
         config.maxReferenceImages
       )
       if ('error' in references) return references.error
@@ -285,9 +332,20 @@ export function buildImageGenToolProviders(
       // Forward slashes regardless of platform: the path is echoed back to the
       // model and rendered in chat, where POSIX-style relative paths are expected.
       const relativePath = `${GENERATED_IMAGE_DIR}/${fileName}`
-      const absolutePath = join(context.workspace, GENERATED_IMAGE_DIR, fileName)
-      await mkdir(join(context.workspace, GENERATED_IMAGE_DIR), { recursive: true })
-      await writeFile(absolutePath, image.data)
+      let absolutePath: string
+      try {
+        const target = await resolveWorkspacePath(relativePath, context, { enforceWorkspaceBoundary: true })
+        await mkdir(dirname(target.absolutePath), { recursive: true })
+        // Re-check after directory creation: an existing generated-dir symlink
+        // is the common escape path, and a racing replacement must not turn an
+        // otherwise lexical in-workspace path into an outside write.
+        absolutePath = (await resolveWorkspacePath(relativePath, context, {
+          enforceWorkspaceBoundary: true
+        })).absolutePath
+        await writeFile(absolutePath, image.data)
+      } catch (error) {
+        return toolError('workspace_path_escape', errorMessage(error), telemetry(startedAt, client.id))
+      }
 
       const warnings: string[] = []
       const attachments: { id: string; name: string; mimeType: string; width?: number; height?: number }[] = []
@@ -348,7 +406,7 @@ type ReferenceError = { error: { output: unknown; isError: true } }
 
 async function collectReferenceImages(
   value: unknown,
-  workspace: string,
+  context: ToolHostContext,
   maxCount: number
 ): Promise<ReferenceImages | ReferenceError> {
   if (value === undefined || value === null) return { images: [] }
@@ -361,9 +419,10 @@ async function collectReferenceImages(
   }
   const images: ReferenceImages['images'] = []
   for (const rawPath of paths) {
-    const resolved = resolve(workspace, rawPath)
-    const rel = relative(workspace, resolved)
-    if (rel.startsWith('..') || isAbsolute(rel)) {
+    let resolved: string
+    try {
+      resolved = (await resolveWorkspacePath(rawPath, context, { enforceWorkspaceBoundary: true })).absolutePath
+    } catch {
       return { error: toolError('invalid_reference_path', `reference image must be inside the workspace: ${rawPath}`) }
     }
     let data: Buffer

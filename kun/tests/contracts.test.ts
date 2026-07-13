@@ -114,6 +114,17 @@ describe('contracts', () => {
     expect(result.success).toBe(false)
   })
 
+  it('bounds and deduplicates start-turn attachment ids', () => {
+    expect(StartTurnRequest.safeParse({
+      prompt: 'too many attachments',
+      attachmentIds: Array.from({ length: 9 }, (_value, index) => `att_${index}`)
+    }).success).toBe(false)
+    expect(StartTurnRequest.safeParse({
+      prompt: 'duplicate attachment',
+      attachmentIds: ['att_same', 'att_same']
+    }).success).toBe(false)
+  })
+
   it('accepts per-turn reasoning effort on start turn payloads', () => {
     const parsed = StartTurnRequest.parse({
       prompt: 'Compare the approaches',
@@ -185,6 +196,31 @@ describe('contracts', () => {
       }
     })
     expect(result.success).toBe(false)
+  })
+
+  it('accepts only reserved versioned SVG artifact paths on Design turns', () => {
+    const parsed = StartTurnRequest.parse({
+      prompt: 'Animate the logo',
+      guiDesignMode: true,
+      guiDesignArtifact: {
+        kind: 'svg',
+        artifactId: 'motion',
+        relativePath: '.kun-design/doc/motion/v2.svg'
+      }
+    })
+    expect(parsed.guiDesignArtifact).toEqual({
+      kind: 'svg',
+      artifactId: 'motion',
+      relativePath: '.kun-design/doc/motion/v2.svg'
+    })
+    expect(StartTurnRequest.safeParse({
+      prompt: 'Unsafe SVG',
+      guiDesignArtifact: {
+        kind: 'svg',
+        artifactId: 'motion',
+        relativePath: '../motion.svg'
+      }
+    }).success).toBe(false)
   })
 
   it('produces a deterministic empty usage snapshot', () => {
@@ -325,6 +361,24 @@ describe('cli', () => {
     expect(parsed.insecure).toBe(true)
   })
 
+  it('rejects insecure serve on a non-loopback host', () => {
+    expect(() => parseServeOptions([
+      '--data-dir', '/tmp/kun',
+      '--host', '0.0.0.0',
+      '--insecure'
+    ])).toThrow(/loopback host/)
+    expect(() => parseServeOptions([
+      '--data-dir', '/tmp/kun',
+      '--host', '127.evil.example',
+      '--insecure'
+    ])).toThrow(/loopback host/)
+    expect(() => parseServeOptions([
+      '--data-dir', '/tmp/kun',
+      '--host', 'localhost',
+      '--insecure'
+    ])).toThrow(/loopback host/)
+  })
+
   it('parses flags in --key=value form', () => {
     const parsed = parseServeOptions([
       '--host=0.0.0.0',
@@ -336,6 +390,20 @@ describe('cli', () => {
     expect(parsed.port).toBe(19090)
     expect(parsed.dataDir).toBe('/srv/ca')
     expect(parsed.storage.backend).toBe('file')
+  })
+
+  it('enables sanitized observability from env and output flag', () => {
+    const parsed = parseServeOptions([
+      '--data-dir=/srv/ca',
+      '--observability-output=otel/spans.jsonl'
+    ], {
+      KUN_OBSERVABILITY: '1'
+    })
+    expect(parsed.observability).toEqual({
+      enabled: true,
+      outputPath: 'otel/spans.jsonl',
+      includeSensitiveContent: false
+    })
   })
 
   it('loads serve and context compaction settings from an explicit config file', async () => {

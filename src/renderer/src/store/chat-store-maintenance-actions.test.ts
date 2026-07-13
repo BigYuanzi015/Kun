@@ -18,7 +18,10 @@ vi.mock('../agent/registry', () => ({
   getProvider: registryMock.getProvider
 }))
 
-import { createMaintenanceActions } from './chat-store-maintenance-actions'
+import {
+  createMaintenanceActions,
+  type MaintenanceActionDependencies
+} from './chat-store-maintenance-actions'
 
 type GoalPatch = {
   objective?: string
@@ -36,6 +39,7 @@ type Harness = {
     setThreadGoal: ReturnType<typeof vi.fn>
     clearThreadGoal: ReturnType<typeof vi.fn>
     interruptTurn: ReturnType<typeof vi.fn>
+    submitApprovalDecision: ReturnType<typeof vi.fn>
     forkThread: ReturnType<typeof vi.fn>
     rewindThread: ReturnType<typeof vi.fn>
   }
@@ -92,6 +96,7 @@ function buildHarness(options: {
   activeThreadId?: string | null
   createThreadSucceeds?: boolean
   initialGoal?: ThreadGoal | null
+  maintenanceDependencies?: MaintenanceActionDependencies
 } = {}): Harness {
   const activeThreadId = options.activeThreadId === undefined ? 'thr_existing' : options.activeThreadId
   const createThreadSucceeds = options.createThreadSucceeds ?? true
@@ -109,6 +114,7 @@ function buildHarness(options: {
     ),
     clearThreadGoal: vi.fn(async () => true),
     interruptTurn: vi.fn(async () => undefined),
+    submitApprovalDecision: vi.fn(async () => 'submitted' as const),
     rewindThread: vi.fn(async () => undefined),
     forkThread: vi.fn(async (
       threadId: string,
@@ -154,6 +160,7 @@ function buildHarness(options: {
     runtimeConnection: 'ready',
     sendMessage,
     settingsSection: 'general',
+    workspaceRoot: '/workspace/deepseek-gui',
     threads: activeThreadId ? [thread(activeThreadId, initialGoal)] : []
   } as unknown as ChatState
 
@@ -166,7 +173,7 @@ function buildHarness(options: {
     set,
     get,
     sseAbortRef: { current: null }
-  })
+  }, options.maintenanceDependencies)
 
   return { actions, createThread, drainQueuedMessages, get, provider, recoverActiveTurn, refreshThreads, selectThread, sendMessage, state }
 }
@@ -259,7 +266,11 @@ describe('chat-store-maintenance-actions workspace rollback', () => {
 
       await actions.rollbackWorkspaceToCheckpoint(' gcp_1 ')
 
-      expect(restoreGitCheckpoint).toHaveBeenCalledWith({ checkpointId: 'gcp_1' })
+      expect(restoreGitCheckpoint).toHaveBeenCalledWith({
+        checkpointId: 'gcp_1',
+        expectedThreadId: 'thr_existing',
+        expectedWorkspaceRoot: '/workspace/deepseek-gui'
+      })
       expect(provider.rewindThread).not.toHaveBeenCalled()
       expect(sendMessage).not.toHaveBeenCalled()
       expect(state.blocks).toHaveLength(2)
@@ -367,7 +378,11 @@ describe('chat-store-maintenance-actions workspace rollback', () => {
 
       await actions.rollbackWorkspaceToCheckpoint('gcp_1')
 
-      expect(restoreGitCheckpoint).toHaveBeenCalledWith({ checkpointId: 'gcp_1' })
+      expect(restoreGitCheckpoint).toHaveBeenCalledWith({
+        checkpointId: 'gcp_1',
+        expectedThreadId: 'thr_existing',
+        expectedWorkspaceRoot: '/workspace/deepseek-gui'
+      })
       expect(consoleInfo).toHaveBeenCalledTimes(1)
       const logArgs = consoleInfo.mock.calls[0]
       expect(logArgs[0]).toBe('[rollback] rescue checkpoint:')
@@ -380,6 +395,104 @@ describe('chat-store-maintenance-actions workspace rollback', () => {
       console.info = previousConsoleInfo
       ;(globalThis as { window?: unknown }).window = previousWindow
     }
+  })
+})
+
+describe('chat-store-maintenance-actions rewind and resend', () => {
+  beforeEach(() => {
+    registryMock.getProvider.mockReset()
+  })
+
+  it('rebuilds canvas context and preserves tool routing for edited architecture prompts', async () => {
+    const prepareCodeCanvasResend = vi.fn(async () => ({
+      text: 'architecture prompt with live canvas snapshot',
+      displayText: '\u7ed9\u6211\u8bbe\u8ba1\u4e00\u4e2a\u5f53\u524d\u76ee\u5f55\u7684\u67b6\u6784\u56fe',
+      guiDesignCanvas: true as const
+    }))
+    const requestCodeCanvasPanelOpen = vi.fn()
+    const { actions, provider, sendMessage, state } = buildHarness({
+      maintenanceDependencies: {
+        prepareCodeCanvasResend,
+        requestCodeCanvasPanelOpen
+      }
+    })
+    Object.assign(state, {
+      route: 'chat',
+      busy: false,
+      blocks: [
+        {
+          kind: 'user',
+          id: 'user_1',
+          text: 'old prompt',
+          meta: { turnId: 'turn_1', guiDesignCanvas: true }
+        },
+        { kind: 'assistant', id: 'assistant_1', text: 'old answer' }
+      ],
+      queuedMessages: [],
+      turnStartedAtByUserId: {},
+      turnDurationByUserId: {},
+      turnReasoningFirstAtByUserId: {},
+      turnReasoningLastAtByUserId: {}
+    })
+
+    await actions.rewindAndResend(
+      'user_1',
+      '  \u7ed9\u6211\u8bbe\u8ba1\u4e00\u4e2a\u5f53\u524d\u76ee\u5f55\u7684\u67b6\u6784\u56fe  '
+    )
+
+    expect(prepareCodeCanvasResend).toHaveBeenCalledWith({
+      route: 'chat',
+      text: '\u7ed9\u6211\u8bbe\u8ba1\u4e00\u4e2a\u5f53\u524d\u76ee\u5f55\u7684\u67b6\u6784\u56fe',
+      previousCanvasTurn: true,
+      fallbackWorkspaceRoot: '/workspace/deepseek-gui',
+      threadWorkspaceRoot: '/workspace/deepseek-gui',
+      threadId: 'thr_existing'
+    })
+    expect(provider.rewindThread).toHaveBeenCalledWith('thr_existing', 'turn_1')
+    expect(requestCodeCanvasPanelOpen).toHaveBeenCalledTimes(1)
+    expect(sendMessage).toHaveBeenCalledWith(
+      'architecture prompt with live canvas snapshot',
+      'agent',
+      {
+        displayText: '\u7ed9\u6211\u8bbe\u8ba1\u4e00\u4e2a\u5f53\u524d\u76ee\u5f55\u7684\u67b6\u6784\u56fe',
+        guiDesignCanvas: true
+      }
+    )
+  })
+
+  it('keeps non-canvas edited prompts on the existing resend path', async () => {
+    const prepareCodeCanvasResend = vi.fn(async () => null)
+    const requestCodeCanvasPanelOpen = vi.fn()
+    const { actions, provider, sendMessage, state } = buildHarness({
+      maintenanceDependencies: {
+        prepareCodeCanvasResend,
+        requestCodeCanvasPanelOpen
+      }
+    })
+    Object.assign(state, {
+      route: 'chat',
+      busy: false,
+      blocks: [
+        {
+          kind: 'user',
+          id: 'user_1',
+          text: 'old prompt',
+          meta: { turnId: 'turn_1' }
+        },
+        { kind: 'assistant', id: 'assistant_1', text: 'old answer' }
+      ],
+      queuedMessages: [],
+      turnStartedAtByUserId: {},
+      turnDurationByUserId: {},
+      turnReasoningFirstAtByUserId: {},
+      turnReasoningLastAtByUserId: {}
+    })
+
+    await actions.rewindAndResend('user_1', '  Refactor this module  ')
+
+    expect(provider.rewindThread).toHaveBeenCalledWith('thr_existing', 'turn_1')
+    expect(requestCodeCanvasPanelOpen).not.toHaveBeenCalled()
+    expect(sendMessage).toHaveBeenCalledWith('Refactor this module')
   })
 })
 
@@ -493,6 +606,27 @@ describe('chat-store-maintenance-actions goal actions', () => {
     expect(state.activeThreadGoal).toBeNull()
     expect(state.threads[0]?.goal).toBeNull()
     expect(refreshThreads).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores a pending approval when the protected native prompt is cancelled', async () => {
+    const { actions, provider, state } = buildHarness()
+    provider.submitApprovalDecision.mockResolvedValueOnce('cancelled')
+    state.blocks = [{
+      kind: 'approval',
+      id: 'approval-cancelled',
+      approvalId: 'appr_cancelled',
+      summary: 'Approve command',
+      status: 'pending'
+    }]
+
+    await actions.resolveApproval('approval-cancelled', 'allow')
+
+    expect(provider.submitApprovalDecision).toHaveBeenCalledWith(
+      'appr_cancelled',
+      'allow',
+      true
+    )
+    expect(state.blocks[0]).toMatchObject({ status: 'pending' })
   })
 
   it('settles local runtime work before the backend interrupt resolves', async () => {

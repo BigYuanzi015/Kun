@@ -11,6 +11,7 @@ type WorkbenchDesignStageProps = Pick<
   | 'onOpenAgentSettings'
   | 'onImplementDesign'
   | 'onScreenCreated'
+  | 'onSvgCreated'
   | 'onUseElementAsContext'
   | 'onRuntimeQualityFindings'
   | 'onRequestQualityRepair'

@@ -8,6 +8,7 @@ export type DesignGraphObjectKind =
   | 'board'
   | 'frame'
   | 'html-frame'
+  | 'svg-frame'
   | 'running-app-frame'
   | 'shape'
   | 'component'
@@ -17,6 +18,9 @@ export type DesignGraphObjectKind =
 
 export type DesignGraphSource = {
   canvasShapeId?: string
+  artifactId?: string
+  artifactKind?: 'html' | 'svg'
+  /** @deprecated Use artifactId for new consumers. */
   htmlArtifactId?: string
   runningAppUrl?: string
   componentId?: string

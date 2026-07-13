@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildCodeCanvasTurnPrompt,
-  buildDesignFromCodePrompt,
   buildDesignImageNodePrompt,
   buildDesignTurnPrompt,
   buildParallelDesignPagesPrompt,
@@ -74,14 +73,17 @@ describe("design turn prompt code canvas and context guidance", () => {
       expect(prompt).toContain('Web -> desktop 1280x800, App -> mobile 390x844')
       expect(prompt).toContain('Omit width/height/devicePreset unless the user asks for a custom device or breakpoint')
       expect(prompt).toContain('omitted dimensions follow the current target')
-      expect(prompt).toContain('Web -> saas/web components, App -> mobile/app components')
-      expect(prompt).toContain('call the real canvas tools')
+      expect(prompt).toContain('Updates thread-scoped structured tokens/components without drawing a board')
+      expect(prompt).toContain('Call the real canvas tool that directly produces the requested outcome')
       expect(prompt).toContain('SKETCH A SCREEN OR UI FRAME')
       expect(prompt).toContain('No HTML artifact is generated in Code mode')
       expect(prompt).toContain('UI frame default is 1280x800 desktop web for explicit UI mockups only')
       expect(prompt).toContain('Code architecture, dependency, data-flow, and debugging diagrams are freeform whiteboard shapes')
       expect(prompt).toContain('In Code mode this creates plain editable frame shapes only; no HTML is generated.')
       expect(prompt).toContain('there is no follow-up HTML generation in Code mode')
+      expect(prompt).toContain('`design_export_canvas`')
+      expect(prompt).toContain('create/update the editable shapes first')
+      expect(prompt).toContain('do not call `generate_image` to redraw or rasterize the architecture diagram')
       expect(prompt).toContain('Code-mode whiteboard override')
       expect(prompt).toContain('creates plain editable frame shapes here')
       expect(prompt).toContain('does NOT trigger follow-up HTML screen generation')
@@ -110,6 +112,8 @@ describe("design turn prompt code canvas and context guidance", () => {
       expect(codePrompt).toContain('Do NOT use `design_create_screen` unless they explicitly ask for a UI screen mockup')
       expect(codePrompt).toContain('services/modules as frames or rects')
       expect(codePrompt).toContain('data/events as arrows')
+      expect(codePrompt).toContain('finish the editable diagram first and then call `design_export_canvas`')
+      expect(codePrompt).toContain('Do not export automatically when the user asked only for an editable diagram')
   
       const designPrompt = buildDesignTurnPrompt({
         target: 'canvas',
@@ -130,7 +134,8 @@ describe("design turn prompt code canvas and context guidance", () => {
         workspaceRoot: '/ws'
       })
   
-      expect(prompt).toContain('BUILD OR REDESIGN A SCREEN')
+      expect(prompt).toContain('BUILD A SINGLE SCREEN')
+      expect(prompt).toContain('BUILD A COMPLETE MULTI-SCREEN EXPERIENCE')
       expect(prompt).toContain('The system auto-generates HTML afterwards')
       expect(prompt).toContain('the system will AUTOMATICALLY generate the HTML content')
       expect(prompt).not.toContain('Code sidebar whiteboard')
@@ -214,7 +219,7 @@ describe("design turn prompt code canvas and context guidance", () => {
       expect(prompt).toContain('Preserve existing canvas objects unless the user explicitly asks to replace/delete them')
       expect(prompt).toContain('Do not place a new large object over an existing image or frame')
       expect(prompt).toContain('Treat ALL visible snapshot shapes as occupied canvas content')
-      expect(prompt).toContain('For `design_system_template`, also prefer omitting `x`/`y`')
+      expect(prompt).toContain('The project design-system board is a fixed file projection')
       expect(prompt).toContain('new 1280x800 target screen frames')
       expect(prompt).toContain('prefer omitting `x`/`y`')
       expect(prompt).toContain('placement.recommendedSlots')
@@ -280,18 +285,6 @@ describe("design turn prompt code canvas and context guidance", () => {
       expect(prompt).toContain(
         'do not guess or reconstruct a path from the shape name, position, or any other field'
       )
-    })
-    it('carries app target sizing into code-to-design prompts', () => {
-      const prompt = buildDesignFromCodePrompt({
-        sourceRelativePath: 'src/App.tsx',
-        artifactRelativePath: '.kun-design/doc/reverse/v1.html',
-        workspaceRoot: '/workspace',
-        designContext: { designTarget: 'app' }
-      })
-  
-      expect(prompt).toContain('Design target: App')
-      expect(prompt).toContain('390x844 phone portrait')
-      expect(prompt).toContain('- Target: App')
     })
     it('carries default web target sizing into image-node prompts', () => {
       const prompt = buildDesignImageNodePrompt({

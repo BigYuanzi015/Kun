@@ -7,6 +7,11 @@
  * also marks "the legacy → nested migration has run" (see the store).
  */
 import type { DesignDocument } from './design-types'
+import {
+  deleteDesignWorkspaceEntry,
+  normalizeDesignPersistenceWorkspaceRoot,
+  writeDesignWorkspaceFile
+} from './design-persistence-coordinator'
 
 const DESIGN_DIR = '.kun-design'
 
@@ -101,14 +106,24 @@ export function parseDocumentsIndex(raw: string): DesignDocumentsIndex | null {
   return { version: 1, activeDocumentId, documents }
 }
 
-let _saveTimer: ReturnType<typeof setTimeout> | null = null
+type PendingDocumentsIndex = {
+  content: string
+  timer: ReturnType<typeof setTimeout> | null
+}
+
+const pendingDocumentsIndexes = new Map<string, PendingDocumentsIndex>()
 
 function writeDocumentsIndex(workspaceRoot: string, content: string): Promise<void> {
-  if (typeof window.kunGui?.writeWorkspaceFile !== 'function') return Promise.resolve()
-  return window.kunGui
-    .writeWorkspaceFile({ path: documentsIndexPath(), workspaceRoot, content })
+  return writeDesignWorkspaceFile({ path: documentsIndexPath(), workspaceRoot, content })
     .then(() => undefined)
-    .catch(() => undefined)
+}
+
+function flushPendingDocumentsIndex(workspaceRoot: string): Promise<void> {
+  const pending = pendingDocumentsIndexes.get(workspaceRoot)
+  if (!pending) return Promise.resolve()
+  if (pending.timer) clearTimeout(pending.timer)
+  pendingDocumentsIndexes.delete(workspaceRoot)
+  return writeDocumentsIndex(workspaceRoot, pending.content)
 }
 
 /** Fire-and-forget, debounced write of the documents index (one hot file). */
@@ -117,13 +132,17 @@ export function persistDocumentsIndex(
   documents: readonly DesignDocument[],
   activeDocumentId: string | null
 ): void {
-  if (!workspaceRoot || typeof window.kunGui?.writeWorkspaceFile !== 'function') return
+  workspaceRoot = normalizeDesignPersistenceWorkspaceRoot(workspaceRoot)
+  if (!workspaceRoot) return
   const content = serializeDocumentsIndex(documents, activeDocumentId)
-  if (_saveTimer) clearTimeout(_saveTimer)
-  _saveTimer = setTimeout(() => {
-    _saveTimer = null
-    void writeDocumentsIndex(workspaceRoot, content)
+  const existing = pendingDocumentsIndexes.get(workspaceRoot)
+  if (existing?.timer) clearTimeout(existing.timer)
+  const pending: PendingDocumentsIndex = { content, timer: null }
+  pending.timer = setTimeout(() => {
+    pending.timer = null
+    void flushPendingDocumentsIndex(workspaceRoot)
   }, 400)
+  pendingDocumentsIndexes.set(workspaceRoot, pending)
 }
 
 /**
@@ -137,19 +156,32 @@ export function flushDocumentsIndex(
   documents: readonly DesignDocument[],
   activeDocumentId: string | null
 ): Promise<void> {
-  if (!workspaceRoot || typeof window.kunGui?.writeWorkspaceFile !== 'function') return Promise.resolve()
-  if (_saveTimer) {
-    clearTimeout(_saveTimer)
-    _saveTimer = null
+  workspaceRoot = normalizeDesignPersistenceWorkspaceRoot(workspaceRoot)
+  if (!workspaceRoot) return Promise.resolve()
+  const existing = pendingDocumentsIndexes.get(workspaceRoot)
+  if (existing?.timer) clearTimeout(existing.timer)
+  pendingDocumentsIndexes.set(workspaceRoot, {
+    content: serializeDocumentsIndex(documents, activeDocumentId),
+    timer: null
+  })
+  return flushPendingDocumentsIndex(workspaceRoot)
+}
+
+export async function flushPendingDocumentsIndexes(workspaceRoot?: string): Promise<void> {
+  const normalizedRoot = workspaceRoot === undefined
+    ? null
+    : normalizeDesignPersistenceWorkspaceRoot(workspaceRoot)
+  for (;;) {
+    const roots = [...pendingDocumentsIndexes.keys()]
+      .filter((root) => normalizedRoot === null || normalizeDesignPersistenceWorkspaceRoot(root) === normalizedRoot)
+    if (roots.length === 0) return
+    await Promise.all(roots.map(flushPendingDocumentsIndex))
   }
-  return writeDocumentsIndex(workspaceRoot, serializeDocumentsIndex(documents, activeDocumentId))
 }
 
 /** Fire-and-forget delete of a 设计稿's whole on-disk dir (and all its 画布). */
 export function deleteDocumentDir(workspaceRoot: string, docId: string): Promise<void> {
-  if (!workspaceRoot || typeof window.kunGui?.deleteWorkspaceEntry !== 'function') return Promise.resolve()
-  return window.kunGui
-    .deleteWorkspaceEntry({ path: documentDirPath(docId), workspaceRoot })
+  if (!workspaceRoot) return Promise.resolve()
+  return deleteDesignWorkspaceEntry({ path: documentDirPath(docId), workspaceRoot })
     .then(() => undefined)
-    .catch(() => undefined)
 }

@@ -271,15 +271,18 @@ export function materializeComponentInstance(
   comp: ComponentDef,
   at: Point,
   parentId: string,
-  overrides: ComponentOverrides
+  overrides: ComponentOverrides,
+  variantKey?: string
 ): string {
   const store = useCanvasShapeStore.getState()
   const byId = new Map(comp.tree.map((s) => [s.id, s]))
+  const variantOverrides = variantKey ? comp.variants?.[variantKey]?.overrides ?? {} : {}
 
   function addNode(node: CanvasShape, targetParent: string, isRoot: boolean): string {
     const newId = createShapeId()
     const clone: CanvasShape = {
       ...node,
+      ...(variantOverrides[node.id] ?? {}),
       id: newId,
       x: node.x + at.x,
       y: node.y + at.y,
@@ -288,9 +291,11 @@ export function materializeComponentInstance(
       frameId: null,
       componentId: isRoot ? comp.id : undefined,
       componentVersion: isRoot ? comp.version : undefined,
+      componentVariant: isRoot ? variantKey : undefined,
       overrides: isRoot ? overrides : undefined
     }
     delete clone.htmlArtifactId
+    delete clone.embeddedArtifact
     applyOverridesToClone(clone, node.name, comp.slots, overrides)
     store.addShape(clone, targetParent)
     for (const childId of node.children) {
@@ -323,7 +328,10 @@ export function createScreenLikeShape(
   artifactId: string | null
 ): CanvasShape {
   const shape = createHtmlFrameShape(name, x, y, artifactId ?? '__plain_frame__', preset)
-  if (!artifactId) delete shape.htmlArtifactId
+  if (!artifactId) {
+    delete shape.htmlArtifactId
+    delete shape.embeddedArtifact
+  }
   return shape
 }
 
@@ -350,6 +358,7 @@ export function cloneLiveSubtree(rootId: string, dx: number, dy: number, parentI
       frameId: null
     }
     delete clone.htmlArtifactId
+    delete clone.embeddedArtifact
     store.addShape(clone, targetParent)
     for (const childId of node.children) {
       const child = objects[childId]

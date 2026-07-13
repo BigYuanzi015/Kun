@@ -5,6 +5,7 @@ import { createDesignArtifactId } from '../design-types'
 import { useDesignWorkspaceStore } from '../design-workspace-store'
 import {
   createHtmlFrameShape,
+  isArtifactFrame,
   isHtmlFrame,
   shapeBounds,
   type CanvasShape,
@@ -85,7 +86,7 @@ export function isReusableScreenTargetFrame(shape: CanvasShape | undefined): sha
   return Boolean(
     shape &&
       shape.type === 'frame' &&
-      !isHtmlFrame(shape) &&
+      !isArtifactFrame(shape) &&
       shape.visible !== false &&
       !shape.locked &&
       shape.children.length === 0
@@ -177,6 +178,7 @@ export function createLinkedHtmlScreen(
     useCanvasShapeStore.getState().updateShape(reusableTargetFrame.id, {
       name: title,
       htmlArtifactId: artifactId,
+      embeddedArtifact: { id: artifactId, kind: 'html' },
       devicePreset: geometry.devicePreset,
       x: geometry.x,
       y: geometry.y,

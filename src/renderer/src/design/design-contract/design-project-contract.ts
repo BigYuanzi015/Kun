@@ -1,4 +1,5 @@
-import { DESIGN_SYSTEM_MD_PATH, designSpecPath } from '../design-foundation'
+import { designSpecPath } from '../design-foundation'
+import { PROJECT_DESIGN_MD_PATH } from '../design-md/design-md-paths'
 import { buildStitchDesignMarkdown, STITCH_DESIGN_MD_PATH } from '../design-md-compat'
 import type { CanvasDocument } from '../canvas/canvas-types'
 import type { DesignSystem } from '../canvas/design-system-types'
@@ -33,6 +34,7 @@ export type DesignProjectContractSummary = {
   title: string
   artifactCount: number
   screenCount: number
+  svgArtifactCount: number
   objectCount: number
   rootObjectCount: number
   directionCount: number
@@ -69,8 +71,11 @@ function formatBounds(object: DesignGraphObject): string {
 }
 
 function formatObjectSource(object: DesignGraphObject): string {
+  const artifactId = object.source?.artifactId ?? object.source?.htmlArtifactId
   const parts = [
-    object.source?.htmlArtifactId ? `artifact ${code(object.source.htmlArtifactId)}` : '',
+    artifactId
+      ? `${object.source?.artifactKind === 'svg' ? 'SVG artifact' : 'artifact'} ${code(artifactId)}`
+      : '',
     object.source?.componentId ? `component ${code(object.source.componentId)}` : ''
   ].filter(Boolean)
   return parts.length > 0 ? `; ${parts.join('; ')}` : ''
@@ -194,6 +199,7 @@ function buildDesignDocumentSection(options: BuildDesignProjectContractMarkdownO
     `- Document: ${document ? `${document.title} (${code(document.id)})` : '`TBD`'}`,
     `- Artifacts: ${artifacts.length}`,
     `- HTML screens: ${artifacts.filter((artifact) => artifact.kind === 'html').length}`,
+    `- SVG artifacts: ${artifacts.filter((artifact) => artifact.kind === 'svg').length}`,
     `- Canvas artifacts: ${artifacts.filter((artifact) => artifact.kind === 'canvas').length}`,
     ...(document?.activeArtifactId ? [`- Active artifact: ${code(document.activeArtifactId)}`] : [])
   ]
@@ -211,6 +217,7 @@ function buildDesignModeSection(options: BuildDesignProjectContractMarkdownOptio
     '',
     `- Recommended surface: ${manifest.recommendedSurfaceId ? code(manifest.recommendedSurfaceId) : '`TBD`'}`,
     `- Screens: ${manifest.counts.screenCount}`,
+    `- SVG artifacts: ${manifest.counts.svgArtifactCount}`,
     `- Directions: ${manifest.counts.directionCount}`,
     `- Objects: ${manifest.counts.objectCount}`,
     '',
@@ -230,6 +237,7 @@ function buildAgentContractSection(): string[] {
     '- Use this file as the project-level source of truth before generating screens, editing code, or syncing to external design tools.',
     '- Treat Design Graph ids as stable canvas object ids. Preserve them when applying focused design operations.',
     '- Read each screen DESIGN.md for detailed states, responsive behavior, and implementation notes.',
+    '- Treat SVG artifact files as standalone vector sources; preserve stable element ids and declarative animation when iterating them.',
     '- When code bindings are active, prefer targeted source edits over regenerating entire files.',
     '- If a binding is stale or missing, repair the binding first or ask for confirmation before overwriting production code.',
     '',
@@ -266,6 +274,7 @@ export function summarizeDesignProjectContract(
     title: options.document?.title ?? 'Kun design project',
     artifactCount: artifacts.length,
     screenCount: artifacts.filter((artifact) => artifact.kind === 'html').length,
+    svgArtifactCount: artifacts.filter((artifact) => artifact.kind === 'svg').length,
     objectCount: Object.keys(graph.objects).length,
     rootObjectCount: graph.rootObjectIds.length,
     directionCount: Object.keys(graph.directions).length,
@@ -291,7 +300,7 @@ export function buildDesignProjectContractMarkdown(
     brief: options.designContext.designGuidelines,
     designContext: options.designContext,
     designSystem: options.designSystem,
-    designSystemMdPath: DESIGN_SYSTEM_MD_PATH,
+    designSystemMdPath: PROJECT_DESIGN_MD_PATH,
     projectBriefPath: document ? designSpecPath(document.id) : undefined,
     artifacts,
     updatedAt: options.updatedAt

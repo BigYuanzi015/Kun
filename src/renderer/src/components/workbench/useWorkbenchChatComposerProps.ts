@@ -150,6 +150,7 @@ export function useWorkbenchChatComposerProps({
     composerPickList,
     composerModelGroups,
     composerReasoningEffort: route === 'chat' || route === 'claw' ? composerReasoningEffort : undefined,
+    modelControlVariant: route === 'chat' && !activeSddDraft ? 'split' : 'combined',
     lockVisionToTextModelSwitch,
     onComposerModelChange: (modelId, providerId) => {
       if (route === 'claw' && activeClawChannelId) {

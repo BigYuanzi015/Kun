@@ -1,7 +1,7 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FileAttachmentStore } from '../src/attachments/attachment-store.js'
 import { CompatModelClient } from '../src/adapters/model/compat-model-client.js'
 import {
@@ -13,6 +13,10 @@ import { modelCapabilitiesForModel } from '../src/loop/model-context-profile.js'
 import type { ModelClient, ModelRequest } from '../src/ports/model-client.js'
 import type { LocalTool } from '../src/adapters/tool/local-tool-host.js'
 import { dispatchRequest } from '../src/server/http-server.js'
+import {
+  _internal as attachmentRouteInternal,
+  MAX_ATTACHMENT_UPLOAD_BODY_BYTES
+} from '../src/server/routes/attachments.js'
 import { bootstrapThread, makeHarness } from './loop-test-harness.js'
 import { buildHarness, readJson } from './http-server-test-harness.js'
 
@@ -54,6 +58,16 @@ describe('Attachment store and multimodal input', () => {
     })
     await expect(store.resolveContent(first.id, { threadId: 'thr_2' })).rejects.toThrow(/not authorized/)
     await expect(store.resolveContent(first.id, { workspace: '/tmp/ws' })).resolves.toMatchObject({ id: first.id })
+  })
+
+  it('keeps attachment data and metadata private on disk', async () => {
+    const store = createStore()
+    const attachment = await store.create({ name: 'shot.png', data: png(2, 3), threadId: 'thr_1' })
+    const root = join(dir, 'attachments')
+
+    expect((await stat(root)).mode & 0o777).toBe(0o700)
+    expect((await stat(join(root, `${attachment.id}.bin`))).mode & 0o777).toBe(0o600)
+    expect((await stat(join(root, `${attachment.id}.json`))).mode & 0o777).toBe(0o600)
   })
 
   it('repairs missing content when a duplicate attachment is uploaded again', async () => {
@@ -191,6 +205,103 @@ describe('Attachment store and multimodal input', () => {
     )
     expect(response.status).toBe(400)
     expect(await readJson(response)).toMatchObject({ message: 'attachment data is not valid base64' })
+  })
+
+  it('rejects declared oversized uploads before reading their body', async () => {
+    const h = buildHarness()
+    const store = createStore()
+    h.runtime.attachmentStore = store
+    const create = vi.spyOn(store, 'create')
+    let cancelled = false
+    let pulled = false
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        pulled = true
+      },
+      cancel() {
+        cancelled = true
+      }
+    })
+
+    const response = await dispatchRequest(
+      h.router,
+      new Request('http://localhost/v1/attachments', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer tok-1',
+          'content-type': 'application/json',
+          'content-length': String(MAX_ATTACHMENT_UPLOAD_BODY_BYTES + 1)
+        },
+        body,
+        duplex: 'half'
+      } as RequestInit & { duplex: 'half' })
+    )
+
+    expect(response.status).toBe(413)
+    expect(pulled).toBe(false)
+    expect(cancelled).toBe(true)
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('admits only one bounded upload per attachment store at a time', async () => {
+    const h = buildHarness()
+    const store = createStore()
+    h.runtime.attachmentStore = store
+    let allowCreate!: () => void
+    const createMayContinue = new Promise<void>((resolve) => {
+      allowCreate = resolve
+    })
+    let signalCreateStarted!: () => void
+    const createStarted = new Promise<void>((resolve) => {
+      signalCreateStarted = resolve
+    })
+    const originalCreate = store.create.bind(store)
+    const create = vi.spyOn(store, 'create').mockImplementation(async (input) => {
+      signalCreateStarted()
+      await createMayContinue
+      return originalCreate(input)
+    })
+
+    const first = dispatchRequest(
+      h.router,
+      new Request('http://localhost/v1/attachments', {
+        method: 'POST',
+        headers: { authorization: 'Bearer tok-1', 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'shot.png', dataBase64: png(1, 1).toString('base64') })
+      })
+    )
+    await createStarted
+
+    let cancelled = false
+    const secondBody = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true
+      }
+    })
+    const second = await dispatchRequest(
+      h.router,
+      new Request('http://localhost/v1/attachments', {
+        method: 'POST',
+        headers: { authorization: 'Bearer tok-1', 'content-type': 'application/json' },
+        body: secondBody,
+        duplex: 'half'
+      } as RequestInit & { duplex: 'half' })
+    )
+
+    expect(second.status).toBe(429)
+    expect(await readJson(second)).toMatchObject({ code: 'rate_limited' })
+    await Promise.resolve()
+    expect(cancelled).toBe(true)
+    expect(create).toHaveBeenCalledTimes(1)
+
+    allowCreate()
+    expect((await first).status).toBe(201)
+  })
+
+  it('checks base64 size and canonical padding before decoding', () => {
+    expect(attachmentRouteInternal.decodeBase64('T Q ==')).toEqual(Buffer.from('M'))
+    expect(() => attachmentRouteInternal.decodeBase64('AB==')).toThrow(/not valid base64/)
+    expect(() => attachmentRouteInternal.decodeBase64('AAAA', 2)).toThrow(/exceeds 2 byte limit/)
   })
 
   it('resolves image attachments for vision models and text fallbacks for text-only models', async () => {

@@ -13,7 +13,8 @@ import { resolveTokenPatch, type ComponentDef, type DesignToken, type TokenProp 
 import type { OpError } from "../shape-ops"
 import { normalizeDesignTarget, type DesignTarget } from "../../design-context"
 import { useDesignWorkspaceStore } from "../../design-workspace-store"
-import { cleanName, createTemplateBoard, finite, fontStack, positive } from './board-builders'
+import { useProjectDesignSystemStore } from '../project-design-system-store'
+import { cleanName, fontStack } from './board-builders'
 import { mix, normalizeHex, rotateHue } from './color-utils'
 
 export type DesignSystemTemplateOperation = 'create' | 'update' | 'apply'
@@ -27,6 +28,7 @@ export type DesignSystemTemplateTone = 'clean' | 'playful' | 'premium' | 'techni
 export type DesignSystemTemplateOp = {
   op: 'design-system-template'
   operation: DesignSystemTemplateOperation
+  expectedHash?: string
   name?: string
   seedColor?: string
   mode?: DesignSystemTemplateMode
@@ -90,6 +92,10 @@ export function applyDesignSystemTemplateOp(
   errors: OpError[]
 ): void {
   if (op.dryRun) return
+  if (op.expectedHash && op.expectedHash !== useProjectDesignSystemStore.getState().sourceHash) {
+    errors.push({ code: 'INVALID_OP', message: 'DESIGN.md changed since the agent read it. Reload and retry with the current source hash.' })
+    return
+  }
   const normalizedOp = normalizeTemplateOp(op)
 
   if (normalizedOp.mode === 'both') {
@@ -101,26 +107,12 @@ export function applyDesignSystemTemplateOp(
     upsertTokens(darkFoundation.tokens, op.targetIds, affectedIds)
     upsertTokens(lightFoundation.tokens, op.targetIds, affectedIds)
     registerTemplateComponents(defaultFoundation)
-    if (normalizedOp.operation !== 'apply') {
-      const width = positive(normalizedOp.width) ?? 1580
-      const x = finite(normalizedOp.x)
-      createTemplateBoard({ ...normalizedOp, mode: 'dark', width, ...(x === undefined ? {} : { x }) }, darkFoundation, affectedIds, errors)
-      createTemplateBoard(
-        { ...normalizedOp, mode: 'light', width, ...(x === undefined ? {} : { x: x + width + 80 }) },
-        lightFoundation,
-        affectedIds,
-        errors
-      )
-    }
     return
   }
 
   const foundation = buildFoundation(normalizedOp)
   upsertTokens(foundation.tokens, op.targetIds, affectedIds)
   registerTemplateComponents(foundation)
-  if (normalizedOp.operation !== 'apply') {
-    createTemplateBoard(normalizedOp, foundation, affectedIds, errors)
-  }
 }
 
 export function buildFoundation(

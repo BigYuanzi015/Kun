@@ -10,6 +10,8 @@ export type WorkspaceEntry = {
   path: string
   type: 'file' | 'directory'
   ext: string
+  mtimeMs?: number
+  size?: number
 }
 
 export type WorkspaceDirectoryTarget = {
@@ -94,10 +96,12 @@ export type WorkspaceImageBytesSavePayload = {
   workspaceRoot: string
   /** Base64-encoded image bytes (no `data:` prefix). */
   dataBase64: string
-  /** MIME type of the bytes; only `image/png` is currently emitted. */
+  /** MIME type of the bytes; supports PNG and SVG image exports. */
   mimeType?: string
   /** Target directory under the workspace; defaults to `.deepseekgui-images`. */
   imageDirectory?: string
+  /** Optional exact PNG/SVG basename for deterministic renderer-backed exports. */
+  fileName?: string
 }
 
 export type WorkspaceImageBytesSaveResult =
@@ -188,6 +192,8 @@ export type LocalPdfTextReadResult =
       pageCount: number
       text: string
       hasText: boolean
+      ocrApplied?: boolean
+      ocrPageCount?: number
       truncated: boolean
     }
   | { ok: false; message: string }

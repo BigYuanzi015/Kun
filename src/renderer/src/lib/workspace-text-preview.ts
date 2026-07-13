@@ -38,6 +38,7 @@ const TEXT_PREVIEW_EXTENSIONS = new Set([
   '.sql',
   '.svelte',
   '.swift',
+  '.svg',
   '.toml',
   '.ts',
   '.tsx',
@@ -62,6 +63,17 @@ const TEXT_PREVIEW_NAMES = new Set([
   'readme'
 ])
 
+const RASTER_IMAGE_PREVIEW_EXTENSIONS = new Set([
+  '.avif',
+  '.bmp',
+  '.gif',
+  '.ico',
+  '.jpeg',
+  '.jpg',
+  '.png',
+  '.webp'
+])
+
 function basename(path: string): string {
   return path.replaceAll('\\', '/').split('/').filter(Boolean).pop() ?? path
 }
@@ -77,4 +89,9 @@ export function isWorkspaceTextPreviewPath(path: string): boolean {
   if (TEXT_PREVIEW_NAMES.has(name)) return true
   const ext = extension(path)
   return Boolean(ext && TEXT_PREVIEW_EXTENSIONS.has(ext))
+}
+
+export function isWorkspaceRasterImagePreviewPath(path: string): boolean {
+  const ext = extension(path)
+  return Boolean(ext && RASTER_IMAGE_PREVIEW_EXTENSIONS.has(ext))
 }

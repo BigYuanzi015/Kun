@@ -36,9 +36,9 @@ import {
   lineEndAfter,
   replacePendingInfographicInText
 } from '../../write/infographic-pending'
-import { startWriteWorkspaceFileWatch } from '../../write/write-file-watch'
 import type { WriteRichEditorHandle } from '../../write/tiptap/WriteRichEditor'
 import { useWriteSplitScrollSync } from './use-write-split-scroll-sync'
+import { useWriteWorkspaceLifecycle } from './use-write-workspace-lifecycle'
 import { WriteWorkspaceEmptyState } from './WriteWorkspaceEmptyState'
 import { WriteWorkspaceToolbar } from './WriteWorkspaceToolbar'
 import { WriteInlineAgent } from './WriteInlineAgent'
@@ -58,6 +58,13 @@ import {
   useDebouncedValue,
   type WriteNotice
 } from './write-workspace-view-utils'
+import { buildWritePresentationPrompt, isPresentationMarkdownPath } from '../../write/write-presentation'
+import {
+  captureWriteDocumentContext,
+  writeDocumentContextMatches,
+  type WriteDocumentContext
+} from '../../write/write-document-context'
+import { enqueueWriteWorkspaceFileTask } from '../../write/write-save-coordinator'
 
 type Props = {
   leftSidebarCollapsed: boolean; onToggleLeftSidebar: () => void
@@ -77,6 +84,7 @@ export function WriteWorkspaceView({
   const { t } = useTranslation('common')
   const ensureWriteThreadForWorkspace = useChatStore((s) => s.ensureWriteThreadForWorkspace)
   const runtimeConnection = useChatStore((s) => s.runtimeConnection)
+  const busy = useChatStore((s) => s.busy)
   // Field-level subscription: this view must follow fileContent, but it should
   // not re-render for sidebar-only state such as the directory tree or quoted
   // selections.
@@ -84,6 +92,7 @@ export function WriteWorkspaceView({
     workspaceRoot,
     activeFilePath,
     activeFileKind,
+    documentEpoch,
     autoSaveEnabled,
     autoSaveDelayMs,
     rootDirectory,
@@ -132,6 +141,7 @@ export function WriteWorkspaceView({
       workspaceRoot: s.workspaceRoot,
       activeFilePath: s.activeFilePath,
       activeFileKind: s.activeFileKind,
+      documentEpoch: s.documentEpoch,
       autoSaveEnabled: s.autoSaveEnabled,
       autoSaveDelayMs: s.autoSaveDelayMs,
       rootDirectory: s.rootDirectory,
@@ -178,7 +188,6 @@ export function WriteWorkspaceView({
     }))
   )
   const saveTimerRef = useRef<number | null>(null)
-  const autoSaveEnabledRef = useRef(autoSaveEnabled)
   const exportMenuRef = useRef<HTMLDivElement | null>(null)
   const modeMenuRef = useRef<HTMLDivElement | null>(null)
   const editorPaneRef = useRef<HTMLDivElement | null>(null)
@@ -197,11 +206,13 @@ export function WriteWorkspaceView({
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const [exportingFormat, setExportingFormat] = useState<WriteExportFormat | typeof WRITE_RICH_CLIPBOARD_ACTION | null>(null)
   const [exportNotice, setExportNotice] = useState<WriteNotice | null>(null)
+  const [presentationInFlight, setPresentationInFlight] = useState(false)
   const workspaceReady = workspaceRoot.trim().length > 0
   const activeFileIsImage = activeFileKind === 'image'
   const activeFileIsPdf = activeFileKind === 'pdf'
   const activeFileIsText = activeFileKind === 'text'
   const isMarkdown = activeFilePath && activeFileIsText ? isMarkdownFile(activeFilePath) : true
+  const isPresentationSource = activeFileIsText && isPresentationMarkdownPath(activeFilePath)
   const renderSafety = getWriteRenderSafety({
     isMarkdown,
     contentLength: fileContent.length,
@@ -235,6 +246,16 @@ export function WriteWorkspaceView({
   const workspacePathLabel = rootDirectory || workspaceRoot
   const workspaceName = workspacePathLabel ? writeBasenameFromPath(workspacePathLabel) : t('writeWorkspace')
   const exportInFlight = exportingFormat !== null
+  const presentationEnabled = Boolean(
+    workspaceReady &&
+    activeFilePath &&
+    isPresentationSource &&
+    !fileLoading &&
+    !fileTruncated &&
+    !renderSafety.readOnly &&
+    !reviewActive &&
+    !busy
+  )
   const fileGuardMessage = renderSafety.notice === 'truncated'
     ? t('writeLargeFileTruncated')
     : renderSafety.notice === 'large-file'
@@ -242,13 +263,35 @@ export function WriteWorkspaceView({
       : ''
   const fileGuardDetail = renderSafety.notice === 'large-file' ? t('writeLargeFileSafeModeSub') : ''
 
-  autoSaveEnabledRef.current = autoSaveEnabled
-
   useWriteSplitScrollSync({
     enabled: workspaceReady && previewMode === 'split' && activeFileIsText,
     editorRootRef: editorPaneRef,
     previewRef: previewPaneRef,
     rebindKey: activeFilePath ?? 'write-preview'
+  })
+
+  useWriteWorkspaceLifecycle({
+    workspaceRoot,
+    activeFilePath,
+    activeFileIsText,
+    activeFileIsImage,
+    autoSaveEnabled,
+    autoSaveDelayMs,
+    fileContent,
+    saveStatus,
+    workspaceReady,
+    readOnly: renderSafety.readOnly,
+    reviewActive,
+    pendingAgentReview,
+    saveTimerRef,
+    markdownHandleRef,
+    flushSave,
+    syncActiveFileFromDisk,
+    syncActiveImageFromDisk,
+    setFileContent,
+    setFileError,
+    clearPendingAgentReview,
+    setReviewActive
   })
 
   const showExportNotice = (notice: WriteNotice): void => {
@@ -269,6 +312,68 @@ export function WriteWorkspaceView({
   const setAssistantPrompt = (prompt: string): void => {
     setAssistantOpen(true)
     setInput(input.trim() ? `${input.trim()}\n\n${prompt}` : prompt)
+  }
+
+  const generatePresentation = async (): Promise<void> => {
+    if (!presentationEnabled || !activeFilePath || presentationInFlight) return
+
+    const sourcePath = activeFilePath
+    const sourceWorkspace = workspaceRoot
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
+
+    setPresentationInFlight(true)
+    try {
+      if (!await flushSave(sourceWorkspace)) {
+        showExportNotice({ tone: 'error', message: t('writePptSaveFailed') })
+        return
+      }
+      if (typeof window.kunGui?.ensurePptMaster !== 'function') {
+        showExportNotice({ tone: 'error', message: t('writePptUnavailable') })
+        return
+      }
+
+      const ensured = await window.kunGui.ensurePptMaster()
+      if (!ensured.ok) {
+        showExportNotice({
+          tone: 'error',
+          message: t('writePptInstallFailed', { message: ensured.message })
+        })
+        return
+      }
+
+      // Installing the skill can take long enough for the user to navigate to
+      // another document. Do not silently turn that newly selected file into a
+      // presentation; the button always means the file that was clicked.
+      const latest = useWriteWorkspaceStore.getState()
+      if (latest.workspaceRoot !== sourceWorkspace || latest.activeFilePath !== sourcePath) {
+        showExportNotice({ tone: 'error', message: t('writePptSourceChanged') })
+        return
+      }
+      if (!await flushSave(sourceWorkspace)) {
+        showExportNotice({ tone: 'error', message: t('writePptSaveFailed') })
+        return
+      }
+
+      const prompt = buildWritePresentationPrompt({ workspaceRoot: sourceWorkspace, sourcePath })
+      setAssistantOpen(true)
+      if (onSubmitPrompt) {
+        onSubmitPrompt(prompt)
+      } else {
+        setInput(input.trim() ? `${input.trim()}\n\n${prompt}` : prompt)
+      }
+    } catch (error) {
+      showExportNotice({
+        tone: 'error',
+        message: t('writePptInstallFailed', {
+          message: error instanceof Error ? error.message : String(error)
+        })
+      })
+    } finally {
+      setPresentationInFlight(false)
+    }
   }
 
   const handleInlineAgentFocus = useCallback((): void => {
@@ -363,6 +468,8 @@ export function WriteWorkspaceView({
       setFileError(t('writeInlineEditUnavailable'))
       return
     }
+    const operationContext = captureWriteDocumentContext(useWriteWorkspaceStore.getState())
+    if (!operationContext) return
 
     // In rich mode the inline edit operates on the markdown projection: the
     // selection ranges are projection offsets and the replacement is applied
@@ -384,6 +491,7 @@ export function WriteWorkspaceView({
       const result = await window.kunGui.requestWriteInlineCompletion(
         buildWriteInlineEditCompletionRequest(draft.request)
       )
+      if (!writeDocumentContextMatches(useWriteWorkspaceStore.getState(), operationContext)) return
       if (!result.ok) {
         setFileError(t('writeInlineEditFailed', { message: result.message }))
         return
@@ -417,7 +525,7 @@ export function WriteWorkspaceView({
       }
 
       const latest = useWriteWorkspaceStore.getState()
-      if (latest.activeFilePath !== activeFilePath || latest.activeFileKind !== 'text') {
+      if (!writeDocumentContextMatches(latest, operationContext) || latest.activeFileKind !== 'text') {
         setFileError(t('writeInlineEditChanged'))
         return
       }
@@ -479,9 +587,11 @@ export function WriteWorkspaceView({
         message: startedReview ? t('writeInlineEditReview') : t('writeInlineEditApplied')
       })
     } catch (error) {
-      setFileError(t('writeInlineEditFailed', {
-        message: error instanceof Error ? error.message : String(error)
-      }))
+      if (writeDocumentContextMatches(useWriteWorkspaceStore.getState(), operationContext)) {
+        setFileError(t('writeInlineEditFailed', {
+          message: error instanceof Error ? error.message : String(error)
+        }))
+      }
     } finally {
       setInlineEditInFlight(false)
     }
@@ -506,6 +616,8 @@ export function WriteWorkspaceView({
     const range = selection.ranges[0]
     const richHandle = richModeActive ? richHandleRef.current : null
     const filePath = activeFilePath
+    const operationContext = captureWriteDocumentContext(useWriteWorkspaceStore.getState())
+    if (!operationContext) return
     const text = selection.text.trim().slice(0, WRITE_INFOGRAPHIC_MAX_TEXT_CHARS)
     const pending = beginPendingInfographic()
     const pendingMarkdown = buildPendingInfographicMarkdown(t('writeInfographicAlt'), pending.src)
@@ -549,6 +661,7 @@ export function WriteWorkspaceView({
       src: pending.src,
       pendingMarkdown,
       filePath,
+      context: operationContext,
       text
     })
   }
@@ -558,6 +671,7 @@ export function WriteWorkspaceView({
     src: string
     pendingMarkdown: string
     filePath: string
+    context: WriteDocumentContext
     text: string
   }): Promise<void> => {
     let replacementMarkdown: string | null = null
@@ -566,7 +680,7 @@ export function WriteWorkspaceView({
       const result = await window.kunGui.generateWriteInfographic({
         text: job.text,
         filePath: job.filePath,
-        workspaceRoot
+        workspaceRoot: job.context.workspaceRoot
       })
       if (result.ok) {
         replacementMarkdown = `![${t('writeInfographicAlt')}](${result.relativePath})`
@@ -581,7 +695,9 @@ export function WriteWorkspaceView({
 
     const applied = await resolveInfographicPlaceholder(job, replacementMarkdown)
     if (failureMessage) {
-      setFileError(t('writeInfographicFailed', { message: failureMessage }))
+      if (writeDocumentContextMatches(useWriteWorkspaceStore.getState(), job.context)) {
+        setFileError(t('writeInfographicFailed', { message: failureMessage }))
+      }
     } else if (applied) {
       showExportNotice({ tone: 'success', message: t('writeInfographicReady') })
     }
@@ -591,15 +707,37 @@ export function WriteWorkspaceView({
    * `replacementMarkdown` is null. Returns false when the placeholder is
    * gone (the user deleted it, which cancels the insertion). */
   const resolveInfographicPlaceholder = async (
-    job: { src: string; pendingMarkdown: string; filePath: string },
+    job: {
+      src: string
+      pendingMarkdown: string
+      filePath: string
+      context: WriteDocumentContext
+    },
     replacementMarkdown: string | null
   ): Promise<boolean> => {
     const latest = useWriteWorkspaceStore.getState()
-    if (latest.activeFilePath === job.filePath && latest.activeFileKind === 'text') {
+    if (writeDocumentContextMatches(latest, job.context) && latest.activeFileKind === 'text') {
       // Node-level swap keeps the rich editor's undo history clean; the text
       // fallback covers the source editor (no rich handle mounted).
       const handle = richHandleRef.current
       if (handle?.replaceImageBySrc(job.src, replacementMarkdown ?? '')) return true
+      const next = replacePendingInfographicInText(
+        latest.fileContent,
+        job.pendingMarkdown,
+        replacementMarkdown
+      )
+      if (next === null) return false
+      setFileContent(next)
+      return true
+    }
+    if (
+      latest.activeFileKind === 'text' &&
+      latest.workspaceRoot === job.context.workspaceRoot &&
+      latest.activeFilePath === job.filePath
+    ) {
+      // The same path was reopened while generation was in flight. Resolve
+      // only the unique placeholder in the newly opened content; never write
+      // a stale whole-document snapshot over that newer epoch.
       const next = replacePendingInfographicInText(
         latest.fileContent,
         job.pendingMarkdown,
@@ -618,20 +756,29 @@ export function WriteWorkspaceView({
       return false
     }
     try {
-      const file = await window.kunGui.readWorkspaceFile({ path: job.filePath, workspaceRoot })
-      if (!file.ok || file.truncated) return false
-      const next = replacePendingInfographicInText(
-        file.content,
-        job.pendingMarkdown,
-        replacementMarkdown
+      return await enqueueWriteWorkspaceFileTask(
+        job.context.workspaceRoot,
+        job.filePath,
+        async () => {
+          const file = await window.kunGui.readWorkspaceFile({
+            path: job.filePath,
+            workspaceRoot: job.context.workspaceRoot
+          })
+          if (!file.ok || file.truncated) return false
+          const next = replacePendingInfographicInText(
+            file.content,
+            job.pendingMarkdown,
+            replacementMarkdown
+          )
+          if (next === null) return false
+          const written = await window.kunGui.writeWorkspaceFile({
+            path: job.filePath,
+            workspaceRoot: job.context.workspaceRoot,
+            content: next
+          })
+          return written.ok
+        }
       )
-      if (next === null) return false
-      const written = await window.kunGui.writeWorkspaceFile({
-        path: job.filePath,
-        workspaceRoot,
-        content: next
-      })
-      return written.ok
     } catch {
       return false
     }
@@ -831,84 +978,12 @@ export function WriteWorkspaceView({
     }
   }, [exportNotice])
 
-  // An agent edited the active file: surface the change as a red/green diff
-  // review (baseline = what the user currently sees; the agent's version is
-  // already on disk) instead of overwriting the document.
-  useEffect(() => {
-    if (!pendingAgentReview) return
-    const nextContent = pendingAgentReview.nextContent
-    clearPendingAgentReview()
-    const baseline = useWriteWorkspaceStore.getState().fileContent
-    const started = markdownHandleRef.current?.beginDiffReview({
-      original: baseline,
-      nextDoc: nextContent
-    }) ?? false
-    if (!started) {
-      // Rich mode / no source editor / identical content: apply directly.
-      setFileContent(nextContent)
-      setReviewActive(false)
-    }
-  }, [pendingAgentReview, clearPendingAgentReview, setFileContent, setReviewActive])
-
-  useEffect(() => {
-    if (saveTimerRef.current) {
-      window.clearTimeout(saveTimerRef.current)
-      saveTimerRef.current = null
-    }
-    if (!autoSaveEnabled || saveStatus !== 'dirty' || !workspaceReady || !activeFileIsText || renderSafety.readOnly || reviewActive) return
-    saveTimerRef.current = window.setTimeout(() => {
-      saveTimerRef.current = null
-      void flushSave(workspaceRoot)
-    }, autoSaveDelayMs)
-    return () => {
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current)
-        saveTimerRef.current = null
-      }
-    }
-  }, [autoSaveDelayMs, autoSaveEnabled, flushSave, saveStatus, workspaceReady, workspaceRoot, fileContent, activeFileIsText, renderSafety.readOnly, reviewActive])
-
   useEffect(() => () => {
-    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
     if (exportNoticeTimerRef.current) {
       window.clearTimeout(exportNoticeTimerRef.current)
       exportNoticeTimerRef.current = null
     }
-    if (autoSaveEnabledRef.current) void useWriteWorkspaceStore.getState().flushSave(workspaceRoot)
-  }, [workspaceRoot])
-
-  useEffect(() => {
-    if (!activeFilePath || !workspaceRoot.trim() || (!activeFileIsText && !activeFileIsImage)) return
-    if (
-      typeof window.kunGui?.watchWorkspaceFile !== 'function' ||
-      typeof window.kunGui?.unwatchWorkspaceFile !== 'function' ||
-      typeof window.kunGui?.onWorkspaceFileChanged !== 'function'
-    ) {
-      return
-    }
-
-    return startWriteWorkspaceFileWatch({
-      api: window.kunGui,
-      workspaceRoot,
-      path: activeFilePath,
-      kind: activeFileIsImage ? 'image' : 'text',
-      onTextSnapshot: (snapshot) => {
-        void syncActiveFileFromDisk(workspaceRoot, snapshot)
-      },
-      onImageChanged: (path) => {
-        void syncActiveImageFromDisk(workspaceRoot, path)
-      },
-      onError: setFileError
-    })
-  }, [
-    activeFilePath,
-    activeFileIsImage,
-    activeFileIsText,
-    setFileError,
-    workspaceRoot,
-    syncActiveFileFromDisk,
-    syncActiveImageFromDisk
-  ])
+  }, [])
 
   if (!workspaceReady) {
     return <WriteWorkspaceEmptyState error={fileError} onPickWorkspace={() => void pickWriteWorkspace()} />
@@ -987,6 +1062,8 @@ export function WriteWorkspaceView({
         modeMenuOpen={modeMenuOpen}
         modeMenuRef={modeMenuRef}
         previewMode={previewMode}
+        presentationEnabled={presentationEnabled}
+        presentationInFlight={presentationInFlight}
         readOnly={renderSafety.readOnly}
         saveLabel={saveLabel}
         saveStatus={saveStatus}
@@ -997,6 +1074,7 @@ export function WriteWorkspaceView({
         setPreviewMode={setPreviewMode}
         onCopyRichText={() => void copyCurrentFileAsRichText()}
         onExportFile={(format) => void exportCurrentFile(format)}
+        onGeneratePresentation={() => void generatePresentation()}
         onSave={() => {
           if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
           void flushSave(workspaceRoot)
@@ -1007,6 +1085,7 @@ export function WriteWorkspaceView({
         <div className="min-w-0 flex-1 overflow-hidden rounded-2xl border border-ds-border-muted bg-ds-card/92 shadow-[0_12px_32px_rgba(20,47,95,0.04)] backdrop-blur-xl">
           <WriteWorkspaceDocumentPane
             activeFilePath={activeFilePath}
+            documentEpoch={documentEpoch}
             activeFileIsImage={activeFileIsImage}
             activeFileIsPdf={activeFileIsPdf}
             activeFileIsText={activeFileIsText}

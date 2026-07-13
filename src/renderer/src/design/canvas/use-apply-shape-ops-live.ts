@@ -1,17 +1,8 @@
 import { useEffect, useRef } from 'react'
 import type { ChatBlock, GeneratedFileReference, ToolBlock } from '../../agent/types'
 import { useChatStore } from '../../store/chat-store'
-import {
-  collectAssistantTextForTurn,
-  threadHasPendingRuntimeWork
-} from '../../store/chat-store-runtime-helpers'
-import {
-  applyCanvasOpBlocks,
-  applyCanvasOpsSince,
-  extractCanvasOpBlocksFromValue,
-  isDesignCanvasToolName,
-  setLastCanvasOpErrors
-} from './apply-shape-ops'
+import { collectAssistantTextForTurn, threadHasPendingRuntimeWork } from '../../store/chat-store-runtime-helpers'
+import { applyCanvasOpBlocks, applyCanvasOpsSince, extractCanvasOpBlocksFromValue, setLastCanvasOpErrors } from './apply-shape-ops'
 import { useCanvasSelectionStore } from './canvas-selection-store'
 import { useCanvasShapeStore } from './canvas-shape-store'
 import { takeScreenBrief } from './screen-artifact-bridge'
@@ -19,6 +10,18 @@ import type { ExecuteOpsOptions, OpError } from './shape-ops'
 import { isHtmlFrame, type CanvasDocument } from './canvas-types'
 import { useDesignAssistantStore } from '../design-assistant-store'
 import { useDesignWorkspaceStore } from '../design-workspace-store'
+import {
+  applySvgArtifactToolBlock,
+  shouldApplyDesignCanvasToolBlock,
+  type SvgArtifactRequestHandler
+} from './svg-artifact-tool-replay'
+import { designSystemToolRevisionError, persistAppliedDesignSystemTool } from './design-system-tool-replay'
+import { dispatchCanvasExportToolBlock, type CanvasAgentExportRequestHandler } from './canvas-export-tool-replay'
+
+export {
+  hasDispatchedSvgFollowup, shouldApplyDesignCanvasToolBlock,
+  shouldApplyDurableSvgCreate, userTextBeforeToolBlock
+} from './svg-artifact-tool-replay'
 
 /** Coalesce per-token `liveAssistant` deltas so we re-parse at most this often. */
 const STREAM_THROTTLE_MS = 120
@@ -226,13 +229,6 @@ export function replayActiveCanvasTurn(
   processStreaming()
 }
 
-export function shouldApplyDesignCanvasToolBlock(block: ToolBlock): boolean {
-  if (!isDesignCanvasToolName(block.meta?.toolName)) return false
-  if (block.status !== 'success') return false
-  const sourceItemKind = block.meta?.sourceItemKind
-  return sourceItemKind === undefined || sourceItemKind === 'tool_result'
-}
-
 export function canvasReplayStateForStoreUpdate(
   state: ActiveCanvasTurnReplayState,
   prev?: Pick<ActiveCanvasTurnReplayState, 'currentTurnId' | 'currentTurnUserId'>
@@ -293,10 +289,14 @@ export function useApplyShapeOpsLive(
   onScreenCreated?: (shapeId: string, userPrompt: string, brief?: string) => void,
   executeOptions?: ExecuteOpsOptions,
   errorKey?: string,
-  targetThreadId?: string | null
+  targetThreadId?: string | null,
+  onSvgArtifactRequested?: SvgArtifactRequestHandler,
+  onCanvasExportRequested?: CanvasAgentExportRequestHandler
 ): void {
   const onScreenCreatedRef = useRef(onScreenCreated)
   onScreenCreatedRef.current = onScreenCreated
+  const onSvgArtifactRequestedRef = useRef(onSvgArtifactRequested)
+  onSvgArtifactRequestedRef.current = onSvgArtifactRequested
 
   useEffect(() => {
     if (!enabled) return
@@ -310,7 +310,10 @@ export function useApplyShapeOpsLive(
     let lastRunAt = 0
     let trailingTimer: ReturnType<typeof setTimeout> | null = null
     let screenDrainTimer: ReturnType<typeof setTimeout> | null = null
+    let svgDrainTimer: ReturnType<typeof setTimeout> | null = null
     const appliedToolBlockIds = new Set<string>()
+    const processingSvgToolBlockIds = new Set<string>()
+    const pendingSvgToolBlocks = new Map<string, ToolBlock>()
     let generatedImageFallbackTarget: GeneratedImageFallbackTarget | null = null
 
     // Screens the agent creates via add_screen still need their HTML generated in
@@ -388,6 +391,35 @@ export function useApplyShapeOpsLive(
       applyFrom(assembledTurnText(), true)
     }
 
+    const applySvgToolBlock = async (block: ToolBlock, allowLegacy = false): Promise<void> => {
+      const onRequest = onSvgArtifactRequestedRef.current
+      if (!onRequest) return
+      const chatState = useChatStore.getState()
+      const result = await applySvgArtifactToolBlock({
+        block,
+        allowLegacy,
+        busy: Boolean(
+          chatState.currentTurnId ||
+          chatState.busy ||
+          threadHasPendingRuntimeWork(chatState.blocks)
+        ),
+        blocks: chatState.blocks,
+        artifacts: useDesignWorkspaceStore.getState().artifacts,
+        appliedBlockIds: appliedToolBlockIds,
+        processingBlockIds: processingSvgToolBlockIds,
+        onDefer: (deferred) => {
+          pendingSvgToolBlocks.set(deferred.id, deferred)
+          scheduleSvgDrain()
+        },
+        onRequest
+      })
+      if (result.shapeIds.length > 0) {
+        useCanvasSelectionStore.getState().select(result.shapeIds)
+        useDesignAssistantStore.getState().markAiAffected(result.shapeIds)
+        framedThisTurn = true
+      }
+    }
+
     const applyToolBlock = (block: ToolBlock): void => {
       if (appliedToolBlockIds.has(block.id)) return
       if (!shouldApplyDesignCanvasToolBlock(block)) return
@@ -409,6 +441,23 @@ export function useApplyShapeOpsLive(
           blocks: chatState.blocks
         })
       )
+      if (dispatchCanvasExportToolBlock(block, parsed, appliedToolBlockIds, onCanvasExportRequested)) return
+      if (block.meta?.toolName === 'design_svg_create') {
+        // A dedicated SVG turn must start only after the canvas turn becomes
+        // idle. Otherwise sendMessage puts it into a process-global transient
+        // queue that is discarded on thread switches. Stable-id results are
+        // also replayed below after remount/restart when the artifact is absent
+        // or still pending without a corresponding follow-up user turn.
+        if (chatState.currentTurnId) pendingSvgToolBlocks.set(block.id, block)
+        else void applySvgToolBlock(block, true)
+        return
+      }
+      const revisionError = designSystemToolRevisionError(block.meta?.toolName, parsed)
+      if (revisionError) {
+        appliedToolBlockIds.add(block.id)
+        errorsThisTurn.push(revisionError)
+        return
+      }
       const blocks = extractCanvasOpBlocksFromValue(parsed)
       if (blocks.length === 0) {
         return
@@ -416,6 +465,7 @@ export function useApplyShapeOpsLive(
       const { affectedIds, errors } = applyCanvasOpBlocks(blocks, `tool:${block.id}`, executeOptions)
       appliedToolBlockIds.add(block.id)
       if (errors.length > 0) errorsThisTurn.push(...errors)
+      persistAppliedDesignSystemTool(block.meta?.toolName, errors)
       if (affectedIds.length === 0) return
       for (const id of affectedIds) affectedThisTurn.add(id)
       useCanvasSelectionStore.getState().select([...affectedThisTurn])
@@ -448,6 +498,30 @@ export function useApplyShapeOpsLive(
         screenDrainTimer = null
         drainPendingScreens()
       }, delay)
+    }
+
+    function scheduleSvgDrain(delay = 120): void {
+      if (svgDrainTimer) return
+      svgDrainTimer = setTimeout(() => {
+        svgDrainTimer = null
+        drainPendingSvgBlocks()
+      }, delay)
+    }
+
+    function drainPendingSvgBlocks(): void {
+      if (pendingSvgToolBlocks.size === 0) return
+      const chatState = useChatStore.getState()
+      if (
+        chatState.currentTurnId ||
+        chatState.busy ||
+        threadHasPendingRuntimeWork(chatState.blocks)
+      ) {
+        scheduleSvgDrain()
+        return
+      }
+      const blocks = [...pendingSvgToolBlocks.values()]
+      pendingSvgToolBlocks.clear()
+      for (const block of blocks) void applySvgToolBlock(block, true)
     }
 
     // Kick off the next queued screen's HTML generation — but only while the
@@ -560,6 +634,7 @@ export function useApplyShapeOpsLive(
       resetTurn()
       // Let chat/runtime state settle before starting the follow-up HTML turn.
       scheduleScreenDrain(120)
+      scheduleSvgDrain(120)
     }
 
     // If this hook becomes enabled after a turn has already started (common for
@@ -569,6 +644,13 @@ export function useApplyShapeOpsLive(
     const initialState = useChatStore.getState()
     if (initialState.currentTurnId) captureGeneratedImageFallbackTarget(initialState)
     replayActiveCanvasTurn(initialState, applyToolBlock, processStreaming, targetThreadId)
+    if (!initialState.currentTurnId && activeCanvasTurnMatchesThread(initialState, targetThreadId)) {
+      for (const block of initialState.blocks) {
+        if (block.kind === 'tool' && block.meta?.toolName === 'design_svg_create') {
+          void applySvgToolBlock(block)
+        }
+      }
+    }
 
     const unsubscribe = useChatStore.subscribe((state, prev) => {
       if (!activeCanvasTurnMatchesThread(state, targetThreadId)) return
@@ -584,6 +666,13 @@ export function useApplyShapeOpsLive(
           if (block.kind === 'tool') applyToolBlock(block)
         }
       }
+      if (!state.currentTurnId && state.blocks !== prev.blocks) {
+        for (const block of state.blocks) {
+          if (block.kind === 'tool' && block.meta?.toolName === 'design_svg_create') {
+            void applySvgToolBlock(block)
+          }
+        }
+      }
       if (state.currentTurnId && state.liveAssistant !== prev.liveAssistant) {
         scheduleStreaming()
       }
@@ -596,12 +685,14 @@ export function useApplyShapeOpsLive(
       ) {
         scheduleScreenDrain(0)
       }
+      if (pendingSvgToolBlocks.size > 0) scheduleSvgDrain(0)
     })
 
     return () => {
       if (trailingTimer) clearTimeout(trailingTimer)
       if (screenDrainTimer) clearTimeout(screenDrainTimer)
+      if (svgDrainTimer) clearTimeout(svgDrainTimer)
       unsubscribe()
     }
-  }, [enabled, executeOptions, errorKey, targetThreadId])
+  }, [enabled, executeOptions, errorKey, targetThreadId, onCanvasExportRequested])
 }

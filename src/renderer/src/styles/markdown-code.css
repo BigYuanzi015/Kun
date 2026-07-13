@@ -361,7 +361,46 @@ html[data-theme='dark'] .ds-markdown .ds-code-block-html > pre span {
   --ds-code-sidebar-editor-bg: #fbfcff;
   --ds-code-sidebar-gutter-bg: #f3f6fb;
   --ds-code-sidebar-active-line-bg: rgba(59, 130, 216, 0.13);
+  container-type: inline-size;
   background: var(--ds-bg-canvas);
+}
+
+.ds-file-preview-reading-backdrop {
+  display: none;
+}
+
+.ds-file-preview-reading-backdrop.is-visible {
+  position: fixed;
+  inset: var(--ds-windows-titlebar-height, 0px) 0 0;
+  z-index: 68;
+  display: block;
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--ds-bg-main) 78%, transparent);
+  backdrop-filter: blur(10px);
+  cursor: default;
+}
+
+.ds-code-sidebar.is-reading {
+  position: fixed;
+  top: calc(
+    var(--ds-windows-titlebar-height, 0px) + var(--ds-window-controls-safe-block) + 10px
+  );
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  z-index: 69;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0 !important;
+  max-height: none !important;
+  overflow: hidden;
+  border: 1px solid var(--ds-border-strong);
+  border-radius: 16px;
+  background: var(--ds-bg-canvas);
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.3);
 }
 
 html[data-theme='dark'] .ds-code-sidebar {
@@ -380,6 +419,26 @@ html[data-theme='dark'] .ds-code-sidebar {
   border-bottom: 1px solid var(--ds-border-muted);
   background: color-mix(in srgb, var(--ds-bg-canvas) 92%, var(--ds-surface-subtle));
   padding: 0 0.75rem;
+}
+
+@container (max-width: 420px) {
+  .ds-code-sidebar-topbar {
+    min-height: 78px;
+    flex-wrap: wrap;
+    align-content: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.55rem;
+  }
+
+  .ds-code-sidebar-tabs,
+  .ds-code-sidebar-actions {
+    flex-basis: 100%;
+    width: 100%;
+  }
+
+  .ds-code-sidebar-actions {
+    justify-content: flex-end;
+  }
 }
 
 .ds-code-sidebar-tabs {
@@ -519,6 +578,18 @@ html[data-theme='dark'] .ds-code-sidebar {
 
 .ds-file-preview-markdown {
   background: var(--ds-bg-canvas);
+}
+
+.ds-file-preview-svg,
+.ds-file-preview-image {
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #eef0f3 25%, transparent 25%),
+    linear-gradient(-45deg, #eef0f3 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #eef0f3 75%),
+    linear-gradient(-45deg, transparent 75%, #eef0f3 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
 }
 
 .ds-file-preview-code-surface {

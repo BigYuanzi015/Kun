@@ -122,6 +122,9 @@ describe('DesignAIRail target toggle', () => {
     expect(html).toContain('aria-label="Agent context: Web - Default 1280 x 800 web frame"')
     expect(html).toMatch(/<button[^>]*aria-pressed="true"[^>]*>[\s\S]*?Web<\/button>/)
     expect(html).toMatch(/<button[^>]*aria-pressed="false"[^>]*>[\s\S]*?App<\/button>/)
+    expect(html).toContain('dark:bg-[#343c4a]')
+    expect(html).toContain('dark:ring-white/15')
+    expect(html).not.toContain('dark:bg-white/14')
   })
 
   it('reflects the selected App target and locks switching while busy', () => {

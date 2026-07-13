@@ -3,6 +3,8 @@ import type { SettingsRouteSection } from '../../store/chat-store'
 import { DesignSidebar } from '../design/DesignSidebar'
 import { Sidebar } from '../chat/Sidebar'
 import { WriteSidebar } from '../write/WriteSidebar'
+import type { RegisteredContribution } from '../../extensions/contribution-registry'
+import { ExtensionViewOutlet } from '../../extensions/ControlledContributionSurfaces'
 
 type CodeSidebarProps = ComponentProps<typeof Sidebar>
 
@@ -14,6 +16,10 @@ export type WorkbenchLeftSidebarProps = {
   activeThreadId: CodeSidebarProps['activeThreadId']
   sidebarView: CodeSidebarProps['activeView']
   connectPhoneSidebarOpen: boolean
+  extensionsActive: boolean
+  extensionView?: RegisteredContribution<'views.leftSidebar'>
+  workspaceRoot?: string
+  onCloseExtensionView?: () => void
   runtimeReady: boolean
   threadSearch: string
   showArchivedThreads: boolean
@@ -32,6 +38,7 @@ export type WorkbenchLeftSidebarProps = {
   onOpenRequirementDraft: CodeSidebarProps['onOpenRequirementDraft']
   onOpenSettings: (section?: SettingsRouteSection) => void
   onOpenPlugins: CodeSidebarProps['onOpenPlugins']
+  onOpenExtensions: CodeSidebarProps['onOpenExtensions']
   onToggleTheme: CodeSidebarProps['onToggleTheme']
   onToggleConnectPhone: CodeSidebarProps['onToggleConnectPhone']
   onCodeOpen: CodeSidebarProps['onCodeOpen']
@@ -55,6 +62,10 @@ export function WorkbenchLeftSidebar({
   activeThreadId,
   sidebarView,
   connectPhoneSidebarOpen,
+  extensionsActive,
+  extensionView,
+  workspaceRoot,
+  onCloseExtensionView,
   runtimeReady,
   threadSearch,
   showArchivedThreads,
@@ -73,6 +84,7 @@ export function WorkbenchLeftSidebar({
   onOpenRequirementDraft,
   onOpenSettings,
   onOpenPlugins,
+  onOpenExtensions,
   onToggleTheme,
   onToggleConnectPhone,
   onCodeOpen,
@@ -87,7 +99,13 @@ export function WorkbenchLeftSidebar({
   return (
     <>
       <div className="min-h-0 shrink-0" style={{ width }}>
-        {route === 'design' ? (
+        {extensionView ? (
+          <ExtensionViewOutlet
+            contribution={extensionView}
+            workspaceRoot={workspaceRoot}
+            onClose={onCloseExtensionView}
+          />
+        ) : route === 'design' ? (
           <DesignSidebar
             onCodeOpen={onCodeOpen}
             onWriteOpen={onWriteOpen}
@@ -114,6 +132,7 @@ export function WorkbenchLeftSidebar({
             activeView={sidebarView}
             connectPhoneSidebarOpen={connectPhoneSidebarOpen}
             pluginsActive={route === 'plugins'}
+            extensionsActive={extensionsActive}
             runtimeReady={runtimeReady}
             threadSearch={threadSearch}
             showArchivedThreads={showArchivedThreads}
@@ -130,6 +149,7 @@ export function WorkbenchLeftSidebar({
             onOpenRequirementDraft={onOpenRequirementDraft}
             onOpenSettings={onOpenSettings}
             onOpenPlugins={onOpenPlugins}
+            onOpenExtensions={onOpenExtensions}
             onToggleTheme={onToggleTheme}
             focusModeEnabled={focusModeEnabled}
             onFocusModeChange={onFocusModeChange}

@@ -71,7 +71,6 @@ afterEach(() => {
 
 describe('resolveServerCommand', () => {
   it('uses where on Windows when looking up a server on PATH', async () => {
-    accessMock.mockRejectedValueOnce(new Error('missing local install'))
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
 
     spawnMock.mockImplementation((command: string, args: string[]) => {
@@ -89,6 +88,7 @@ describe('resolveServerCommand', () => {
       command: 'typescript-language-server',
       args: ['--stdio']
     })
+    expect(accessMock).not.toHaveBeenCalled()
   })
 })
 
@@ -151,6 +151,38 @@ describe('LSP session cooldown', () => {
     expect(session.serverKey).toBe('typescript')
     expect(serverProcesses).toHaveLength(2)
     releaseLspSession('/workspace/cooldown', 'typescript')
+  })
+})
+
+describe('LSP shutdown', () => {
+  it('terminates a language server even while initialization is pending', async () => {
+    accessMock.mockRejectedValue(new Error('missing local install'))
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+    let serverProcess: MockProcess | undefined
+
+    spawnMock.mockImplementation((command: string) => {
+      if (command === 'which') {
+        const proc = createMockProcess()
+        queueMicrotask(() => {
+          proc.stdout.emit('data', Buffer.from('/usr/local/bin/typescript-language-server\n', 'utf8'))
+          proc.emit('close', 0)
+        })
+        return proc
+      }
+      if (command === 'typescript-language-server') {
+        serverProcess = createMockProcess()
+        return serverProcess
+      }
+      throw new Error(`Unexpected spawn: ${command}`)
+    })
+
+    const acquiring = acquireLspSession('/workspace/shutdown', 'typescript')
+    await vi.waitFor(() => expect(serverProcess?.stdin.write).toHaveBeenCalledTimes(1))
+
+    shutdownAllLspSessions()
+
+    expect(serverProcess?.kill).toHaveBeenCalledWith('SIGTERM')
+    await expect(acquiring).rejects.toThrow('LSP session closed')
   })
 })
 

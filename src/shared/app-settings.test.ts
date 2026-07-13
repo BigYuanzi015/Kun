@@ -154,14 +154,14 @@ describe('kun defaults', () => {
     expect(defaultKunRuntimeSettings().model).toBe(DEFAULT_KUN_MODEL)
   })
 
-  it('defaults approval policy to auto', () => {
+  it('defaults approval policy to request confirmation for non-read tools', () => {
     expect(defaultKunRuntimeSettings().approvalPolicy).toBe(DEFAULT_APPROVAL_POLICY)
-    expect(defaultKunRuntimeSettings().approvalPolicy).toBe('auto')
+    expect(defaultKunRuntimeSettings().approvalPolicy).toBe('on-request')
   })
 
-  it('defaults sandbox mode to full access', () => {
+  it('defaults sandbox mode to workspace write access', () => {
     expect(defaultKunRuntimeSettings().sandboxMode).toBe(DEFAULT_SANDBOX_MODE)
-    expect(defaultKunRuntimeSettings().sandboxMode).toBe('danger-full-access')
+    expect(defaultKunRuntimeSettings().sandboxMode).toBe('workspace-write')
   })
 
   it('maps unified tool permission modes to approval and sandbox settings', () => {
@@ -189,7 +189,7 @@ describe('kun defaults', () => {
       approvalPolicy: 'auto',
       sandboxMode: 'danger-full-access'
     })
-    expect(kunToolPermissionModeFromSettings(defaultKunRuntimeSettings())).toBe('bypass')
+    expect(kunToolPermissionModeFromSettings(defaultKunRuntimeSettings())).toBe('workspace-write')
     expect(kunToolPermissionModeFromSettings({
       approvalPolicy: 'always',
       sandboxMode: 'danger-full-access'
@@ -253,6 +253,7 @@ describe('kun defaults', () => {
       baseUrl: '',
       apiKey: '',
       model: '',
+      defaultResolution: '1K',
       defaultSize: '',
       quality: 'auto',
       timeoutMs: 180000
@@ -332,6 +333,75 @@ describe('log retention settings', () => {
     } as unknown as AppSettingsV1)
 
     expect(normalized.log.retentionDays).toBe(DEFAULT_LOG_RETENTION_DAYS)
+  })
+})
+
+describe('runtime model provider selection', () => {
+  it('repairs a legacy provider/model mismatch when the model has one owner', () => {
+    const raw = settings()
+    const codexPreset = getModelProviderPreset('codex')
+    const codex = codexPreset ? modelProviderPresetProfile(codexPreset) : null
+    expect(codex).not.toBeNull()
+    raw.provider.providers = [...raw.provider.providers, codex!]
+    raw.agents.kun.providerId = 'deepseek'
+    raw.agents.kun.model = 'gpt-5.3-codex-spark'
+
+    const normalized = normalizeAppSettings(raw)
+
+    expect(normalized.agents.kun.providerId).toBe('codex')
+    expect(normalized.agents.kun.model).toBe('gpt-5.3-codex-spark')
+  })
+
+  it('falls back to the selected provider model instead of retaining an ambiguous mismatch', () => {
+    const raw = settings()
+    const codex = modelProviderPresetProfile(getModelProviderPreset('codex')!)
+    const duplicate = {
+      ...codex,
+      id: 'codex-mirror',
+      name: 'Codex Mirror'
+    }
+    raw.provider.providers = [...raw.provider.providers, codex, duplicate]
+    raw.agents.kun.providerId = 'deepseek'
+    raw.agents.kun.model = 'gpt-5.3-codex-spark'
+
+    const normalized = normalizeAppSettings(raw)
+
+    expect(normalized.agents.kun.providerId).toBe('deepseek')
+    expect(normalized.agents.kun.model).toBe('deepseek-v4-flash')
+  })
+
+  it('repairs partial subagent profile selections into complete pairs', () => {
+    const raw = settings()
+    const codex = modelProviderPresetProfile(getModelProviderPreset('codex')!)
+    raw.provider.providers = [...raw.provider.providers, codex]
+    raw.agents.kun.subagents = {
+      enabled: true,
+      profiles: [
+        {
+          id: 'model-only', enabled: true, name: '', mode: 'subagent', toolPolicy: 'inherit',
+          model: 'gpt-5.3-codex-spark'
+        },
+        {
+          id: 'provider-only', enabled: true, name: '', mode: 'subagent', toolPolicy: 'inherit',
+          providerId: 'deepseek'
+        }
+      ]
+    }
+
+    const normalized = normalizeAppSettings(raw)
+
+    expect(normalized.agents.kun.subagents?.profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'model-only',
+        model: 'gpt-5.3-codex-spark',
+        providerId: 'codex'
+      }),
+      expect.objectContaining({
+        id: 'provider-only',
+        model: 'deepseek-v4-flash',
+        providerId: 'deepseek'
+      })
+    ]))
   })
 })
 
@@ -592,6 +662,55 @@ describe('mergeKunRuntimeSettings', () => {
     expect(next.baseUrl).toBe(current.baseUrl)
   })
 
+  it('deep-merges subagent settings while replacing an explicit profiles roster', () => {
+    const current = {
+      ...defaultKunRuntimeSettings(),
+      subagents: {
+        enabled: true,
+        maxParallel: 3,
+        maxChildRuns: 12,
+        defaultToolPolicy: 'inherit' as const,
+        defaultProfile: 'researcher',
+        profiles: [{
+          id: 'researcher',
+          enabled: true,
+          name: 'Researcher',
+          mode: 'subagent' as const,
+          toolPolicy: 'readOnly' as const
+        }]
+      }
+    }
+
+    const limitsChanged = mergeKunRuntimeSettings(current, {
+      subagents: { maxParallel: 5 }
+    })
+    expect(limitsChanged.subagents).toEqual({
+      ...current.subagents,
+      maxParallel: 5
+    })
+
+    const rosterCleared = mergeKunRuntimeSettings(limitsChanged, {
+      subagents: { profiles: [] }
+    })
+    expect(rosterCleared.subagents).toEqual({
+      ...current.subagents,
+      maxParallel: 5,
+      profiles: []
+    })
+  })
+
+  it('completes a partial first subagent patch with safe defaults', () => {
+    const next = mergeKunRuntimeSettings(defaultKunRuntimeSettings(), {
+      subagents: { enabled: false }
+    })
+
+    expect(next.subagents).toEqual({ enabled: false, profiles: [] })
+    expect(normalizeAppSettings({
+      ...settings(),
+      agents: { kun: next }
+    }).agents.kun.subagents).toEqual({ enabled: false, profiles: [] })
+  })
+
   it('deep-merges token economy settings and keeps the legacy switch synced', () => {
     const current = defaultKunRuntimeSettings()
     const next = mergeKunRuntimeSettings(current, {
@@ -773,22 +892,35 @@ describe('mergeKunRuntimeSettings', () => {
       baseUrl: 'https://api.siliconflow.cn/v1',
       apiKey: 'sk-image',
       model: 'Kwai-Kolors/Kolors',
+      defaultResolution: '1K',
       defaultSize: '',
       quality: 'auto',
       timeoutMs: 180000
     })
 
     const sized = mergeKunRuntimeSettings(next, {
-      imageGeneration: { defaultSize: '1536x1024', quality: 'high', timeoutMs: 240000 }
+      imageGeneration: {
+        defaultResolution: '2K',
+        defaultSize: '1536x1024',
+        quality: 'high',
+        timeoutMs: 240000
+      }
     })
+    expect(sized.imageGeneration.defaultResolution).toBe('2K')
     expect(sized.imageGeneration.defaultSize).toBe('1536x1024')
     expect(sized.imageGeneration.quality).toBe('high')
     expect(sized.imageGeneration.timeoutMs).toBe(240000)
     expect(sized.imageGeneration.apiKey).toBe('sk-image')
 
     const invalidSize = mergeKunRuntimeSettings(sized, {
-      imageGeneration: { defaultSize: 'huge', quality: 'maximum' as never, timeoutMs: -5 }
+      imageGeneration: {
+        defaultResolution: '4K' as never,
+        defaultSize: 'huge',
+        quality: 'maximum' as never,
+        timeoutMs: -5
+      }
     })
+    expect(invalidSize.imageGeneration.defaultResolution).toBe('1K')
     expect(invalidSize.imageGeneration.defaultSize).toBe('')
     expect(invalidSize.imageGeneration.quality).toBe('auto')
     expect(invalidSize.imageGeneration.timeoutMs).toBe(180000)
@@ -1060,6 +1192,7 @@ describe('legacy Kun defaults migration', () => {
       baseUrl: '',
       apiKey: '',
       model: '',
+      defaultResolution: '1K',
       defaultSize: '',
       quality: 'auto',
       timeoutMs: 180000
@@ -1302,6 +1435,7 @@ describe('claw runtime prompts', () => {
       baseUrl: 'https://images.example.test/v1',
       apiKey: 'sk-image',
       model: 'test-image-model',
+      defaultResolution: '1K',
       defaultSize: '1024x1024',
       quality: 'auto',
       timeoutMs: 180000

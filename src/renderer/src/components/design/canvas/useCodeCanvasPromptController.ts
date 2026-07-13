@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import type { RightPanelMode } from '../../chat/WorkbenchTopBar'
+import { BUILTIN_RIGHT_PANEL_IDS } from '../../../extensions/contribution-ids'
 import {
   composerReasoningEffortRequestValue,
   type ComposerReasoningEffort
@@ -49,7 +50,7 @@ export function useCodeCanvasPromptController({
     baseText,
     canvasBrief
   }: CodeCanvasOutboundPromptInput): Promise<string> {
-    if (rightPanelMode !== 'canvas') setRightPanelMode('canvas')
+    if (rightPanelMode !== BUILTIN_RIGHT_PANEL_IDS.canvas) setRightPanelMode(BUILTIN_RIGHT_PANEL_IDS.canvas)
     return buildCodeCanvasOutboundText({
       baseText,
       canvasBrief,

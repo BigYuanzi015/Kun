@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useState, type ReactElement } from 'react'
 import { AlertCircle, CheckCircle2, Copy, Download, Loader2, LogIn } from 'lucide-react'
 import type { ModelProviderProfileV1 } from '@shared/app-settings-types'
 import { SecretInput } from './settings-controls'
@@ -46,7 +46,7 @@ export function ClaudeSubscriptionSection({
 
   // Apply a background-download state (from status or a live progress event).
   // Returns true if it represented an active/known download.
-  const applyDownload = (
+  const applyDownload = useCallback((
     d: { status: string; receivedBytes: number; totalBytes: number; message?: string } | null | undefined
   ): boolean => {
     if (!d) return false
@@ -67,9 +67,9 @@ export function ClaudeSubscriptionSection({
       return true
     }
     return false
-  }
+  }, [t])
 
-  const checkSdk = async (): Promise<void> => {
+  const checkSdk = useCallback(async (): Promise<void> => {
     try {
       const s = await window.kunGui.claudeSubscriptionSdkStatus()
       if (s.installed) {
@@ -80,7 +80,7 @@ export function ClaudeSubscriptionSection({
     } catch {
       setSdk('missing')
     }
-  }
+  }, [applyDownload])
 
   // Start the ~222MB download in the background (main keeps it running even if the
   // user navigates away); progress + completion arrive via the subscription below.
@@ -128,9 +128,12 @@ export function ClaudeSubscriptionSection({
   useEffect(() => {
     void refreshStatus()
     void checkSdk()
-  }, [])
+  }, [checkSdk])
   // The download runs in main; subscribe so progress shows even after remounting.
-  useEffect(() => window.kunGui.onClaudeSubscriptionSdkProgress((state) => applyDownload(state)), [])
+  useEffect(
+    () => window.kunGui.onClaudeSubscriptionSdkProgress((state) => applyDownload(state)),
+    [applyDownload]
+  )
 
   const runLogin = async (): Promise<void> => {
     setBusy(true)

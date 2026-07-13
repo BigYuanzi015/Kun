@@ -17,6 +17,11 @@ const WorkflowRunPanel = lazy(() =>
 const WriteWorkspaceView = lazy(() =>
   import('../write/WriteWorkspaceView').then((module) => ({ default: module.WriteWorkspaceView }))
 )
+const ExtensionManagementCenter = lazy(() =>
+  import('../../extensions/ExtensionManagementCenter').then((module) => ({
+    default: module.ExtensionManagementCenter
+  }))
+)
 
 type DesignStageProps = ComponentProps<typeof WorkbenchDesignStage>
 
@@ -41,6 +46,10 @@ export type WorkbenchStageRouterProps = {
   conversation: WorkbenchConversationStageProps
   imageAnnotationHost: ReactNode
   planOverlay: ReactNode
+  extensions: {
+    workspaceRoot: string
+    onOpenIntegrations: () => void
+  }
 }
 
 function WorkbenchPaneFallback(): ReactElement {
@@ -56,7 +65,8 @@ export function WorkbenchStageRouter({
   write,
   conversation,
   imageAnnotationHost,
-  planOverlay
+  planOverlay,
+  extensions
 }: WorkbenchStageRouterProps): ReactElement {
   return (
     <main
@@ -64,7 +74,16 @@ export function WorkbenchStageRouter({
         route === 'plugins' ? 'px-0' : ''
       }`}
     >
-      {route === 'plugins' ? (
+      {route === 'extensions' ? (
+        <Suspense fallback={<div className="h-full bg-ds-main" />}>
+          <ExtensionManagementCenter
+            leftSidebarCollapsed={leftSidebarCollapsed}
+            onToggleLeftSidebar={onToggleLeftSidebar}
+            workspaceRoot={extensions.workspaceRoot}
+            onOpenIntegrations={extensions.onOpenIntegrations}
+          />
+        </Suspense>
+      ) : route === 'plugins' ? (
         <Suspense fallback={<div className="h-full bg-ds-main" />}>
           <PluginMarketplaceView
             leftSidebarCollapsed={leftSidebarCollapsed}

@@ -144,32 +144,38 @@ export const useDesignAssistantStore = create<DesignAssistantState>((set, get) =
       })
 
       const sseStreamId = `design-rail-${threadId}-${turnId}`
-      const { streamId } = await rendererRuntimeClient.startSse(threadId, 0, sseStreamId)
+      const { streamId } = await rendererRuntimeClient.startSse(threadId, 0, sseStreamId, {
+        acknowledgedBatches: true
+      })
 
       let assistantText = ''
       const unsubscribe = rendererRuntimeClient.onSseEvent((payload) => {
         if (payload.streamId !== streamId) return
-        for (const rawEvent of payload.events) {
-          const event = rawEvent as { type?: string; delta?: string; text?: string }
-          if (event.type === 'text_delta' && event.delta) {
-            assistantText += event.delta
-          } else if (event.type === 'turn_complete') {
-            unsubscribe()
-            rendererRuntimeClient.stopSse(streamId)
-            get().appendBlock({
-              kind: 'assistant',
-              id: makeBlockId(),
-              text: assistantText,
-              createdAt: new Date().toISOString()
-            })
-            // Auto-apply ShapeOps blocks the AI emitted (round-trip without a manual step).
-            try {
-              get().applyAiShapeOps(assistantText)
-            } catch {
-              // ignore — the executor logs its own errors in result.errors
+        try {
+          for (const rawEvent of payload.events) {
+            const event = rawEvent as { type?: string; delta?: string; text?: string }
+            if (event.type === 'text_delta' && event.delta) {
+              assistantText += event.delta
+            } else if (event.type === 'turn_complete') {
+              unsubscribe()
+              rendererRuntimeClient.stopSse(streamId)
+              get().appendBlock({
+                kind: 'assistant',
+                id: makeBlockId(),
+                text: assistantText,
+                createdAt: new Date().toISOString()
+              })
+              // Auto-apply ShapeOps blocks the AI emitted (round-trip without a manual step).
+              try {
+                get().applyAiShapeOps(assistantText)
+              } catch {
+                // ignore — the executor logs its own errors in result.errors
+              }
+              set({ designBusy: false })
             }
-            set({ designBusy: false })
           }
+        } finally {
+          if (payload.batchId) void rendererRuntimeClient.ackSse(streamId, payload.batchId)
         }
       })
     } catch {

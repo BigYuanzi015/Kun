@@ -67,6 +67,52 @@ describe('skill-service', () => {
     }))
   })
 
+  it('discovers project Kun skills from .kun/skills and exposes the root to runtime', async () => {
+    const workspaceRoot = join(tempRoot, 'workspace-kun')
+    const skillRoot = join(workspaceRoot, '.kun', 'skills')
+    const pmSkill = join(skillRoot, 'pm')
+    await mkdir(pmSkill, { recursive: true })
+    await writeFile(
+      join(pmSkill, 'skill.json'),
+      JSON.stringify({
+        id: 'pm',
+        name: 'Project Manager',
+        description: 'Coordinate staged project work.',
+        triggers: { commands: ['/pm'] }
+      }),
+      'utf8'
+    )
+    await writeFile(join(pmSkill, 'SKILL.md'), '# PM\n\nCoordinate staged work.', 'utf8')
+
+    const settings = createSettings(workspaceRoot)
+    const result = await listGuiSkills(settings, workspaceRoot)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.skills).toContainEqual(expect.objectContaining({
+      id: 'pm',
+      name: 'Project Manager',
+      description: 'Coordinate staged project work.',
+      scope: 'project'
+    }))
+
+    const roots = await listGuiSkillRoots(settings, workspaceRoot)
+    expect(roots.ok).toBe(true)
+    if (!roots.ok) return
+    const kunRoot = roots.roots.find((root) => root.id === 'workspace-kun')
+    expect(kunRoot).toMatchObject({
+      path: skillRoot,
+      labelKey: 'pluginSkillRootWorkspaceKun',
+      scope: 'project',
+      source: 'common',
+      exists: true,
+      enabled: true,
+      skillCount: 1
+    })
+    expect((await guiSkillRootsForRuntime(settings, workspaceRoot)).map((root) => comparable(root.path)))
+      .toContain(comparable(skillRoot))
+  })
+
   it('keeps legacy SKILL.md entries with Chinese frontmatter names distinct', async () => {
     const workspaceRoot = join(tempRoot, 'workspace-cn')
     const skillRoot = join(workspaceRoot, '.agents', 'skills')

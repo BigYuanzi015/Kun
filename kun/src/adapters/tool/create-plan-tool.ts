@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readdir, rename, writeFile } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, join, normalize, relative } from 'node:path'
+import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
 import { LocalToolHost, type LocalTool } from './local-tool-host.js'
+import { resolveWorkspacePath } from './builtin-tool-utils.js'
 import { withFileMutationQueue } from './file-mutation-queue.js'
 import type { ToolHostContext } from '../../ports/tool-host.js'
 import {
@@ -97,13 +98,6 @@ function planDirectory(workspaceRoot: string): string {
   return isAbsolute(workspaceRoot)
     ? join(workspaceRoot, GUI_PLAN_RELATIVE_DIR)
     : join(process.cwd(), workspaceRoot, GUI_PLAN_RELATIVE_DIR)
-}
-
-function assertWithinWorkspace(absolutePath: string, workspaceRoot: string): void {
-  const rel = relative(workspaceRoot, absolutePath)
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    throw new Error('plan write escaped the configured workspace root')
-  }
 }
 
 /**
@@ -287,11 +281,32 @@ export async function executeCreatePlanTool(
   const resolvedWorkspace = options.resolveWorkspaceRoot
     ? await options.resolveWorkspaceRoot(resolved.workspaceRoot)
     : resolved.workspaceRoot
-  const absolutePath = isAbsolute(resolvedWorkspace)
+  const lexicalAbsolutePath = isAbsolute(resolvedWorkspace)
     ? normalize(join(resolvedWorkspace, resolved.relativePath))
     : normalize(join(planDirectory(resolvedWorkspace), basename(resolved.relativePath)))
-  assertWithinWorkspace(absolutePath, resolvedWorkspace)
-  const writePermission = canWritePath(absolutePath, context)
+  const workspaceContext: ToolHostContext = { ...context, workspace: resolvedWorkspace }
+  let absolutePath: string
+  try {
+    // `canWritePath` is lexical by design; resolve through every existing or
+    // dangling symlink before writing so a planted .kunsdd link cannot escape
+    // a workspace-write sandbox.
+    absolutePath = (await resolveWorkspacePath(lexicalAbsolutePath, workspaceContext, {
+      enforceWorkspaceBoundary: true
+    })).absolutePath
+  } catch (error) {
+    // Test/embedding adapters with an injected writer may intentionally use a
+    // not-yet-created workspace and never touch the filesystem. The real
+    // writer always resolves the path through the symlink-safe branch above.
+    if (options.writePlan && error instanceof Error && /workspace root does not exist/.test(error.message)) {
+      absolutePath = lexicalAbsolutePath
+    } else {
+      return {
+        output: { code: 'workspace_path_escape', error: error instanceof Error ? error.message : String(error) },
+        isError: true
+      }
+    }
+  }
+  const writePermission = canWritePath(absolutePath, workspaceContext)
   if (!writePermission.ok) {
     return {
       output: {

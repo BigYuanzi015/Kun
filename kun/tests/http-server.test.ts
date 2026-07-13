@@ -8,6 +8,10 @@ import { makeAssistantTextItem, makeToolCallItem, makeToolResultItem } from '../
 import { encodeSseEvent } from '../src/server/sse.js'
 import { buildHarness, readJson, readSseEvents, usageSnapshot } from './http-server-test-harness.js'
 import type { TurnItem } from '../src/contracts/items.js'
+import {
+  createApprovalConsentToken,
+  KUN_APPROVAL_CONSENT_HEADER
+} from '../src/server/approval-consent.js'
 
 describe('HTTP server', () => {
   let dataDir = ''
@@ -1003,11 +1007,30 @@ describe('HTTP server', () => {
       summary: 'run echo'
     })
     const pending = h.approvalGate.request(approval)
-    const decide = await dispatchRequest(
+    const consent = (decision: 'allow' | 'deny') => createApprovalConsentToken({
+      runtimeToken: 'tok-1',
+      approvalId: 'appr_1',
+      decision,
+      expiresAt: Date.now() + 30_000
+    })
+    const missingConsent = await dispatchRequest(
       h.router,
       new Request('http://localhost/v1/approvals/appr_1', {
         method: 'POST',
         headers: { authorization: 'Bearer tok-1', 'content-type': 'application/json' },
+        body: JSON.stringify({ decision: 'allow' })
+      })
+    )
+    expect(missingConsent.status).toBe(403)
+    const decide = await dispatchRequest(
+      h.router,
+      new Request('http://localhost/v1/approvals/appr_1', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer tok-1',
+          'content-type': 'application/json',
+          [KUN_APPROVAL_CONSENT_HEADER]: consent('allow')
+        },
         body: JSON.stringify({ decision: 'allow' })
       })
     )
@@ -1020,7 +1043,11 @@ describe('HTTP server', () => {
       h.router,
       new Request('http://localhost/v1/approvals/appr_1', {
         method: 'POST',
-        headers: { authorization: 'Bearer tok-1', 'content-type': 'application/json' },
+        headers: {
+          authorization: 'Bearer tok-1',
+          'content-type': 'application/json',
+          [KUN_APPROVAL_CONSENT_HEADER]: consent('allow')
+        },
         body: JSON.stringify({ decision: 'allow' })
       })
     )
@@ -1034,7 +1061,11 @@ describe('HTTP server', () => {
       h.router,
       new Request('http://localhost/v1/approvals/appr_1', {
         method: 'POST',
-        headers: { authorization: 'Bearer tok-1', 'content-type': 'application/json' },
+        headers: {
+          authorization: 'Bearer tok-1',
+          'content-type': 'application/json',
+          [KUN_APPROVAL_CONSENT_HEADER]: consent('deny')
+        },
         body: JSON.stringify({ decision: 'deny' })
       })
     )
@@ -1087,6 +1118,42 @@ describe('HTTP server', () => {
     await expect(cancelPending).resolves.toEqual({ status: 'cancelled' })
     const events = await h.sessionStore.loadEventsSince('thr_1', 0)
     expect(events.filter((event) => event.kind === 'user_input_resolved')).toHaveLength(2)
+  })
+
+  it('serializes concurrent resolutions for the same GUI user input', async () => {
+    const h = buildHarness()
+    const pending = h.userInputGate.request({
+      id: 'in_race', threadId: 'thr_1', turnId: 'turn_1', itemId: 'item_in_race', prompt: 'Pick one', questions: []
+    })
+    const request = () => dispatchRequest(h.router, new Request('http://localhost/v1/user-inputs/in_race', {
+      method: 'POST',
+      headers: { authorization: 'Bearer tok-1', 'content-type': 'application/json' },
+      body: JSON.stringify({ answers: [{ id: 'choice', label: 'Yes', value: 'yes' }] })
+    }))
+
+    const [first, second] = await Promise.all([request(), request()])
+    expect([first.status, second.status].sort()).toEqual([200, 404])
+    await expect(pending).resolves.toEqual({
+      status: 'submitted', answers: [{ id: 'choice', label: 'Yes', value: 'yes' }]
+    })
+    const events = await h.sessionStore.loadEventsSince('thr_1', 0)
+    expect(events.filter((event) => event.kind === 'user_input_resolved')).toHaveLength(1)
+  })
+
+  it('rejects answers that do not match pending user input questions', async () => {
+    const h = buildHarness()
+    const pending = h.userInputGate.request({
+      id: 'in_validate', threadId: 'thr_1', turnId: 'turn_1', itemId: 'item_in_validate', prompt: 'Pick',
+      questions: [{ header: 'Pick', id: 'choice', question: 'Choose', options: [{ label: 'Yes', description: '' }], selectionMode: 'single' }]
+    })
+    const invalid = await dispatchRequest(h.router, new Request('http://localhost/v1/user-inputs/in_validate', {
+      method: 'POST', headers: { authorization: 'Bearer tok-1', 'content-type': 'application/json' },
+      body: JSON.stringify({ answers: [{ id: 'choice', label: 'No', value: 'no' }] })
+    }))
+    expect(invalid.status).toBe(400)
+    expect(h.userInputGate.get('in_validate')).toBeDefined()
+    h.userInputGate.resolve('in_validate', { status: 'cancelled' })
+    await expect(pending).resolves.toEqual({ status: 'cancelled' })
   })
 
   it('forks a thread with copied history and lineage metadata', async () => {

@@ -61,7 +61,10 @@ export const ModelCapabilityMetadata = z
     // Per-model wire-format override. Lets one provider route some models to
     // chat completions and others to Anthropic Messages / OpenAI Responses
     // (e.g. OpenCode Go). Absent means "inherit the provider/runtime format".
-    endpointFormat: z.enum(MODEL_ENDPOINT_FORMATS).optional()
+    endpointFormat: z.enum(MODEL_ENDPOINT_FORMATS).optional(),
+    // Codex-only Responses Lite transport. Omitted uses the standard
+    // Responses request shape.
+    responsesMode: z.literal('lite').optional()
   })
   .strict()
 export type ModelCapabilityMetadata = z.infer<typeof ModelCapabilityMetadata>
@@ -355,6 +358,8 @@ export const ImageGenerationProtocol = z.enum(['openai-images', 'minimax-image',
 export type ImageGenerationProtocol = z.infer<typeof ImageGenerationProtocol>
 export const ImageGenerationQuality = z.enum(['auto', 'low', 'medium', 'high'])
 export type ImageGenerationQuality = z.infer<typeof ImageGenerationQuality>
+export const ImageGenerationResolution = z.enum(['auto', '1K', '2K'])
+export type ImageGenerationResolution = z.infer<typeof ImageGenerationResolution>
 
 export const ImageGenCapabilityConfig = CapabilityToggleConfig.extend({
   protocol: ImageGenerationProtocol.default('openai-images'),
@@ -363,6 +368,7 @@ export const ImageGenCapabilityConfig = CapabilityToggleConfig.extend({
   headers: z.record(z.string(), z.string()).optional(),
   model: z.string().min(1).optional(),
   defaultSize: z.string().min(1).optional(),
+  defaultResolution: ImageGenerationResolution.default('1K'),
   quality: ImageGenerationQuality.default('auto'),
   timeoutMs: z.number().int().positive().default(180_000),
   maxReferenceImages: z.number().int().positive().max(8).default(4)

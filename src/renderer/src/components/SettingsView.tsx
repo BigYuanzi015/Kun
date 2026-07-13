@@ -14,6 +14,7 @@ import {
   resolveWriteInlineCompletionBaseUrl,
   resolveWriteInlineCompletionModel,
   type AppSettingsV1,
+  type KunRuntimeSettingsPatchV1,
 } from '@shared/app-settings'
 import { rendererRuntimeClient } from '../agent/runtime-client'
 import { getProvider } from '../agent/registry'
@@ -58,6 +59,12 @@ import { loadKunDiagnostics } from '../lib/load-kun-diagnostics'
 import { SETTINGS_CHANGED_EVENT, emitRendererSettingsChanged } from '../lib/keyboard-shortcut-settings'
 import { confirmDialog } from '../lib/confirm-dialog'
 import { GeneralSettingsSection } from './settings-section-general'
+import { ExtensionDeclarativeSettingsPane } from '../extensions/ExtensionDeclarativeSettingsPane'
+import { useExtensionSettingsService } from '../extensions/ExtensionSettingsServiceContext'
+import {
+  useWorkbenchContributions,
+  workbenchContextForRoute
+} from '../extensions/use-contributions'
 
 const ProvidersSettingsSection = lazy(() =>
   import('./settings-section-providers').then((module) => ({ default: module.ProvidersSettingsSection }))
@@ -76,6 +83,9 @@ const SpeechToTextSettingsSection = lazy(() =>
 )
 const AgentsSettingsSection = lazy(() =>
   import('./settings-section-agents').then((module) => ({ default: module.AgentsSettingsSection }))
+)
+const SubagentsSettingsSection = lazy(() =>
+  import('./settings-section-subagents').then((module) => ({ default: module.SubagentsSettingsSection }))
 )
 const ArchivedThreadsSettingsSection = lazy(() =>
   import('./settings-section-archives').then((module) => ({ default: module.ArchivedThreadsSettingsSection }))
@@ -127,8 +137,8 @@ function SettingsSectionFallback(): ReactElement {
   )
 }
 
-type SettingsCategory = 'general' | 'providers' | 'write' | 'design' | 'mediaGeneration' | 'speechToText' | 'agents' | 'archives' | 'permissions' | 'worktree' | 'memory' | 'shortcuts' | 'easterEgg' | 'claw' | 'updates' | 'debug' | 'terminal'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+type SettingsCategory = 'general' | 'providers' | 'write' | 'design' | 'mediaGeneration' | 'speechToText' | 'agents' | 'subagents' | 'archives' | 'permissions' | 'worktree' | 'memory' | 'shortcuts' | 'easterEgg' | 'claw' | 'updates' | 'debug' | 'terminal' | 'extensions'
 type SettingsPatch = AppSettingsPatch
 type InlineNotice = {
   tone: 'success' | 'error' | 'info'
@@ -151,6 +161,7 @@ export function SettingsView(): ReactElement {
   const probeRuntime = useChatStore((s) => s.probeRuntime)
   const threads = useChatStore((s) => s.threads)
   const runtimeConnection = useChatStore((s) => s.runtimeConnection)
+  const workspaceRoot = useChatStore((s) => s.workspaceRoot)
   const refreshThreads = useChatStore((s) => s.refreshThreads)
   const selectThread = useChatStore((s) => s.selectThread)
   const archiveThread = useChatStore((s) => s.archiveThread)
@@ -191,6 +202,17 @@ export function SettingsView(): ReactElement {
   const [writeCompletionDebugSelectedId, setWriteCompletionDebugSelectedId] = useState<string | null>(null)
   const [writeDebugLoading, setWriteDebugLoading] = useState(false)
   const [writeDebugError, setWriteDebugError] = useState<string | null>(null)
+  const extensionSettingsService = useExtensionSettingsService()
+  const extensionSettingsContext = useMemo(
+    () => workbenchContextForRoute('settings', workspaceRoot),
+    [workspaceRoot]
+  )
+  const extensionSettingsContributions = useWorkbenchContributions(
+    'settings',
+    extensionSettingsContext
+  )
+  const extensionSettingsAvailable = extensionSettingsService !== null &&
+    extensionSettingsContributions.length > 0
   const initializedCategory = useRef(false)
   const saveTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const statusTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null)
@@ -238,11 +260,15 @@ export function SettingsView(): ReactElement {
     installGuiUpdate,
     resetGuiUpdateState
   } = useSettingsGuiUpdate({
-    category,
+    category: category === 'extensions' ? 'general' : category,
     channel: formGuiUpdateChannel,
     form,
     t
   })
+
+  useEffect(() => {
+    if (category === 'extensions' && !extensionSettingsAvailable) setCategory('general')
+  }, [category, extensionSettingsAvailable])
 
   useEffect(() => {
     let cancelled = false
@@ -282,16 +308,10 @@ export function SettingsView(): ReactElement {
   }, [formCursorSpotlight, formCursorSpotlightColor])
 
   // Live-preview the Write editor typography as the form changes, mirroring the
-  // theme/scale preview above. Keyed on the scalar fields so it only re-applies
-  // on real changes.
+  // theme/scale preview above.
   useEffect(() => {
     if (writeTypography) applyWriteTypography(writeTypography)
-  }, [
-    writeTypography?.fontPreset,
-    writeTypography?.customFontFamily,
-    writeTypography?.fontSizePx,
-    writeTypography?.lineHeight
-  ])
+  }, [writeTypography])
 
   useEffect(() => {
     const onSettingsChanged = (event: Event): void => {
@@ -377,6 +397,10 @@ export function SettingsView(): ReactElement {
       setCategory('agents')
       return
     }
+    if (settingsSection === 'subagents') {
+      setCategory('subagents')
+      return
+    }
     if (settingsSection === 'archives') {
       setCategory('archives')
       return
@@ -414,6 +438,7 @@ export function SettingsView(): ReactElement {
       settingsSection === 'imageGeneration' ||
       settingsSection === 'mediaGeneration' ||
       settingsSection === 'speechToText' ||
+      settingsSection === 'subagents' ||
       settingsSection === 'archives' ||
       settingsSection === 'claw' ||
       settingsSection === 'shortcuts' ||
@@ -426,7 +451,7 @@ export function SettingsView(): ReactElement {
     }
     if (!agentsSectionReady) return
     const refs: Record<
-      Exclude<SettingsRouteSection, 'general' | 'providers' | 'write' | 'design' | 'imageGeneration' | 'mediaGeneration' | 'speechToText' | 'archives' | 'claw' | 'shortcuts' | 'easterEgg' | 'updates' | 'terminal'>,
+      Exclude<SettingsRouteSection, 'general' | 'providers' | 'write' | 'design' | 'imageGeneration' | 'mediaGeneration' | 'speechToText' | 'subagents' | 'archives' | 'claw' | 'shortcuts' | 'easterEgg' | 'updates' | 'terminal'>,
       HTMLDivElement | null
     > = {
       agents: agentsSectionRef.current,
@@ -929,7 +954,7 @@ export function SettingsView(): ReactElement {
     update({ provider: patch })
   }
 
-  const updateKun = (patch: Partial<AppSettingsV1['agents']['kun']>): void => {
+  const updateKun = (patch: KunRuntimeSettingsPatchV1): void => {
     update({ agents: kunSettingsPatch(patch) })
   }
 
@@ -1160,11 +1185,17 @@ export function SettingsView(): ReactElement {
 
   return (
     <div className="ds-drag flex h-full min-h-0 w-full min-w-0 bg-ds-main">
-      <SettingsSidebar category={category} setCategory={setCategory} goBack={goBack} t={t} />
+      <SettingsSidebar
+        category={category}
+        setCategory={setCategory}
+        goBack={goBack}
+        extensionSettingsAvailable={extensionSettingsAvailable}
+        t={t}
+      />
 
       <div className="ds-no-drag min-h-0 min-w-0 flex-1 overflow-y-auto px-10 py-10">
         <div className="mx-auto max-w-3xl">
-          {!activeApiKey.trim() ? (
+          {category !== 'extensions' && !activeApiKey.trim() ? (
             <div className="mb-6 rounded-2xl border border-amber-300/80 bg-amber-50/95 px-5 py-4 text-amber-950 shadow-sm dark:border-amber-700/60 dark:bg-amber-950/35 dark:text-amber-100">
               <div className="text-[15px] font-semibold">{t('apiKeyRequiredTitle')}</div>
               <p className="mt-1 text-[13px] leading-6 text-amber-900/90 dark:text-amber-100/90">
@@ -1178,7 +1209,7 @@ export function SettingsView(): ReactElement {
               <h1 className="text-2xl font-semibold tracking-tight text-ds-ink">{t('title')}</h1>
               <p className="mt-1 text-[14px] text-ds-muted">{t('subtitle')}</p>
             </div>
-            <span
+            {category !== 'extensions' ? <span
               title={saveStatus === 'error' && saveError ? saveError : undefined}
               className={`shrink-0 rounded-full px-3 py-1 text-[12px] font-medium ${
                 portError
@@ -1199,10 +1230,10 @@ export function SettingsView(): ReactElement {
                     : saveStatus === 'error'
                       ? t('applyFailed')
                       : t('autoApplyHint')}
-            </span>
+            </span> : null}
           </div>
 
-          {saveStatus === 'error' && saveError ? (
+          {category !== 'extensions' && saveStatus === 'error' && saveError ? (
             <div
               role="alert"
               className="mb-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] leading-5 text-red-800 shadow-sm dark:border-red-500/25 dark:bg-red-500/10 dark:text-red-200"
@@ -1212,6 +1243,13 @@ export function SettingsView(): ReactElement {
           ) : null}
 
           {category === 'general' ? <GeneralSettingsSection ctx={settingsSectionContext} /> : null}
+          {category === 'extensions' && extensionSettingsService ? (
+            <ExtensionDeclarativeSettingsPane
+              contributions={extensionSettingsContributions}
+              workspaceRoot={workspaceRoot}
+              service={extensionSettingsService}
+            />
+          ) : null}
           <Suspense fallback={<SettingsSectionFallback />}>
             {category === 'providers' ? <ProvidersSettingsSection ctx={settingsSectionContext} /> : null}
             {category === 'write' ? <WriteSettingsSection ctx={settingsSectionContext} /> : null}
@@ -1221,6 +1259,7 @@ export function SettingsView(): ReactElement {
             {category === 'agents' ? (
               <LoadedAgentsSettingsSection ctx={settingsSectionContext} onReady={markAgentsSectionReady} />
             ) : null}
+            {category === 'subagents' ? <SubagentsSettingsSection ctx={settingsSectionContext} /> : null}
             {category === 'archives' ? <ArchivedThreadsSettingsSection ctx={settingsSectionContext} /> : null}
             {category === 'worktree' ? <WorktreeSettingsSection ctx={settingsSectionContext} /> : null}
             {category === 'memory' ? <MemorySettingsSection ctx={settingsSectionContext} /> : null}
@@ -1233,7 +1272,7 @@ export function SettingsView(): ReactElement {
           </Suspense>
         </div>
       </div>
-      {saveStatus === 'error' && saveError ? (
+      {category !== 'extensions' && saveStatus === 'error' && saveError ? (
         <div
           role="alert"
           className="ds-no-drag fixed bottom-6 right-8 z-30 flex max-w-[min(560px,calc(100vw-3rem))] items-center gap-3 rounded-2xl border border-red-300/70 bg-red-50/95 px-4 py-3 text-red-900 shadow-2xl shadow-red-950/10 backdrop-blur dark:border-red-500/30 dark:bg-red-950/90 dark:text-red-100"

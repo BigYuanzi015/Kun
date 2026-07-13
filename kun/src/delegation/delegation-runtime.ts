@@ -1,7 +1,13 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { SubagentToolPolicy, type SubagentMode, type SubagentProfileConfig, type SubagentsCapabilityConfig } from '../contracts/capabilities.js'
+import {
+  ApprovalPolicySchema,
+  SandboxModeSchema,
+  type ApprovalPolicy,
+  type SandboxMode
+} from '../contracts/policy.js'
 import type { RuntimeEventRecorder } from '../services/runtime-event-recorder.js'
 import type { UsageSnapshot } from '../contracts/usage.js'
 import type { ThreadStore } from '../ports/thread-store.js'
@@ -43,6 +49,9 @@ export const ChildRunRecord = z.object({
   profile: z.string().optional(),
   /** Effective tool policy applied to the child (read-only vs inherited). */
   toolPolicy: SubagentToolPolicy.optional(),
+  /** Parent policy captured when the child was created. */
+  approvalPolicy: ApprovalPolicySchema.optional(),
+  sandboxMode: SandboxModeSchema.optional(),
   /** True when this child is detached from the parent turn lifecycle. */
   detached: z.boolean().optional(),
   status: z.enum(['queued', 'running', 'completed', 'failed', 'aborted']),
@@ -93,6 +102,9 @@ export type ChildRunExecutor = (input: {
   /** Skill ids blocked for this child (deny-list; catalog + activation + load_skill). */
   blockedSkills?: string[]
   toolPolicy: SubagentToolPolicy
+  /** Parent security snapshot; it takes precedence over executor defaults. */
+  approvalPolicy?: ApprovalPolicy
+  sandboxMode?: SandboxMode
   promptPreamble?: string
   /** True when the parent turn is a GUI design-canvas turn. */
   guiDesignCanvas?: boolean
@@ -133,12 +145,12 @@ export class FileDelegationStore {
   constructor(private readonly rootDir: string) {}
 
   async upsert(record: ChildRunRecord): Promise<void> {
-    await mkdir(this.rootDir, { recursive: true })
-    await writeFile(join(this.rootDir, `${record.id}.json`), JSON.stringify(record, null, 2), 'utf8')
+    await this.ensureRoot()
+    await writeFile(join(this.rootDir, `${record.id}.json`), JSON.stringify(record, null, 2), { encoding: 'utf8', mode: 0o600 })
   }
 
   async list(parentThreadId?: string): Promise<ChildRunRecord[]> {
-    await mkdir(this.rootDir, { recursive: true })
+    await this.ensureRoot()
     const entries = await readdir(this.rootDir).catch(() => [])
     const records = await Promise.all(entries
       .filter((entry) => entry.endsWith('.json'))
@@ -149,6 +161,11 @@ export class FileDelegationStore {
       .filter((record): record is ChildRunRecord => Boolean(record))
       .filter((record) => !parentThreadId || record.parentThreadId === parentThreadId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  }
+
+  private async ensureRoot(): Promise<void> {
+    await mkdir(this.rootDir, { recursive: true, mode: 0o700 })
+    await chmod(this.rootDir, 0o700)
   }
 }
 
@@ -177,6 +194,8 @@ export class DelegationRuntime {
    * GUI even after the parent turn finished.
    */
   private readonly detachedAborts = new Map<string, AbortController>()
+  /** Parent thread for each live detached child, used by thread deletion. */
+  private readonly detachedParentThreads = new Map<string, string>()
   private runTurn: RunTurnFn | null = null
 
   constructor(private options: {
@@ -214,8 +233,13 @@ export class DelegationRuntime {
     workspace?: string
     model?: string
     providerId?: string
+    /** Effective parent turn/thread model inherited together with inheritedProviderId. */
+    inheritedModel?: string
     /** Parent turn/thread provider id inherited by delegate_task when no profile overrides it. */
     inheritedProviderId?: string
+    /** Effective parent policy captured by the delegating tool call. */
+    approvalPolicy?: ApprovalPolicy
+    sandboxMode?: SandboxMode
     profile?: string
     /** Forward GUI design-canvas scope into the child turn when present. */
     guiDesignCanvas?: boolean
@@ -258,8 +282,16 @@ export class DelegationRuntime {
       throw new Error(`unknown subagent profile: ${profileName}`)
     }
     const toolPolicy = profile?.toolPolicy ?? config.defaultToolPolicy
-    const resolvedModel = input.model?.trim() || profile?.model
-    const resolvedProviderId = input.providerId?.trim() || profile?.providerId || input.inheritedProviderId?.trim()
+    const selection = resolveChildModelSelection({
+      explicitModel: input.model,
+      explicitProviderId: input.providerId,
+      profileModel: profile?.model,
+      profileProviderId: profile?.providerId,
+      inheritedModel: input.inheritedModel,
+      inheritedProviderId: input.inheritedProviderId
+    })
+    const resolvedModel = selection.model
+    const resolvedProviderId = selection.providerId
     const resolvedSystemPrompt = profile?.systemPrompt
     const resolvedAllowedTools = profile?.allowedTools
     const resolvedBlockedTools = profile?.blockedTools
@@ -290,6 +322,8 @@ export class DelegationRuntime {
       providerId: resolvedProviderId,
       profile: profileName,
       toolPolicy,
+      ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}),
+      ...(input.sandboxMode ? { sandboxMode: input.sandboxMode } : {}),
       tokenBudget,
       timeBudgetMs,
       returnFormat,
@@ -311,6 +345,13 @@ export class DelegationRuntime {
       // via abortChild(id).
       const detachedController = new AbortController()
       this.detachedAborts.set(record.id, detachedController)
+      this.detachedParentThreads.set(record.id, input.parentThreadId)
+      const logIgnoredParentAbort = (): void => {
+        console.warn(`[kun] detached subagent ignored parent abort child=${record.id} parentThread=${input.parentThreadId} parentTurn=${input.parentTurnId}`)
+      }
+      if (input.signal.aborted) logIgnoredParentAbort()
+      else input.signal.addEventListener('abort', logIgnoredParentAbort, { once: true })
+      console.warn(`[kun] detached subagent started with independent abort signal child=${record.id} parentThread=${input.parentThreadId} parentTurn=${input.parentTurnId}`)
       // Surface ChildRunExecutor's resolved fields via the closure shared with
       // the synchronous path. The same executor block runs inside executeChild.
       void this.executeChild({
@@ -326,6 +367,8 @@ export class DelegationRuntime {
         resolvedBlockedMcpServers,
         resolvedBlockedSkills,
         promptPreamble,
+        approvalPolicy: input.approvalPolicy,
+        sandboxMode: input.sandboxMode,
         guiDesignCanvas: input.guiDesignCanvas === true,
         resolvedReasoningEffort,
         tokenBudget,
@@ -340,7 +383,12 @@ export class DelegationRuntime {
       })
         .then((settled) => this.notifyDetachedChild(settled))
         .catch(() => undefined)
-        .finally(() => this.detachedAborts.delete(record.id))
+        .finally(() => {
+          input.signal.removeEventListener('abort', logIgnoredParentAbort)
+          this.detachedAborts.delete(record.id)
+          this.detachedParentThreads.delete(record.id)
+          console.warn(`[kun] detached subagent finished background tracking child=${record.id}`)
+        })
       return record
     }
 
@@ -382,6 +430,8 @@ export class DelegationRuntime {
         ...(resolvedBlockedMcpServers ? { blockedMcpServers: resolvedBlockedMcpServers } : {}),
         ...(resolvedBlockedSkills ? { blockedSkills: resolvedBlockedSkills } : {}),
         toolPolicy,
+        ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}),
+        ...(input.sandboxMode ? { sandboxMode: input.sandboxMode } : {}),
         ...(promptPreamble ? { promptPreamble } : {}),
         ...(input.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
         ...(resolvedReasoningEffort ? { reasoningEffort: resolvedReasoningEffort } : {}),
@@ -455,6 +505,8 @@ export class DelegationRuntime {
     resolvedBlockedMcpServers: string[] | undefined
     resolvedBlockedSkills: string[] | undefined
     promptPreamble: string | undefined
+    approvalPolicy: ApprovalPolicy | undefined
+    sandboxMode: SandboxMode | undefined
     guiDesignCanvas: boolean
     resolvedReasoningEffort: string | undefined
     tokenBudget: number | undefined
@@ -505,6 +557,8 @@ export class DelegationRuntime {
         ...(args.resolvedBlockedMcpServers ? { blockedMcpServers: args.resolvedBlockedMcpServers } : {}),
         ...(args.resolvedBlockedSkills ? { blockedSkills: args.resolvedBlockedSkills } : {}),
         toolPolicy: args.toolPolicy,
+        ...(args.approvalPolicy ? { approvalPolicy: args.approvalPolicy } : {}),
+        ...(args.sandboxMode ? { sandboxMode: args.sandboxMode } : {}),
         ...(args.promptPreamble ? { promptPreamble: args.promptPreamble } : {}),
         ...(args.guiDesignCanvas ? { guiDesignCanvas: true } : {}),
         ...(args.resolvedReasoningEffort ? { reasoningEffort: args.resolvedReasoningEffort } : {}),
@@ -569,9 +623,29 @@ export class DelegationRuntime {
    */
   abortChild(childId: string): boolean {
     const controller = this.detachedAborts.get(childId)
-    if (!controller) return false
+    if (!controller) {
+      console.warn(`[kun] detached subagent abort requested but no running child found child=${childId}`)
+      return false
+    }
+    console.warn(`[kun] detached subagent abort requested child=${childId}`)
     controller.abort()
+    console.warn(`[kun] detached subagent abort signal fired child=${childId}`)
     return true
+  }
+
+  /**
+   * Abort all live detached children launched from a parent thread. Foreground
+   * children already inherit the parent turn signal; detached children do not,
+   * so deletion must cancel their independent controllers explicitly.
+   */
+  abortDetachedChildrenForThread(parentThreadId: string): number {
+    let aborted = 0
+    for (const [childId, controller] of this.detachedAborts) {
+      if (this.detachedParentThreads.get(childId) !== parentThreadId) continue
+      controller.abort()
+      aborted += 1
+    }
+    return aborted
   }
 
   /**
@@ -794,6 +868,22 @@ export class DelegationRuntime {
 
   private now(): string {
     return this.options.nowIso?.() ?? new Date().toISOString()
+  }
+}
+
+function resolveChildModelSelection(input: {
+  explicitModel?: string
+  explicitProviderId?: string
+  profileModel?: string
+  profileProviderId?: string
+  inheritedModel?: string
+  inheritedProviderId?: string
+}): { model?: string; providerId?: string } {
+  const model = input.explicitModel?.trim() || input.profileModel?.trim() || input.inheritedModel?.trim()
+  const providerId = input.explicitProviderId?.trim() || input.profileProviderId?.trim() || input.inheritedProviderId?.trim()
+  return {
+    ...(model ? { model } : {}),
+    ...(providerId ? { providerId } : {})
   }
 }
 

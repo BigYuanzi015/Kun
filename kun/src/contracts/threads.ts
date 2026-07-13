@@ -10,6 +10,15 @@ import {
 export const ThreadStatus = z.enum(['idle', 'running', 'archived', 'deleted'])
 export type ThreadStatus = z.infer<typeof ThreadStatus>
 
+/**
+ * The generic thread PATCH endpoint only owns the archival visibility
+ * overlay. Execution and deletion states are controlled by TurnService and
+ * ThreadService.delete respectively, so an HTTP client cannot manufacture a
+ * running/deleted lifecycle state.
+ */
+export const ThreadUpdateStatus = z.enum(['idle', 'archived'])
+export type ThreadUpdateStatus = z.infer<typeof ThreadUpdateStatus>
+
 export const ThreadMode = z.enum(['agent', 'plan'])
 export type ThreadMode = z.infer<typeof ThreadMode>
 
@@ -90,6 +99,71 @@ export const ThreadTodoListSchema = z.object({
 })
 export type ThreadTodoList = z.infer<typeof ThreadTodoListSchema>
 
+/** Visibility of a thread created through the public Extension Agent API. */
+export const ExtensionThreadVisibilitySchema = z.enum(['private', 'workspace'])
+export type ExtensionThreadVisibility = z.infer<typeof ExtensionThreadVisibilitySchema>
+
+/**
+ * Effective (already policy-clamped) limits captured when an extension run is
+ * created. Keeping this snapshot on the thread makes headless resume and audit
+ * behavior independent from later manifest or host-policy changes.
+ */
+export const ExtensionRunBudgetSchema = z.object({
+  maxTokens: z.number().int().positive(),
+  maxElapsedMs: z.number().int().positive(),
+  maxConcurrentRuns: z.number().int().positive(),
+  maxModelRequests: z.number().int().positive(),
+  maxToolInvocations: z.number().int().positive(),
+  maxRetainedEvents: z.number().int().positive()
+})
+export type ExtensionRunBudget = z.infer<typeof ExtensionRunBudgetSchema>
+
+/** Resolved, immutable profile data used by an extension-owned thread. */
+export const ExtensionAgentProfileSnapshotSchema = z.object({
+  id: z.string().min(1),
+  instructionDigest: z.string().min(1),
+  /** Bounded, attributed context appended after Kun's immutable system prefix. */
+  instructionOverlay: z.string().max(32_000).optional(),
+  model: z.string().min(1),
+  providerId: z.string().min(1).optional(),
+  accountId: z.string().min(1).optional(),
+  allowedToolScopes: z.array(z.string().min(1)).default([])
+})
+export type ExtensionAgentProfileSnapshot = z.infer<typeof ExtensionAgentProfileSnapshotSchema>
+
+/** Canonical, permission-eligible tool snapshot pinned to a thread boundary. */
+export const ExtensionToolCatalogEntrySchema = z.object({
+  canonicalToolId: z.string().min(1),
+  modelAlias: z.string().min(1),
+  description: z.string(),
+  inputSchema: z.record(z.string(), z.unknown()),
+  sideEffect: z.enum(['none', 'workspace-read', 'workspace-write', 'network', 'external'])
+})
+export type ExtensionToolCatalogEntry = z.infer<typeof ExtensionToolCatalogEntrySchema>
+
+export const ExtensionToolCatalogEpochSchema = z.object({
+  id: z.string().min(1),
+  fingerprint: z.string().min(1),
+  toolCount: z.number().int().nonnegative(),
+  canonicalToolIds: z.array(z.string().min(1)),
+  schemaDigests: z.record(z.string(), z.string().min(1)),
+  tools: z.array(ExtensionToolCatalogEntrySchema).optional(),
+  createdAt: z.string().min(1)
+})
+export type ExtensionToolCatalogEpoch = z.infer<typeof ExtensionToolCatalogEpochSchema>
+
+/** Internal metadata supplied only by the authenticated Extension broker. */
+export const ExtensionThreadMetadataSchema = z.object({
+  ownerExtensionId: z.string().min(1),
+  ownerExtensionVersion: z.string().min(1),
+  accountId: z.string().min(1).optional(),
+  extensionVisibility: ExtensionThreadVisibilitySchema,
+  extensionProfile: ExtensionAgentProfileSnapshotSchema.optional(),
+  extensionBudget: ExtensionRunBudgetSchema,
+  toolCatalogEpoch: ExtensionToolCatalogEpochSchema.optional()
+})
+export type ExtensionThreadMetadata = z.infer<typeof ExtensionThreadMetadataSchema>
+
 export const ThreadSchema = z.object({
   id: z.string().min(1),
   title: z.string(),
@@ -116,6 +190,16 @@ export const ThreadSchema = z.object({
    * bridges pin a non-runtime provider per thread.
    */
   providerId: z.string().optional(),
+  /** Stable owner derived from the authenticated Extension Host session. */
+  ownerExtensionId: z.string().min(1).optional(),
+  /** Creating extension version retained as audit metadata across upgrades. */
+  ownerExtensionVersion: z.string().min(1).optional(),
+  /** Opaque account reference; never credential material. */
+  accountId: z.string().min(1).optional(),
+  extensionVisibility: ExtensionThreadVisibilitySchema.optional(),
+  extensionProfile: ExtensionAgentProfileSnapshotSchema.optional(),
+  extensionBudget: ExtensionRunBudgetSchema.optional(),
+  toolCatalogEpoch: ExtensionToolCatalogEpochSchema.optional(),
   /**
    * Optional subagent profile id this thread is bound to. When set, the
    * thread persona (model / providerId / systemPrompt below) is a snapshot
@@ -159,6 +243,13 @@ export const ThreadSummarySchema = ThreadSchema.pick({
   workspace: true,
   model: true,
   providerId: true,
+  ownerExtensionId: true,
+  ownerExtensionVersion: true,
+  accountId: true,
+  extensionVisibility: true,
+  extensionProfile: true,
+  extensionBudget: true,
+  toolCatalogEpoch: true,
   agentId: true,
   systemPrompt: true,
   mode: true,
@@ -195,6 +286,8 @@ export const CreateThreadRequest = z.object({
    * provider's HTTP client.
    */
   providerId: z.string().optional(),
+  /** Opaque core-managed account reference for the selected provider. */
+  accountId: z.string().min(1).optional(),
   /** Optional subagent profile id to bind this thread to. */
   agentId: z.string().optional(),
   /** Optional persona systemPrompt snapshot applied to every ModelRequest on this thread. */
@@ -284,7 +377,7 @@ export const UpdateThreadRequest = z
     /** Marks the new title as auto/provisional (true) or user-set/locked (false). */
     titleAuto: z.boolean().optional(),
     workspace: z.string().min(1).optional(),
-    status: ThreadStatus.optional(),
+    status: ThreadUpdateStatus.optional(),
     approvalPolicy: ApprovalPolicySchema.optional(),
     sandboxMode: SandboxModeSchema.optional(),
     pinned: z.boolean().optional(),

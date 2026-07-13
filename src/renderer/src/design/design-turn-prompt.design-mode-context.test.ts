@@ -1,67 +1,70 @@
 import { describe, expect, it } from 'vitest'
-import { createEmptyDocument } from './canvas/canvas-types'
-import { buildDesignModeSurfaceManifest } from './design-mode/design-mode-surface'
 import { buildDesignTurnPrompt } from './design-turn-prompt'
-import type { DesignDocument } from './design-types'
-
-const now = '2026-07-02T00:00:00.000Z'
-
-function document(): DesignDocument {
-  return {
-    id: 'doc',
-    title: 'Ops app',
-    createdAt: now,
-    updatedAt: now,
-    order: 0,
-    artifacts: [],
-    activeArtifactId: null
-  }
-}
 
 describe('design turn prompt design mode context', () => {
-  it('injects the Stitch-style workflow contract into the design canvas prompt', () => {
-    const manifest = buildDesignModeSurfaceManifest({
-      document: document(),
-      canvasDocument: createEmptyDocument(),
-      designSystem: { tokens: {}, components: {} },
-      artifacts: []
-    })
+  it('routes single-screen and complete multi-screen requests without a forced workflow', () => {
     const prompt = buildDesignTurnPrompt({
       target: 'canvas',
       mode: 'text',
-      text: 'Start a dashboard direction',
+      text: '做一套完整 CRM，包括登录、工作台、客户详情和设置',
       artifactRelativePath: '.kun-design/doc/board.canvas.json',
-      workspaceRoot: '/workspace',
-      designModeManifest: manifest
+      workspaceRoot: '/workspace'
     })
 
-    expect(prompt).toContain('Design mode workflow contract:')
-    expect(prompt).toContain('Recommended step: plan-directions via design.plan on agent')
-    expect(prompt).toContain('Recommendation reason: 0 direction(s) and 0 screen(s) in the active design.')
-    expect(prompt).toContain('Suggested tool call: design.plan')
-    expect(prompt).toContain('Tool input seed:')
-    expect(prompt).toContain('Use the recommended step as the default tool lane')
-    expect(prompt).toContain('Workflow:')
+    expect(prompt).toContain('BUILD A SINGLE SCREEN')
+    expect(prompt).toContain('BUILD A COMPLETE MULTI-SCREEN EXPERIENCE')
+    expect(prompt).toContain('one `design_create_screen` call with a `screens` array')
+    expect(prompt).toContain('ask one concise question with `user_input`')
+    expect(prompt).toContain('prefer the fewest calls')
+    expect(prompt).not.toContain('Design mode workflow contract:')
+    expect(prompt).not.toContain('Suggested tool call: design.plan')
+    expect(prompt).not.toContain('design.ops')
+    expect(prompt).not.toContain('MANY focused calls')
+    expect(prompt).not.toContain('Reply with a short plain-text plan')
   })
 
   it('keeps the design-mode workflow contract out of the code whiteboard prompt', () => {
-    const manifest = buildDesignModeSurfaceManifest({
-      document: document(),
-      canvasDocument: createEmptyDocument(),
-      designSystem: { tokens: {}, components: {} },
-      artifacts: []
-    })
     const prompt = buildDesignTurnPrompt({
       target: 'canvas',
       mode: 'text',
       text: 'Sketch an API flow',
       artifactRelativePath: '.kun-design/doc/board.canvas.json',
       workspaceRoot: '/workspace',
-      canvasSurface: 'code',
-      designModeManifest: manifest
+      canvasSurface: 'code'
     })
 
     expect(prompt).not.toContain('Design mode workflow contract:')
+    expect(prompt).not.toContain('BUILD A COMPLETE MULTI-SCREEN EXPERIENCE')
     expect(prompt).toContain('Code sidebar whiteboard')
+  })
+
+  it('advertises root DESIGN.md only with an exact valid source hash', () => {
+    const base = {
+      target: 'canvas' as const,
+      mode: 'text' as const,
+      text: 'Design a settings screen',
+      artifactRelativePath: '.kun-design/doc/board.canvas.json',
+      workspaceRoot: '/workspace',
+      canvasDesignSystem: {
+        tokens: {
+          'color.primary': { name: 'color.primary', kind: 'color' as const, value: '#6750a4' }
+        },
+        components: {}
+      }
+    }
+
+    const withSource = buildDesignTurnPrompt({
+      ...base,
+      projectDesignMdSourceHash: 'sha256:exact-source'
+    })
+    expect(withSource).toContain('Project design system: DESIGN.md')
+    expect(withSource).toContain('sha256:exact-source')
+    expect(withSource).toContain('expectedHash')
+    expect(withSource).toContain('Do not replace it with an HTML/SVG style guide')
+
+    const withoutSource = buildDesignTurnPrompt(base)
+    expect(withoutSource).not.toContain('Project design system: DESIGN.md')
+    expect(withoutSource).not.toContain('Current exact source hash:')
+    expect(withoutSource).not.toContain('sha256:exact-source')
   })
 })

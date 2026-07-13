@@ -302,6 +302,9 @@ export function initialState(): Pick<
   | 'fileError'
   | 'fileLoading'
   | 'saveStatus'
+  | 'documentEpoch'
+  | 'contentRevision'
+  | 'persistedContent'
   | 'pendingAgentReview'
   | 'reviewActive'
   | 'selection'
@@ -328,6 +331,9 @@ export function initialState(): Pick<
     fileError: null,
     fileLoading: false,
     saveStatus: 'saved',
+    documentEpoch: 0,
+    contentRevision: 0,
+    persistedContent: '',
     pendingAgentReview: null,
     reviewActive: false,
     selection: emptySelection(),

@@ -219,14 +219,14 @@ function implementStep(manifest: ManifestSnapshot): DesignModeWorkflowStep {
 
 function exportStep(manifest: ManifestSnapshot): DesignModeWorkflowStep {
   const counts = manifest.counts
-  const hasContent = counts.screenCount > 0 || counts.objectCount > 0 || counts.tokenCount > 0 || counts.assetCount > 0
+  const hasContent = counts.screenCount > 0 || counts.svgArtifactCount > 0 || counts.objectCount > 0 || counts.tokenCount > 0 || counts.assetCount > 0
   return withTool({
     id: 'export-handoff',
     phase: 'handoff',
     surfaceId: 'handoff',
     toolId: 'design.export',
     status: manifest.document && hasContent ? 'available' : 'blocked',
-    reason: `${counts.screenCount} screen(s), ${counts.objectCount} object(s), and ${counts.assetCount} asset(s).`
+    reason: `${counts.screenCount} screen(s), ${counts.svgArtifactCount} SVG artifact(s), ${counts.objectCount} object(s), and ${counts.assetCount} asset(s).`
   })
 }
 

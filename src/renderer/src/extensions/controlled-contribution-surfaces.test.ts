@@ -1,0 +1,286 @@
+import { ExtensionContributionsSchema } from '@kun/extension-api'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { act, create as createRenderer } from 'react-test-renderer'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  ContributionRegistry,
+  ExtensionWorkbenchSnapshotSchema
+} from './contribution-registry'
+import {
+  DeclarativeActionBar,
+  DeclarativeContextMenu,
+  DeclarativeNotifications,
+  DeclarativeViewContainers,
+  DynamicExtensionNotifications,
+  ExtensionViewOutlet,
+  isTrustedNotificationActivation,
+  isSecretLikeSettingKey,
+  matchingResultPreviewContributions
+} from './ControlledContributionSurfaces'
+import { validateExtensionViewSession } from './ExtensionWebview'
+
+function registryWithContributions(): ContributionRegistry {
+  const registry = new ContributionRegistry()
+  registry.replaceExtensions(ExtensionWorkbenchSnapshotSchema.parse({
+    schemaVersion: 1,
+    revision: 1,
+    extensions: [{
+      id: 'acme.ui',
+      version: '1.0.0',
+      workspaceTrusted: true,
+      grantedPermissions: ['commands.register', 'ui.actions', 'ui.notifications', 'ui.views', 'webview'],
+      contributes: ExtensionContributionsSchema.parse({
+        commands: [{ id: 'inspect-result', title: 'Inspect result' }],
+        'actions.topBar': [{
+          id: 'refresh',
+          command: 'refresh',
+          title: '<img src=x onerror=alert(1)> Refresh'
+        }],
+        notifications: [{
+          id: 'notice',
+          title: '<script>bad()</script>',
+          message: 'Safe text',
+          actions: [{ id: 'inspect', title: 'Inspect', command: 'inspect-result' }]
+        }],
+        'views.rightSidebar': [{
+          id: 'dashboard',
+          title: 'Dashboard',
+          entry: 'dist/index.html'
+        }],
+        'views.containers': [{
+          id: 'tools',
+          title: 'Tools',
+          location: 'activity'
+        }],
+        'message.resultPreviews': [{
+          id: 'json-preview',
+          title: 'JSON preview',
+          entry: 'dist/preview.html',
+          mimeTypes: ['application/json']
+        }],
+        contextMenus: [{
+          id: 'inspect-menu',
+          location: 'message',
+          command: 'inspect-result'
+        }]
+      })
+    }]
+  }))
+  return registry
+}
+
+describe('controlled workbench contribution rendering', () => {
+  it('rejects synthetic Direct DOM notification activation', () => {
+    const onRespond = vi.fn()
+    let renderer!: ReturnType<typeof createRenderer>
+    act(() => {
+      renderer = createRenderer(createElement(DynamicExtensionNotifications, {
+        notifications: [{
+          notificationId: 'notification_12345678-1234-1234-1234-123456789abc',
+          extensionId: 'acme.ui',
+          extensionVersion: '1.0.0',
+          sourceId: 'runtime-notice',
+          title: 'Runtime notice',
+          message: 'Safe message',
+          severity: 'info',
+          actions: [{ id: 'retry', title: 'Retry' }],
+          createdAt: '2026-07-11T00:00:00.000Z',
+          expiresAt: '2026-07-11T00:01:00.000Z'
+        }],
+        onRespond
+      }))
+    })
+    const [action] = renderer.root.findAllByType('button')
+
+    act(() => action!.props.onClick({ nativeEvent: { isTrusted: false } }))
+    expect(onRespond).not.toHaveBeenCalled()
+    act(() => action!.props.onClick({ nativeEvent: { isTrusted: true } }))
+    expect(onRespond).toHaveBeenCalledWith(
+      'notification_12345678-1234-1234-1234-123456789abc',
+      'retry'
+    )
+    act(() => renderer.unmount())
+  })
+
+  it('rejects synthetic declarative notification actions and dismissal', () => {
+    const onCommand = vi.fn()
+    let renderer!: ReturnType<typeof createRenderer>
+    act(() => {
+      renderer = createRenderer(createElement(DeclarativeNotifications, {
+        contributions: registryWithContributions().list('notifications'),
+        onCommand
+      }))
+    })
+    const [action, dismiss] = renderer.root.findAllByType('button')
+
+    act(() => action!.props.onClick({ nativeEvent: { isTrusted: false } }))
+    act(() => dismiss!.props.onClick({ nativeEvent: { isTrusted: false } }))
+    expect(onCommand).not.toHaveBeenCalled()
+    expect(renderer.root.findAllByProps({
+      'data-contribution-id': 'extension:acme.ui/notice'
+    })).toHaveLength(1)
+
+    act(() => action!.props.onClick({ nativeEvent: { isTrusted: true } }))
+    expect(onCommand).toHaveBeenCalledWith(
+      'extension:acme.ui/inspect-result',
+      { notificationId: 'extension:acme.ui/notice' }
+    )
+    act(() => dismiss!.props.onClick({ nativeEvent: { isTrusted: true } }))
+    expect(renderer.root.findAllByProps({
+      'data-contribution-id': 'extension:acme.ui/notice'
+    })).toHaveLength(0)
+    act(() => renderer.unmount())
+  })
+
+  it('keeps runtime notification responses bound to the clicked extension', () => {
+    const onRespond = vi.fn()
+    const notification = (
+      notificationId: string,
+      extensionId: string,
+      actionId: string
+    ) => ({
+      notificationId,
+      extensionId,
+      extensionVersion: '1.0.0',
+      sourceId: `${extensionId}-notice`,
+      title: `${extensionId} notice`,
+      message: 'Safe message',
+      severity: 'info' as const,
+      actions: [{ id: actionId, title: actionId }],
+      createdAt: '2026-07-11T00:00:00.000Z',
+      expiresAt: '2026-07-11T00:01:00.000Z'
+    })
+    const acmeId = 'notification_12345678-1234-1234-1234-123456789abc'
+    const otherId = 'notification_22345678-1234-1234-1234-123456789abc'
+    let renderer!: ReturnType<typeof createRenderer>
+    act(() => {
+      renderer = createRenderer(createElement(DynamicExtensionNotifications, {
+        notifications: [
+          notification(acmeId, 'acme.ui', 'retry-acme'),
+          notification(otherId, 'other.ui', 'retry-other')
+        ],
+        onRespond
+      }))
+    })
+    const cards = renderer.root.findAll((node) =>
+      typeof node.props['data-extension-notification-id'] === 'string')
+    const acmeButtons = cards.find((card) =>
+      card.props['data-extension-notification-id'] === acmeId)!.findAllByType('button')
+    const otherButtons = cards.find((card) =>
+      card.props['data-extension-notification-id'] === otherId)!.findAllByType('button')
+
+    act(() => otherButtons[0]!.props.onClick({ nativeEvent: { isTrusted: false } }))
+    act(() => acmeButtons[1]!.props.onClick({ nativeEvent: { isTrusted: false } }))
+    expect(onRespond).not.toHaveBeenCalled()
+
+    act(() => otherButtons[0]!.props.onClick({ nativeEvent: { isTrusted: true } }))
+    act(() => acmeButtons[1]!.props.onClick({ nativeEvent: { isTrusted: true } }))
+    expect(onRespond.mock.calls).toEqual([
+      [otherId, 'retry-other'],
+      [acmeId]
+    ])
+    act(() => renderer.unmount())
+  })
+
+  it('renders action and notification metadata as escaped host-owned controls', () => {
+    const registry = registryWithContributions()
+    const actions = registry.list('actions.topBar')
+    const notifications = registry.list('notifications')
+    const actionHtml = renderToStaticMarkup(createElement(DeclarativeActionBar, {
+      contributions: actions,
+      context: { surface: 'topBar' },
+      onCommand: vi.fn()
+    }))
+    const notificationHtml = renderToStaticMarkup(createElement(DeclarativeNotifications, {
+      contributions: notifications,
+      onCommand: vi.fn()
+    }))
+
+    expect(actionHtml).toContain('data-contribution-id="extension:acme.ui/refresh"')
+    expect(actionHtml).toContain('&lt;img src=x onerror=alert(1)&gt;')
+    expect(actionHtml).not.toContain('<img src="x"')
+    expect(notificationHtml).toContain('&lt;script&gt;bad()&lt;/script&gt;')
+    expect(notificationHtml).not.toContain('<script>')
+    const dynamicHtml = renderToStaticMarkup(createElement(DynamicExtensionNotifications, {
+      notifications: [{
+        notificationId: 'notification_12345678-1234-1234-1234-123456789abc',
+        extensionId: 'acme.ui',
+        extensionVersion: '1.0.0',
+        sourceId: 'runtime-notice',
+        title: '<img src=x onerror=alert(1)> Runtime notice',
+        message: '<script>bad()</script>',
+        severity: 'warning',
+        actions: [{ id: 'retry', title: 'Retry safely' }],
+        createdAt: '2026-07-11T00:00:00.000Z',
+        expiresAt: '2026-07-11T00:01:00.000Z'
+      }],
+      onRespond: vi.fn()
+    }))
+    expect(dynamicHtml).toContain('data-extension-notification-id=')
+    expect(dynamicHtml).toContain('&lt;script&gt;bad()&lt;/script&gt;')
+    expect(dynamicHtml).not.toContain('<script>')
+    expect(isTrustedNotificationActivation({ nativeEvent: { isTrusted: false } })).toBe(false)
+    expect(isTrustedNotificationActivation({ nativeEvent: { isTrusted: true } })).toBe(true)
+    const queuedHtml = renderToStaticMarkup(createElement(DynamicExtensionNotifications, {
+      notifications: Array.from({ length: 6 }, (_, index) => ({
+        notificationId: `notification_${index + 1}2345678-1234-1234-1234-123456789abc`,
+        extensionId: 'acme.ui',
+        extensionVersion: '1.0.0',
+        sourceId: `runtime-notice-${index}`,
+        title: `Notice ${index}`,
+        message: 'Bounded',
+        severity: 'info' as const,
+        actions: [],
+        createdAt: '2026-07-11T00:00:00.000Z',
+        expiresAt: '2026-07-11T00:01:00.000Z'
+      })),
+      onRespond: vi.fn()
+    }))
+    expect(queuedHtml.match(/data-extension-notification-id=/g)).toHaveLength(5)
+    expect(queuedHtml).toContain('data-extension-notifications-queued="1"')
+    expect(isSecretLikeSettingKey('apiKey')).toBe(true)
+    expect(isSecretLikeSettingKey('displayDensity')).toBe(false)
+    const containersHtml = renderToStaticMarkup(createElement(DeclarativeViewContainers, {
+      contributions: registry.list('views.containers'),
+      activeId: 'extension:acme.ui/tools',
+      onSelect: vi.fn()
+    }))
+    expect(containersHtml).toContain('aria-label="Extension Views"')
+    expect(containersHtml).toContain('data-contribution-id="extension:acme.ui/tools"')
+    const menuHtml = renderToStaticMarkup(createElement(DeclarativeContextMenu, {
+      contributions: registry.list('contextMenus'),
+      commands: registry.list('commands'),
+      context: { surface: 'message' },
+      onCommand: vi.fn()
+    }))
+    expect(menuHtml).toContain('Inspect result')
+    expect(menuHtml).toContain('data-contribution-id="extension:acme.ui/inspect-menu"')
+  })
+
+  it('routes complex extension UI only through the isolated Webview host', () => {
+    const contribution = registryWithContributions().list('views.rightSidebar')
+      .find((item) => item.id === 'extension:acme.ui/dashboard')!
+    const html = renderToStaticMarkup(createElement(ExtensionViewOutlet, { contribution }))
+    expect(html).toContain('data-contribution-id="extension:acme.ui/dashboard"')
+    expect(html).toContain('Opening isolated extension View')
+    expect(html).not.toContain('dangerouslySetInnerHTML')
+    expect(matchingResultPreviewContributions(
+      registryWithContributions().list('message.resultPreviews'),
+      'application/json'
+    ).map((item) => item.id)).toEqual(['extension:acme.ui/json-preview'])
+
+    const validSession = {
+      sessionId: 'session-0123456789',
+      nonce: 'nonce-0123456789',
+      contributionId: contribution.id,
+      extensionId: 'acme.ui',
+      extensionVersion: '1.0.0',
+      src: 'kun-extension://acme.ui/dist/index.html',
+      partition: 'kun-extension-acme-ui-session'
+    }
+    expect(validateExtensionViewSession(validSession, contribution)).toBeNull()
+    expect(validateExtensionViewSession({ ...validSession, partition: 'persist:shared' }, contribution)).toContain('non-persistent')
+    expect(validateExtensionViewSession({ ...validSession, src: 'https://evil.example/' }, contribution)).toContain('origin mismatch')
+  })
+})

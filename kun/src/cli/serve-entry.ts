@@ -12,6 +12,7 @@ import {
   startEventLoopMonitor
 } from '../server/event-loop-monitor.js'
 import { installServeCrashHandlers } from './serve-crash-handlers.js'
+import { runExtensionCommand } from './extension-cli.js'
 
 export const KUN_READY_PREFIX = 'KUN_READY '
 
@@ -121,6 +122,14 @@ async function selfVerifyHealth(host: string, port: number): Promise<void> {
 
 export async function main(argv: readonly string[]): Promise<number> {
   await hideMacosDockIfRunningAsElectron()
+  if (argv[0] === 'extension') {
+    return runExtensionCommand(argv.slice(1), {
+      stdout: process.stdout,
+      stderr: process.stderr,
+      env: process.env,
+      cwd: () => process.cwd()
+    })
+  }
   const command = splitKunCliCommand(argv)
   if (command.command === 'help') {
     if (command.error) {

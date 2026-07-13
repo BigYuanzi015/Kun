@@ -3,6 +3,7 @@ import { readBrowserStorageItem } from '../../lib/browser-storage'
 import {
   artifactDesignMdPathOf,
   deleteArtifactDir,
+  inferSvgArtifactNode,
   parseArtifactMeta,
   reconstructArtifact,
   serializeArtifactMeta
@@ -14,6 +15,15 @@ import { normalizeDesignTarget } from '../design-context'
 import { createDesignDocumentId, defaultDesignArtifactNode } from '../design-types'
 import type { DesignArtifact, DesignCanvasView, DesignDocument, DesignViewport } from '../design-types'
 import type { DesignWorkspaceState } from '../design-workspace-store-types'
+import {
+  wasDesignArtifactRemoved,
+  wasDesignDocumentRemoved,
+  wasDesignDocumentUserCreated
+} from '../design-workspace-registry'
+import {
+  deleteDesignWorkspaceEntry,
+  writeDesignWorkspaceFile
+} from '../design-persistence-coordinator'
 
 const DESIGN_DIR = '.kun-design'
 
@@ -36,14 +46,6 @@ export function defaultDocumentTitle(): string {
   const label = i18n.t('common:designDefaultDocTitle')
   return label && label !== 'designDefaultDocTitle' ? label : 'My design'
 }
-
-/**
- * Ids removed this session, filtered out of rehydration so a not-yet-flushed
- * on-disk delete can't resurrect a deleted artifact or 设计稿 on the next mount.
- */
-export const removedArtifactIds = new Set<string>()
-export const removedDocumentIds = new Set<string>()
-export const userCreatedDocumentIds = new Set<string>()
 
 // --- Active-document projection ------------------------------------------------
 
@@ -91,6 +93,18 @@ function sortArtifacts(items: DesignArtifact[]): DesignArtifact[] {
     .map((item, index) => ({ ...item, node: item.node ?? defaultDesignArtifactNode(index) }))
 }
 
+async function inferMissingSvgNode(
+  artifact: DesignArtifact,
+  workspaceRoot: string,
+  api: NonNullable<typeof window.kunGui>
+): Promise<DesignArtifact> {
+  if (artifact.kind !== 'svg' || artifact.node) return artifact
+  const svgRead = await api.readWorkspaceFile({ path: artifact.relativePath, workspaceRoot }).catch(() => null)
+  return svgRead?.ok && !svgRead.truncated
+    ? { ...artifact, node: inferSvgArtifactNode(svgRead.content) }
+    : artifact
+}
+
 /** Load one artifact from its on-disk dir (meta.json sidecar, else reconstruct). */
 async function loadArtifactDir(
   workspaceRoot: string,
@@ -103,11 +117,21 @@ async function loadArtifactDir(
   }
   const metaRead = await api.readWorkspaceFile({ path: `${artifactDir}/meta.json`, workspaceRoot }).catch(() => null)
   if (metaRead && metaRead.ok) {
-    const parsed = parseArtifactMeta(metaRead.content, artifactId)
-    if (parsed) return parsed
+    const parsed = parseArtifactMeta(metaRead.content, artifactId, artifactDir)
+    if (parsed) return inferMissingSvgNode(parsed, workspaceRoot, api)
   }
   const sub = await api.listWorkspaceDirectory({ path: artifactDir, workspaceRoot }).catch(() => null)
-  if (sub && sub.ok) return reconstructArtifact(artifactDir, sub.entries)
+  if (sub && sub.ok) {
+    const reconstructed = reconstructArtifact(artifactDir, sub.entries)
+    if (reconstructed?.kind !== 'svg') return reconstructed
+    const svgRead = await api.readWorkspaceFile({
+      path: reconstructed.relativePath,
+      workspaceRoot
+    }).catch(() => null)
+    return svgRead?.ok && !svgRead.truncated
+      ? { ...reconstructed, node: inferSvgArtifactNode(svgRead.content) }
+      : reconstructed
+  }
   return null
 }
 
@@ -119,7 +143,7 @@ async function loadArtifactsForDoc(workspaceRoot: string, docId: string): Promis
   if (!sub || !sub.ok) return []
   const found: DesignArtifact[] = []
   for (const entry of sub.entries) {
-    if (entry.type !== 'directory' || removedArtifactIds.has(entry.name)) continue
+    if (entry.type !== 'directory' || wasDesignArtifactRemoved(workspaceRoot, entry.name)) continue
     const artifact = await loadArtifactDir(workspaceRoot, `${DESIGN_DIR}/${docId}/${entry.name}`, entry.name)
     if (artifact) found.push(artifact)
   }
@@ -165,15 +189,26 @@ async function moveArtifactIntoDoc(
     for (const file of files) {
       const read = await api.readWorkspaceFile({ path: `${oldPrefix}${file.name}`, workspaceRoot })
       if (!read || !read.ok) throw new Error('read failed')
-      const write = await api.writeWorkspaceFile({ path: `${newPrefix}${file.name}`, workspaceRoot, content: read.content })
+      const write = await writeDesignWorkspaceFile({
+        path: `${newPrefix}${file.name}`,
+        workspaceRoot,
+        content: read.content
+      }, api)
       if (!write || !write.ok) throw new Error('write failed')
     }
     const rewritten = rewriteArtifactPaths(artifact, oldPrefix, newPrefix)
-    await api
-      .writeWorkspaceFile({ path: `${newPrefix}meta.json`, workspaceRoot, content: serializeArtifactMeta(rewritten) })
-      .catch(() => undefined)
+    const metaWrite = await writeDesignWorkspaceFile({
+      path: `${newPrefix}meta.json`,
+      workspaceRoot,
+      content: serializeArtifactMeta(rewritten)
+    }, api)
+    if (!metaWrite.ok) throw new Error('meta write failed')
     if (typeof api.deleteWorkspaceEntry === 'function') {
-      await api.deleteWorkspaceEntry({ path: `${DESIGN_DIR}/${artifact.id}`, workspaceRoot }).catch(() => undefined)
+      const deleted = await deleteDesignWorkspaceEntry({
+        path: `${DESIGN_DIR}/${artifact.id}`,
+        workspaceRoot
+      }, api)
+      if (!deleted.ok) throw new Error('delete failed')
     }
     return rewritten
   } catch {
@@ -196,13 +231,16 @@ async function migrateLegacyToDefaultDoc(
   }
   const legacy: { artifact: DesignArtifact; entries: { name: string; type: string }[] }[] = []
   for (const entry of topDirs) {
-    if (removedArtifactIds.has(entry.name)) continue
+    if (wasDesignArtifactRemoved(workspaceRoot, entry.name)) continue
     const dir = `${DESIGN_DIR}/${entry.name}`
     const sub = await api.listWorkspaceDirectory({ path: dir, workspaceRoot }).catch(() => null)
     if (!sub || !sub.ok) continue
     let artifact: DesignArtifact | null = null
     const metaRead = await api.readWorkspaceFile({ path: `${dir}/meta.json`, workspaceRoot }).catch(() => null)
-    if (metaRead && metaRead.ok) artifact = parseArtifactMeta(metaRead.content, entry.name)
+    if (metaRead && metaRead.ok) {
+      const parsed = parseArtifactMeta(metaRead.content, entry.name, dir)
+      artifact = parsed ? await inferMissingSvgNode(parsed, workspaceRoot, api) : null
+    }
     if (!artifact) artifact = reconstructArtifact(dir, sub.entries)
     if (artifact) legacy.push({ artifact, entries: sub.entries })
   }
@@ -277,14 +315,18 @@ type RehydrateDesignWorkspaceArtifactsOptions = {
   get: () => DesignWorkspaceState
   set: StoreSet
   persistIndex: () => void
+  isCurrent?: (workspaceRoot: string) => boolean
 }
 
 export async function rehydrateDesignWorkspaceArtifacts({
   get,
   set,
-  persistIndex
+  persistIndex,
+  isCurrent
 }: RehydrateDesignWorkspaceArtifactsOptions): Promise<void> {
   const { workspaceRoot } = get()
+  const hydrationIsCurrent = (): boolean =>
+    (isCurrent ? isCurrent(workspaceRoot) : get().workspaceRoot === workspaceRoot)
   const api = window.kunGui
   if (
     !workspaceRoot ||
@@ -296,8 +338,10 @@ export async function rehydrateDesignWorkspaceArtifacts({
   }
   
   const indexRead = await api.readWorkspaceFile({ path: documentsIndexPath(), workspaceRoot }).catch(() => null)
+  if (!hydrationIsCurrent()) return
   const index = indexRead && indexRead.ok ? parseDocumentsIndex(indexRead.content) : null
   const listing = await api.listWorkspaceDirectory({ path: DESIGN_DIR, workspaceRoot }).catch(() => null)
+  if (!hydrationIsCurrent()) return
   if (!listing || !listing.ok) return
   const topDirs = listing.entries.filter((e) => e.type === 'directory')
   
@@ -305,8 +349,10 @@ export async function rehydrateDesignWorkspaceArtifacts({
     const docIds = new Set(index.documents.map((d) => d.id))
     const loaded: DesignDocument[] = []
     for (const entry of index.documents) {
-      if (removedDocumentIds.has(entry.id)) continue
+      if (!hydrationIsCurrent()) return
+      if (wasDesignDocumentRemoved(workspaceRoot, entry.id)) continue
       const artifacts = await loadArtifactsForDoc(workspaceRoot, entry.id)
+      if (!hydrationIsCurrent()) return
       const activeArtifactId = artifacts.some((a) => a.id === entry.activeArtifactId)
         ? entry.activeArtifactId
         : artifacts[0]?.id ?? null
@@ -323,14 +369,18 @@ export async function rehydrateDesignWorkspaceArtifacts({
     await Promise.all(
       loaded.map((doc) => hydrateDesignChatMetaForDoc({ workspaceRoot, docId: doc.id }))
     )
+    if (!hydrationIsCurrent()) return
     // Adopt orphan top-level artifact dirs (hand-authored / migration fallback).
     const orphans: DesignArtifact[] = []
     for (const entry of topDirs) {
-      if (docIds.has(entry.name) || removedArtifactIds.has(entry.name)) continue
+      if (!hydrationIsCurrent()) return
+      if (docIds.has(entry.name) || wasDesignArtifactRemoved(workspaceRoot, entry.name)) continue
       const artifact = await loadArtifactDir(workspaceRoot, `${DESIGN_DIR}/${entry.name}`, entry.name)
+      if (!hydrationIsCurrent()) return
       if (artifact) orphans.push(artifact)
     }
     set((state) => {
+      if (!hydrationIsCurrent()) return {}
       if (state.documents.length === 0) {
         let documents = loaded
         if (orphans.length > 0) {
@@ -365,7 +415,7 @@ export async function rehydrateDesignWorkspaceArtifacts({
       const loadedById = new Map(loaded.map((d) => [d.id, d]))
       const kept = state.documents
         .filter((doc) => {
-          if (doc.artifacts.length > 0 || loadedById.has(doc.id) || userCreatedDocumentIds.has(doc.id)) {
+          if (doc.artifacts.length > 0 || loadedById.has(doc.id) || wasDesignDocumentUserCreated(workspaceRoot, doc.id)) {
             return true
           }
           return !(state.documents.length === 1 && loaded.length > 0)
@@ -374,7 +424,7 @@ export async function rehydrateDesignWorkspaceArtifacts({
           const incoming = loadedById.get(doc.id)
           if (!incoming) return doc
           const known = new Set(doc.artifacts.map((a) => a.id))
-          const fresh = incoming.artifacts.filter((a) => !known.has(a.id) && !removedArtifactIds.has(a.id))
+          const fresh = incoming.artifacts.filter((a) => !known.has(a.id) && !wasDesignArtifactRemoved(workspaceRoot, a.id))
           return fresh.length > 0 ? { ...doc, artifacts: sortArtifacts([...doc.artifacts, ...fresh]) } : doc
         })
       const keptIds = new Set(kept.map((d) => d.id))
@@ -386,24 +436,28 @@ export async function rehydrateDesignWorkspaceArtifacts({
           : documents[0]?.id ?? null
       return { documents, activeDocumentId, ...projectActiveDoc(documents, activeDocumentId) }
     })
+    if (!hydrationIsCurrent()) return
     persistIndex()
     return
   }
   
   // No index → legacy upgrade (or fresh workspace).
   const defaultDoc = await migrateLegacyToDefaultDoc(workspaceRoot, topDirs)
+  if (!hydrationIsCurrent()) return
   if (!defaultDoc) return
   saveDesignThreadRegistry(migrateRegistryToDoc(readDesignThreadRegistry(), workspaceRoot, defaultDoc.id))
   set((state) => {
+    if (!hydrationIsCurrent()) return {}
     if (state.documents.some((d) => d.id === defaultDoc.id)) return {}
     // Drop empty stub 设计稿 from an eager pre-rehydrate auto-create; the
     // migrated 设计稿 is authoritative for legacy data.
-    const withContent = state.documents.filter((d) => d.artifacts.length > 0 || userCreatedDocumentIds.has(d.id))
+    const withContent = state.documents.filter((d) => d.artifacts.length > 0 || wasDesignDocumentUserCreated(workspaceRoot, d.id))
     const documents = [...withContent, defaultDoc]
     const activeDocumentId = documents.some((d) => d.id === state.activeDocumentId)
       ? state.activeDocumentId
       : defaultDoc.id
     return { documents, activeDocumentId, ...projectActiveDoc(documents, activeDocumentId) }
   })
+  if (!hydrationIsCurrent()) return
   persistIndex()
 }

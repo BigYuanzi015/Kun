@@ -2,6 +2,9 @@ import { memo, useCallback, useMemo, useState } from 'react'
 import {
   ArrowRight,
   Circle,
+  Download,
+  FileCode2,
+  FileImage,
   Frame,
   Hand,
   ImagePlus,
@@ -24,6 +27,7 @@ import { useCanvasSelectionStore } from '../../../design/canvas/canvas-selection
 import { useCanvasShapeStore } from '../../../design/canvas/canvas-shape-store'
 import { useDesignSystemStore } from '../../../design/canvas/design-system-store'
 import type { CanvasTool } from '../../../design/canvas/canvas-types'
+import type { CanvasExportFormat } from '../../../design/canvas/canvas-export'
 import { useCanvasViewportStore } from '../../../design/canvas/canvas-viewport-store'
 import { useDesignWorkspaceStore } from '../../../design/design-workspace-store'
 import {
@@ -43,6 +47,7 @@ type Props = {
   onOpenPrototypePlayer?: () => void
   onOpenAgentSettings?: () => void
   onRequestCanvasCritique?: (promptSeed: string) => void
+  onExportCanvas?: (format: CanvasExportFormat) => Promise<void>
 }
 
 type ToolButton = {
@@ -80,7 +85,8 @@ function CanvasToolbarInner({
   prototypePlayable = false,
   onOpenPrototypePlayer,
   onOpenAgentSettings,
-  onRequestCanvasCritique
+  onRequestCanvasCritique,
+  onExportCanvas
 }: Props) {
   const { t } = useTranslation('common')
   const canvasDocument = useCanvasShapeStore((s) => s.document)
@@ -100,6 +106,9 @@ function CanvasToolbarInner({
   const [imageImportBusy, setImageImportBusy] = useState(false)
   const [contextOpen, setContextOpen] = useState(false)
   const [agentActionsOpen, setAgentActionsOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportBusy, setExportBusy] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
   const runAgentAction = useDesignAgentActionRunner(onRequestCanvasCritique)
   const designSurface = surface === 'design'
   const visibleTools = designSurface
@@ -160,6 +169,21 @@ function CanvasToolbarInner({
     setAgentActionsOpen(false)
   }, [runAgentAction])
 
+  const requestExport = useCallback((format: CanvasExportFormat): void => {
+    if (!onExportCanvas || exportBusy) return
+    setExportBusy(true)
+    setExportError(null)
+    setFileError(null)
+    void onExportCanvas(format)
+      .then(() => setExportOpen(false))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error)
+        setExportError(message)
+        setFileError(message)
+      })
+      .finally(() => setExportBusy(false))
+  }, [exportBusy, onExportCanvas, setFileError])
+
   const iconBtnBase =
     'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-45'
   const btnActive = 'bg-[#1f2733] text-white shadow-[0_6px_16px_rgba(15,23,42,0.22)]'
@@ -200,6 +224,24 @@ function CanvasToolbarInner({
         >
           <ImagePlus className="h-4 w-4" strokeWidth={1.9} />
         </button>
+
+        {!designSurface ? (
+          <>
+            <div className={divider} />
+            <button
+              type="button"
+              className={`${iconBtnBase} ${exportOpen ? btnActive : btnInactive}`}
+              onClick={() => setExportOpen((open) => !open)}
+              disabled={!onExportCanvas || exportBusy}
+              title={t('canvasExport')}
+              aria-label={t('canvasExport')}
+              aria-expanded={exportOpen}
+              aria-haspopup="menu"
+            >
+              <Download className="h-4 w-4" strokeWidth={1.9} />
+            </button>
+          </>
+        ) : null}
 
         {designSurface ? (
           <>
@@ -274,6 +316,35 @@ function CanvasToolbarInner({
             titleKey="designContextLabel"
             designTargetDisabled={designTargetDisabled}
           />
+        </div>
+      ) : null}
+      {!designSurface && exportOpen ? (
+        <div role="menu" className="absolute right-14 bottom-0 z-50 w-40 overflow-hidden rounded-[12px] border border-ds-border bg-white/96 p-1.5 text-[12px] shadow-[0_16px_40px_rgba(15,23,42,0.18)] backdrop-blur-xl dark:bg-[#20252e]/96">
+          <button
+            type="button"
+            role="menuitem"
+            className="flex h-8 w-full items-center gap-2 rounded-[8px] px-2 text-left text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink disabled:opacity-50"
+            onClick={() => requestExport('svg')}
+            disabled={exportBusy}
+          >
+            <FileCode2 className="h-3.5 w-3.5" strokeWidth={1.8} />
+            {t('canvasExportSvg')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="flex h-8 w-full items-center gap-2 rounded-[8px] px-2 text-left text-ds-muted transition hover:bg-ds-hover hover:text-ds-ink disabled:opacity-50"
+            onClick={() => requestExport('png')}
+            disabled={exportBusy}
+          >
+            <FileImage className="h-3.5 w-3.5" strokeWidth={1.8} />
+            {t('canvasExportPng')}
+          </button>
+          {exportError ? (
+            <div role="alert" className="break-words px-2 py-1 text-[10px] leading-4 text-red-600 dark:text-red-400">
+              {exportError}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

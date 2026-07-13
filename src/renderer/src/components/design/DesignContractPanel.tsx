@@ -10,6 +10,7 @@ import {
   type DesignContractDisabledReason
 } from '../../design/design-contract/design-contract-view-model'
 import { buildDesignProjectContractMarkdown } from '../../design/design-contract/design-project-contract'
+import { writeDesignWorkspaceFile } from '../../design/design-persistence-coordinator'
 import {
   SidebarCommandRow,
   SidebarIconButton,
@@ -100,11 +101,15 @@ export function DesignContractPanel({ workspaceRoot, document, onSeedPrompt }: P
         designContext: workspaceState.designContext,
         artifacts: latestDocument.artifacts
       })
-      await window.kunGui.writeWorkspaceFile({
+      const result = await writeDesignWorkspaceFile({
         path: model.path,
         workspaceRoot,
         content
       })
+      if (!result.ok) {
+        setExportState({ status: 'error', message: result.message })
+        return
+      }
       setExportState({ status: 'exported', path: model.path })
     } catch (error) {
       setExportState({ status: 'error', message: error instanceof Error ? error.message : String(error) })

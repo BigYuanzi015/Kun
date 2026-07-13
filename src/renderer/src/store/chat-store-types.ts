@@ -30,6 +30,7 @@ export type QueuedUserMessage = {
   mode?: string
   model?: string
   providerId?: string
+  accountId?: string
   modelLabel?: string
   reasoningEffort?: string
   attachmentIds?: string[]
@@ -50,6 +51,9 @@ export type QueuedUserMessage = {
     title?: string
   }
   guiDesignCanvas?: boolean
+  /** True only for the product Design surface; Code whiteboards leave this unset. */
+  guiDesignMode?: boolean
+  guiDesignArtifact?: GuiDesignArtifactMessageContext
 }
 
 /**
@@ -66,15 +70,24 @@ export type GuiPlanMessageContext = {
   title?: string
 }
 
+export type GuiDesignArtifactMessageContext = {
+  kind: 'svg'
+  artifactId: string
+  relativePath: string
+}
+
 export type SendMessageOverrides = {
   queued?: QueuedUserMessage
   model?: string
   providerId?: string
+  accountId?: string
   modelLabel?: string
   reasoningEffort?: string
   displayText?: string
   guiPlan?: GuiPlanMessageContext
   guiDesignCanvas?: boolean
+  guiDesignMode?: boolean
+  guiDesignArtifact?: GuiDesignArtifactMessageContext
   attachmentIds?: string[]
   attachments?: AttachmentReference[]
   fileReferences?: UserFileReference[]
@@ -90,6 +103,7 @@ export type SettingsRouteSection =
   | 'mediaGeneration'
   | 'speechToText'
   | 'agents'
+  | 'subagents'
   | 'archives'
   | 'permissions'
   | 'skill'
@@ -99,7 +113,7 @@ export type SettingsRouteSection =
   | 'claw'
   | 'updates'
   | 'terminal'
-export type AppRoute = 'chat' | 'write' | 'design' | 'settings' | 'plugins' | 'claw' | 'schedule' | 'workflow'
+export type AppRoute = 'chat' | 'write' | 'design' | 'settings' | 'plugins' | 'extensions' | 'claw' | 'schedule' | 'workflow'
 export type PluginHostRoute = 'chat' | 'claw'
 
 /**

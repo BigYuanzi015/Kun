@@ -3,6 +3,7 @@ import type { ChatBlock, ToolBlock } from '../../agent/types'
 import {
   activeCanvasTurnMatchesThread,
   canvasReplayStateForStoreUpdate,
+  hasDispatchedSvgFollowup,
   latestGeneratedImageRelativePathForTurn,
   latestGeneratedImageUrlForTurn,
   looksLikeExistingCanvasImageEditRequest,
@@ -10,6 +11,7 @@ import {
   resolveGeneratedImageFallbackTarget,
   rewriteGeneratedImageUrlsForTurn,
   shouldApplyDesignCanvasToolBlock,
+  shouldApplyDurableSvgCreate,
   takeNextReadyScreenGeneration
 } from './use-apply-shape-ops-live'
 import { createDefaultShape, createEmptyDocument, createHtmlFrameShape } from './canvas-types'
@@ -275,6 +277,81 @@ describe('replayActiveCanvasTurn', () => {
     expect(shouldApplyDesignCanvasToolBlock(completedCall)).toBe(false)
     expect(shouldApplyDesignCanvasToolBlock(finalResult)).toBe(true)
     expect(shouldApplyDesignCanvasToolBlock(legacyResult)).toBe(true)
+    expect(shouldApplyDesignCanvasToolBlock({
+      ...finalResult,
+      id: 'tool-export-1',
+      meta: { toolName: 'design_export_canvas', sourceItemKind: 'tool_result' },
+      detail: '{"ok":true,"action":"export_canvas"}'
+    })).toBe(true)
+  })
+})
+
+describe('durable SVG create replay', () => {
+  const toolBlock: ToolBlock = {
+    kind: 'tool',
+    id: 'tool-svg-1',
+    summary: 'create svg',
+    status: 'success',
+    meta: { toolName: 'design_svg_create', sourceItemKind: 'tool_result' },
+    detail: '{}'
+  }
+  const baseArtifact = {
+    id: 'svg-aabbccddeeff',
+    kind: 'svg' as const,
+    title: 'Orbit',
+    relativePath: '.kun-design/doc/svg-aabbccddeeff/v1.svg',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    versions: []
+  }
+
+  it('replays a stable create result when its artifact was never reserved', () => {
+    expect(shouldApplyDurableSvgCreate({
+      artifactId: baseArtifact.id,
+      toolBlockId: toolBlock.id,
+      artifacts: [],
+      blocks: [toolBlock]
+    })).toBe(true)
+  })
+
+  it('recovers a pending artifact only while no dedicated follow-up exists', () => {
+    const pending = { ...baseArtifact, previewStatus: 'pending' as const }
+    expect(shouldApplyDurableSvgCreate({
+      artifactId: pending.id,
+      toolBlockId: toolBlock.id,
+      artifacts: [pending],
+      blocks: [toolBlock]
+    })).toBe(true)
+
+    const blocks: ChatBlock[] = [
+      toolBlock,
+      {
+        kind: 'user',
+        id: 'user-svg-followup',
+        text: `Reserved SVG file: ${pending.relativePath}\nUse the structured SVG tools.`
+      }
+    ]
+    expect(hasDispatchedSvgFollowup(blocks, toolBlock.id, pending.relativePath)).toBe(true)
+    expect(shouldApplyDurableSvgCreate({
+      artifactId: pending.id,
+      toolBlockId: toolBlock.id,
+      artifacts: [pending],
+      blocks
+    })).toBe(false)
+  })
+
+  it('does not replay completed artifacts or legacy results without a stable id', () => {
+    expect(shouldApplyDurableSvgCreate({
+      artifactId: baseArtifact.id,
+      toolBlockId: toolBlock.id,
+      artifacts: [{ ...baseArtifact, previewStatus: 'ready' }],
+      blocks: [toolBlock]
+    })).toBe(false)
+    expect(shouldApplyDurableSvgCreate({
+      toolBlockId: toolBlock.id,
+      artifacts: [],
+      blocks: [toolBlock]
+    })).toBe(false)
   })
 })
 

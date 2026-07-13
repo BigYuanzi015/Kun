@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AttachmentsCapabilityConfig } from '../contracts/capabilities.js'
 import type { AttachmentDiagnostics, AttachmentMetadata, AttachmentTextFallback } from '../contracts/attachments.js'
@@ -52,7 +52,7 @@ export class FileAttachmentStore implements AttachmentStore {
     threadId?: string
     workspace?: string
   }): Promise<AttachmentMetadata> {
-    await mkdir(this.options.rootDir, { recursive: true })
+    await this.ensureRoot()
     const image = detectImage(input.data)
     const descriptor = image ? this.describeImage(image, input) : this.describeDocument(input)
     if (input.textFallback) validateTextFallback(input.textFallback, this.options.config)
@@ -74,8 +74,8 @@ export class FileAttachmentStore implements AttachmentStore {
         ...(descriptor.truncated !== undefined ? { truncated: descriptor.truncated } : {}),
         updatedAt: now
       }, input)
-      await writeFile(contentPath, input.data)
-      await writeFile(metadataPath, JSON.stringify(next, null, 2), 'utf8')
+      await writeFile(contentPath, input.data, { mode: 0o600 })
+      await writeFile(metadataPath, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 })
       return next
     }
     const metadata: AttachmentMetadata = AttachmentMetadataSchema.parse(mergeScope({
@@ -97,8 +97,8 @@ export class FileAttachmentStore implements AttachmentStore {
       createdAt: now,
       updatedAt: now
     }, input))
-    await writeFile(contentPath, input.data)
-    await writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf8')
+    await writeFile(contentPath, input.data, { mode: 0o600 })
+    await writeFile(metadataPath, JSON.stringify(metadata, null, 2), { encoding: 'utf8', mode: 0o600 })
     return metadata
   }
 
@@ -166,7 +166,7 @@ export class FileAttachmentStore implements AttachmentStore {
   }
 
   async diagnostics(): Promise<AttachmentDiagnostics> {
-    await mkdir(this.options.rootDir, { recursive: true })
+    await this.ensureRoot()
     const entries = await readdir(this.options.rootDir).catch(() => [])
     const metadata = await Promise.all(
       entries
@@ -201,6 +201,11 @@ export class FileAttachmentStore implements AttachmentStore {
 
   private metadataPath(id: string): string {
     return join(this.options.rootDir, `${id}.json`)
+  }
+
+  private async ensureRoot(): Promise<void> {
+    await mkdir(this.options.rootDir, { recursive: true, mode: 0o700 })
+    await chmod(this.options.rootDir, 0o700)
   }
 }
 

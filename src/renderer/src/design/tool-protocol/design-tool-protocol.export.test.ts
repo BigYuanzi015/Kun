@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createEmptyDocument, createHtmlFrameShape } from '../canvas/canvas-types'
+import { createEmptyDocument, createHtmlFrameShape, createSvgFrameShape } from '../canvas/canvas-types'
 import { useCanvasShapeStore } from '../canvas/canvas-shape-store'
 import { useCanvasUndoStore } from '../canvas/canvas-undo-store'
 import { useDesignSystemStore } from '../canvas/design-system-store'
@@ -32,9 +32,11 @@ describe('design.export package output', () => {
     const doc = createEmptyDocument()
     const homeFrame = createHtmlFrameShape('Home', 0, 0, 'artifact_home', 'desktop')
     const settingsFrame = createHtmlFrameShape('Settings', 1400, 0, 'artifact_settings', 'desktop')
+    const motionFrame = createSvgFrameShape('Orbit loader', 2800, 0, 'artifact_motion', 320, 240)
     doc.objects[homeFrame.id] = { ...homeFrame, parentId: doc.rootId }
     doc.objects[settingsFrame.id] = { ...settingsFrame, parentId: doc.rootId }
-    doc.objects[doc.rootId] = { ...doc.objects[doc.rootId], children: [homeFrame.id, settingsFrame.id] }
+    doc.objects[motionFrame.id] = { ...motionFrame, parentId: doc.rootId }
+    doc.objects[doc.rootId] = { ...doc.objects[doc.rootId], children: [homeFrame.id, settingsFrame.id, motionFrame.id] }
     doc.codeBindings = [{
       id: 'binding_home',
       designObjectId: homeFrame.id,
@@ -68,6 +70,16 @@ describe('design.export package output', () => {
         updatedAt: createdAt,
         versions: [{ id: 'artifact_settings-v1', relativePath: '.kun-design/doc/artifact_settings/v1.html', createdAt, summary: 'Settings screen' }],
         direction: { id: 'dir_calm', name: 'Calm operator', status: 'active' }
+      },
+      {
+        id: 'artifact_motion',
+        kind: 'svg',
+        title: 'Orbit loader',
+        relativePath: '.kun-design/doc/artifact_motion/v1.svg',
+        designMdPath: '.kun-design/doc/artifact_motion/DESIGN.md',
+        createdAt,
+        updatedAt: createdAt,
+        versions: [{ id: 'artifact_motion-v1', relativePath: '.kun-design/doc/artifact_motion/v1.svg', createdAt, summary: 'Motion asset' }]
       }
     ]
     const document: DesignDocument = {
@@ -98,7 +110,7 @@ describe('design.export package output', () => {
     const output = result.output as {
       format: string
       markdown: string
-      counts: { screens: number; codeBindings: number; tokens: number }
+      counts: { screens: number; svgArtifacts: number; codeBindings: number; tokens: number }
       resources: Array<{ kind: string; path: string; artifactId?: string; frameId?: string }>
       directions: Array<{ id: string; name: string; screenCount: number }>
       codeBindings: { count: number; entries: Array<{ id: string; sourceFile?: string }> }
@@ -106,12 +118,16 @@ describe('design.export package output', () => {
 
     expect(result).toMatchObject({ ok: true, status: 'ready' })
     expect(output.format).toBe('package')
-    expect(output.counts).toMatchObject({ screens: 2, codeBindings: 1, tokens: 1 })
+    expect(output.counts).toMatchObject({ screens: 2, svgArtifacts: 1, codeBindings: 1, tokens: 1 })
     expect(output.markdown).toContain('# DESIGN.md: Routing redesign')
     expect(output.markdown).toContain('Configure routing -> Settings')
+    expect(output.markdown).toContain(
+      '**Orbit loader** (artifact_motion): SVG `.kun-design/doc/artifact_motion/v1.svg`'
+    )
     expect(output.resources).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'project-design-md', path: '.kun-design/DESIGN.md' }),
+      expect.objectContaining({ kind: 'project-design-md', path: '.kun-design/HANDOFF.md' }),
       expect.objectContaining({ kind: 'html', path: '.kun-design/doc/artifact_home/v1.html', artifactId: 'artifact_home', frameId: homeFrame.id }),
+      expect.objectContaining({ kind: 'svg', path: '.kun-design/doc/artifact_motion/v1.svg', artifactId: 'artifact_motion', frameId: motionFrame.id }),
       expect.objectContaining({ kind: 'screen-design-md', path: '.kun-design/doc/artifact_home/DESIGN.md', artifactId: 'artifact_home' }),
       expect.objectContaining({ kind: 'graph-json', path: '.kun-design/design-graph.json' })
     ]))
